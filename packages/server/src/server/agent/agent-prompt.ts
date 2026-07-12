@@ -146,7 +146,9 @@ export interface StartCreatedAgentInitialPromptParams {
   logger: Logger;
 }
 
-const AGENT_RUN_START_TIMEOUT_MS = 15_000;
+// HYDRA PATCH: Increase from 15s to 40s for relay latency tolerance.
+// With relay transport, agent creation takes ~16-17s (server startup + relay overhead).
+const AGENT_RUN_START_TIMEOUT_MS = 40_000;
 
 export async function waitForAgentRunStartWithTimeout(
   agentManager: AgentManager,
