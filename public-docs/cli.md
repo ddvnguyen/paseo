@@ -34,11 +34,14 @@ paseo run --detach "run the full test suite"  # background
 paseo run --worktree feature-x "implement feature X"
 paseo run --output-schema schema.json "extract release notes"
 paseo run --output-schema '{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}' "summarize release notes"
+paseo run --parent <parent-id> "implement feature as child"  # auto-subscribes to completion events
 ```
 
 The `--worktree` flag creates the agent in an isolated git worktree, useful for parallel feature development.
 
 Use `--output-schema` to return only matching JSON output. You can pass a schema file path or an inline JSON schema object. This mode cannot be used with `--detach`.
+
+The `--parent` flag registers the agent as a child of the specified parent agent. When the child completes, the daemon automatically emits an event that the parent can read via the `read_events` MCP tool.
 
 By default, `paseo run` waits for completion. Use `--detach` to run in the background.
 

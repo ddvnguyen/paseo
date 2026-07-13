@@ -85,6 +85,35 @@ The MCP server itself is controlled by `daemon.mcp.enabled`. Existing agents may
 
 Browser automation is opt-in and adds tools for opening tabs, reading pages, clicking, typing, and taking screenshots. See the [Browser tools reference](/docs/browser-tools).
 
+### Events
+
+| Tool                  | Function                                                                      |
+| --------------------- | ----------------------------------------------------------------------------- |
+| `read_events`         | Read events from history (does NOT drain - call drain_events to acknowledge). |
+| `drain_events`        | Acknowledge events and advance cursor (prevents re-reading).                  |
+| `manage_subscription` | Manage event subscriptions. Auto-created when spawning with `--parent` flag.  |
+
+#### Event Bus Usage
+
+The event bus provides automatic notification when child agents complete. When you spawn an agent with `--parent <parent-id>`, the daemon automatically emits events when the child finishes.
+
+```bash
+# Parent spawns child with --parent flag
+paseo run --parent <lead-id> --detach "implement feature"
+
+# Parent reads events via MCP (in agent code)
+read_events(parentAgentId="lead-123", since="2024-01-01T00:00:00Z")
+
+# Parent acknowledges processed events
+drain_events(parentAgentId="lead-123", upToEventId="evt-789")
+
+# Manage subscriptions
+manage_subscription(action="unsubscribe", agentId="lead-123")
+manage_subscription(action="list", agentId="lead-123")
+```
+
+Events are stored durably at `~/.paseo/events/events.json` and survive daemon restarts.
+
 ### Voice
 
 | Tool    | Function                                                                                  |

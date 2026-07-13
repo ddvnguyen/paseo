@@ -13,6 +13,7 @@ import {
 import type { Logger } from "pino";
 import { z } from "zod";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
+import type { EventBus, AgentCompletionEvent } from "./event-bus.js";
 
 import {
   getAgentStreamEventTurnId,
@@ -250,6 +251,7 @@ export interface AgentManagerOptions {
   appendSystemPrompt?: string;
   agentStreamCoalesceWindowMs?: number;
   rescueTimeouts?: AgentManagerRescueTimeouts;
+  eventBus?: EventBus;
   logger: Logger;
 }
 
@@ -566,6 +568,7 @@ export class AgentManager {
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
   private readonly agentStreamCoalescer: AgentStreamCoalescer;
+  private readonly eventBus?: EventBus;
   private mcpBaseUrl: string | null;
   private readonly mcpAuthToken: string | null;
   private paseoToolsEnabled = true;
@@ -582,6 +585,7 @@ export class AgentManager {
     this.idFactory = options?.idFactory ?? (() => randomUUID());
     this.registry = options?.registry;
     this.durableTimelineStore = options?.durableTimelineStore;
+    this.eventBus = options?.eventBus;
     this.onAgentAttention = options?.onAgentAttention;
     this.onWorkspaceStateMayHaveChanged = options?.onWorkspaceStateMayHaveChanged;
     this.mcpBaseUrl = options?.mcpBaseUrl ?? null;
@@ -1978,6 +1982,25 @@ export class AgentManager {
     if (!shouldHoldBusyForReplacement) {
       this.touchUpdatedAt(mutableAgent);
       this.emitState(mutableAgent);
+    }
+
+    // Emit event to event bus if agent has a parent and lifecycle is terminal
+    if (this.eventBus && (nextLifecycle === "idle" || nextLifecycle === "error")) {
+      const parentAgentId = getParentAgentIdFromLabels(mutableAgent.labels);
+      if (parentAgentId) {
+        const event: AgentCompletionEvent = {
+          id: randomUUID(),
+          type: nextLifecycle === "idle" ? "agent.completed" : "agent.failed",
+          agentId: agent.id,
+          parentAgentId,
+          timestamp: new Date().toISOString(),
+          exitCode: nextLifecycle === "idle" ? 0 : 1,
+          labels: mutableAgent.labels,
+          worktree: mutableAgent.cwd,
+          provider: mutableAgent.provider,
+        };
+        this.eventBus.emit(event);
+      }
     }
   }
 

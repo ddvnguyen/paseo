@@ -60,6 +60,10 @@ export function addRunOptions(cmd: Command): Command {
       [],
     )
     .option(
+      "--parent <agent-id>",
+      "Parent agent ID. Auto-subscribes to completion events for this child.",
+    )
+    .option(
       "--wait-timeout <duration>",
       "Maximum time to wait for agent to finish (e.g., 30s, 5m, 1h). Default: no limit",
     )
@@ -105,6 +109,7 @@ export interface AgentRunOptions extends CommandOptions {
   cwd?: string;
   env?: string[];
   label?: string[];
+  parent?: string;
   waitTimeout?: string;
   outputSchema?: string;
 }
@@ -500,6 +505,11 @@ export async function runRunCommand(
     const labels = parseRunLabels(options.label);
     const env = parseRunEnv(options.env);
     const requestEnv = Object.keys(env).length > 0 ? env : undefined;
+
+    // Add parent agent ID label if --parent is specified
+    if (options.parent) {
+      labels["paseo.parent-agent-id"] = options.parent;
+    }
 
     const workspace = await resolveRunWorkspace(client, options, cwd);
     const workspaceId = workspace.id;

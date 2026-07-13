@@ -83,6 +83,7 @@ import type {
   PaseoToolExecutionContext,
   PaseoToolResult,
 } from "./types.js";
+import type { EventBus } from "../event-bus.js";
 
 export interface PaseoToolHostDependencies {
   agentManager: AgentManager;
@@ -126,6 +127,7 @@ export interface PaseoToolHostDependencies {
   resolveCallerContext?: (callerAgentId: string) => VoiceCallerContext | null;
   enableVoiceTools?: boolean;
   voiceOnly?: boolean;
+  eventBus?: EventBus;
   logger: Logger;
 }
 
@@ -2719,6 +2721,184 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       };
     },
   );
+
+  // ─── Event Bus Tools ─────────────────────────────────────────────────────
+
+  if (options.eventBus) {
+    const eventBus = options.eventBus;
+
+    registerTool(
+      "read_events",
+      {
+        title: "Read events",
+        description:
+          "Read events from history (does NOT drain - call drain_events to acknowledge).",
+        inputSchema: {
+          parentAgentId: z
+            .string()
+            .optional()
+            .describe("Filter events received from children of this parent agent."),
+          childAgentId: z
+            .string()
+            .optional()
+            .describe("Filter events about this specific child agent."),
+          since: z
+            .string()
+            .optional()
+            .describe("ISO-8601 timestamp. Only return events after this time."),
+          until: z
+            .string()
+            .optional()
+            .describe("ISO-8601 timestamp. Only return events before this time."),
+          eventTypes: z
+            .array(z.enum(["agent.completed", "agent.failed", "agent.cancelled"]))
+            .optional()
+            .describe("Filter by event types."),
+          limit: z.number().optional().default(50).describe("Maximum number of events to return."),
+        },
+        outputSchema: {
+          events: z.array(z.record(z.string(), z.unknown())),
+          total: z.number(),
+        },
+      },
+      async (args) => {
+        const { parentAgentId, childAgentId, since, until, eventTypes, limit } = args as {
+          parentAgentId?: string;
+          childAgentId?: string;
+          since?: string;
+          until?: string;
+          eventTypes?: string[];
+          limit?: number;
+        };
+
+        const events = eventBus.query({
+          parentAgentId,
+          childAgentId,
+          since,
+          until,
+          eventTypes,
+        });
+
+        const paginated = events.slice(0, limit ?? 50);
+
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            events: paginated,
+            total: events.length,
+          }),
+        };
+      },
+    );
+
+    registerTool(
+      "drain_events",
+      {
+        title: "Drain events",
+        description:
+          "Acknowledge events and advance cursor (prevents re-reading). Call after processing events from read_events.",
+        inputSchema: {
+          parentAgentId: z.string().describe("Parent agent ID whose events to drain."),
+          upToEventId: z
+            .string()
+            .optional()
+            .describe("Drain up to this event ID (inclusive). If omitted, drains all."),
+          olderThan: z
+            .string()
+            .optional()
+            .describe("ISO-8601 timestamp. Drain all events older than this time."),
+        },
+        outputSchema: {
+          drainedCount: z.number(),
+          eventIds: z.array(z.string()),
+          cursor: z.string().nullable(),
+        },
+      },
+      async (args) => {
+        const { parentAgentId, upToEventId, olderThan } = args as {
+          parentAgentId: string;
+          upToEventId?: string;
+          olderThan?: string;
+        };
+
+        const result = eventBus.drain(parentAgentId, {
+          upToEventId,
+          olderThan,
+        });
+
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            drainedCount: result.drained.length,
+            eventIds: result.drained.map((e) => e.id),
+            cursor: result.cursor,
+          }),
+        };
+      },
+    );
+
+    registerTool(
+      "manage_subscription",
+      {
+        title: "Manage event subscription",
+        description:
+          "Manage event subscriptions. Auto-created when spawning with --parent flag. Use to unsubscribe or list subscriptions.",
+        inputSchema: {
+          action: z.enum(["subscribe", "unsubscribe", "list"]).describe("Action to perform."),
+          agentId: z.string().describe("Parent agent ID."),
+          childFilter: z
+            .string()
+            .optional()
+            .describe("For subscribe: filter events by child agent ID or name pattern."),
+          eventTypes: z
+            .array(z.enum(["agent.completed", "agent.failed", "agent.cancelled"]))
+            .optional()
+            .describe("For subscribe: only receive these event types."),
+          subscriptionId: z
+            .string()
+            .optional()
+            .describe("For unsubscribe: specific subscription ID to remove."),
+        },
+        outputSchema: {
+          success: z.boolean(),
+          subscriptions: z.array(z.record(z.string(), z.unknown())).optional(),
+        },
+      },
+      async (args) => {
+        const { action, agentId, childFilter, eventTypes, subscriptionId } = args as {
+          action: "subscribe" | "unsubscribe" | "list";
+          agentId: string;
+          childFilter?: string;
+          eventTypes?: string[];
+          subscriptionId?: string;
+        };
+
+        switch (action) {
+          case "subscribe": {
+            const sub = eventBus.subscribe(agentId, { childFilter, eventTypes });
+            return {
+              content: [],
+              structuredContent: ensureValidJson({ success: true, subscription: sub }),
+            };
+          }
+          case "unsubscribe": {
+            const success = eventBus.unsubscribe(agentId, subscriptionId);
+            return {
+              content: [],
+              structuredContent: ensureValidJson({ success }),
+            };
+          }
+          case "list": {
+            const subs = eventBus.listSubscriptions(agentId);
+            return {
+              content: [],
+              structuredContent: ensureValidJson({ success: true, subscriptions: subs }),
+            };
+          }
+        }
+      },
+    );
+  }
 
   return toCatalog();
 }
