@@ -1,6 +1,7 @@
 {
   "name": "@getpaseo/client",
-  "version": "0.1.108-hydra.b223ef87",
+  "version": "0.1.108-hydra.36b6a07ed",
+  "version": "0.1.108-hydra.36b6a07ed",
   "description": "Paseo client SDK package",
   "files": [
     "dist",

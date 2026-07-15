@@ -1,6 +1,7 @@
 {
   "name": "paseo",
-  "version": "0.1.108-hydra.b223ef87",
+  "version": "0.1.108-hydra.36b6a07ed",
+  "version": "0.1.108-hydra.36b6a07ed",
   "private": true,
   "description": "Paseo: voice-controlled development environment for local AI coding agents",
   "keywords": [
