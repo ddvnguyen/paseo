@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,8 +7,22 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const rootPackagePath = path.join(rootDir, "package.json");
 
+function getGitCommitShortHash() {
+  try {
+    return execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: rootDir,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
 const rootPackage = JSON.parse(readFileSync(rootPackagePath, "utf8"));
 const rootVersion = rootPackage.version;
+const gitHash = getGitCommitShortHash();
+const versionWithHash = gitHash ? `${rootVersion}-h-${gitHash}` : rootVersion;
 const workspacePaths = Array.isArray(rootPackage.workspaces) ? rootPackage.workspaces : [];
 const sharedMetadata = {
   homepage: rootPackage.homepage,
@@ -38,8 +53,8 @@ for (const workspacePath of workspacePaths) {
   const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
   let changed = false;
 
-  if (pkg.version !== rootVersion) {
-    pkg.version = rootVersion;
+  if (pkg.version !== versionWithHash) {
+    pkg.version = versionWithHash;
     changed = true;
   }
 
@@ -56,8 +71,8 @@ for (const workspacePath of workspacePaths) {
 
   // Private workspaces (app, desktop) keep "*" for internal deps so npm always
   // resolves the local sibling, never a registry artifact. Publishable workspaces
-  // get the root version so their published tarballs reference real npm versions.
-  const internalDepRange = pkg.private === true ? "*" : rootVersion;
+  // get the version with hash so their published tarballs reference real npm versions.
+  const internalDepRange = pkg.private === true ? "*" : versionWithHash;
 
   for (const section of dependencySections) {
     const deps = pkg[section];
@@ -86,9 +101,9 @@ for (const workspacePath of workspacePaths) {
 }
 
 if (touched.length === 0) {
-  console.log(`Workspace versions and internal deps already synced to ${rootVersion}`);
+  console.log(`Workspace versions and internal deps already synced to ${versionWithHash}`);
 } else {
-  console.log(`Synced to ${rootVersion}:`);
+  console.log(`Synced to ${versionWithHash}:`);
   for (const file of touched) {
     console.log(`- ${file}`);
   }
