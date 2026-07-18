@@ -52,6 +52,10 @@ export interface SidebarWorkspaceEntry extends SidebarStatusWorkspacePlacement {
   archiveUnpushedCommitCount: number | null;
   scripts: WorkspaceDescriptor["scripts"];
   hasRunningScripts: boolean;
+  // Last activity timestamp from the root agent (attentionTimestamp ?? updatedAt).
+  // Always populated when agent activity exists, unlike statusEnteredAt which is
+  // null for "done" workspaces. Used by the sidebar sort-by-recent feature.
+  lastActivityAt?: Date | null;
 }
 
 export interface SidebarProjectEntry {
@@ -152,6 +156,7 @@ export function createSidebarWorkspaceEntry(input: {
 }): SidebarWorkspaceEntry {
   const projectViewKey = input.projectViewKey ?? input.workspace.projectId;
   const effectiveStatus = deriveEffectiveWorkspaceStatus(input);
+  const rootAgentActivity = input.workspaceAgentActivity?.get(input.workspace.id);
   return {
     workspaceKey: `${input.serverId}:${input.workspace.id}`,
     serverId: input.serverId,
@@ -181,6 +186,7 @@ export function createSidebarWorkspaceEntry(input: {
     archiveUnpushedCommitCount: input.workspace.gitRuntime?.aheadOfOrigin ?? null,
     scripts: input.workspace.scripts,
     hasRunningScripts: input.workspace.scripts.some((script) => script.lifecycle === "running"),
+    lastActivityAt: rootAgentActivity?.enteredAt ?? null,
   };
 }
 

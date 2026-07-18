@@ -1040,6 +1040,11 @@ export const ko: TranslationResources = {
         status: "상태",
         labels: "레이블",
       },
+      sort: {
+        label: "Sort by",
+        recent: "Recent",
+        title: "Title",
+      },
       titleSource: {
         label: "제목",
         title: "제목",

@@ -1048,6 +1048,11 @@ export const ru: TranslationResources = {
         status: "Статус",
         labels: "Метки",
       },
+      sort: {
+        label: "Sort by",
+        recent: "Recent",
+        title: "Title",
+      },
       titleSource: {
         label: "Заголовок",
         title: "Заголовок",

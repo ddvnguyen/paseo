@@ -7,7 +7,7 @@ import { workspaceEqualityFns } from "@/stores/session-store-hooks/selectors";
 import { useHostProjects } from "@/projects/host-projects";
 import { getHostRuntimeStore, useHostRegistryLoaded, useHosts } from "@/runtime/host-runtime";
 import { useSidebarOrderStore } from "@/stores/sidebar-order-store";
-import { useSidebarViewStore } from "@/stores/sidebar-view-store";
+import { useSidebarViewStore, type SidebarSortMode } from "@/stores/sidebar-view-store";
 import {
   buildSidebarWorkspacePlacementModel,
   computeSidebarOrderUpdates,
@@ -84,6 +84,54 @@ const EMPTY_PROJECTS: SidebarProjectEntry[] = [];
 const EMPTY_WORKSPACES: SidebarWorkspacePlacement[] = [];
 const EMPTY_PROJECT_NAMES = new Map<string, string>();
 
+function sortWorkspacesByTitle(
+  workspaces: SidebarWorkspacePlacement[],
+): SidebarWorkspacePlacement[] {
+  return [...workspaces].sort((a, b) => {
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  });
+}
+
+function sortProjectsByTitle(projects: SidebarProjectEntry[]): SidebarProjectEntry[] {
+  return [...projects].sort((a, b) => {
+    return a.projectName.localeCompare(b.projectName, undefined, { sensitivity: "base" });
+  });
+}
+
+function applySortMode(
+  projects: SidebarProjectEntry[],
+  sortMode: SidebarSortMode,
+): SidebarProjectEntry[] {
+  if (sortMode === "title") {
+    const sortedProjects = sortProjectsByTitle(projects);
+    return sortedProjects.map((project) => {
+      const sortedWorkspaces = sortWorkspacesByTitle(project.workspaces);
+      return {
+        projectKey: project.projectKey,
+        projectName: project.projectName,
+        projectKind: project.projectKind,
+        iconWorkingDir: project.iconWorkingDir,
+        hosts: project.hosts,
+        workspaces: sortedWorkspaces,
+      };
+    });
+  }
+  return projects;
+}
+
+export function sortWorkspacesByRecent(
+  workspaces: SidebarWorkspacePlacement[],
+  entryMap: ReadonlyMap<string, SidebarWorkspaceEntry>,
+): SidebarWorkspacePlacement[] {
+  return [...workspaces].sort((a, b) => {
+    const entryA = entryMap.get(a.workspaceKey);
+    const entryB = entryMap.get(b.workspaceKey);
+    const timeA = entryA?.lastActivityAt?.getTime() ?? 0;
+    const timeB = entryB?.lastActivityAt?.getTime() ?? 0;
+    return timeB - timeA;
+  });
+}
+
 export interface SidebarWorkspacesListResult {
   workspacePlacements: SidebarWorkspacePlacement[];
   projects: SidebarProjectEntry[];
@@ -106,6 +154,7 @@ export function useSidebarWorkspacesList(options?: {
   const storeHostFilters = useSidebarViewStore((state) => state.hostFilters);
   const hostFilters = options?.hostFilters ?? storeHostFilters;
   const reconcileHostFilters = useSidebarViewStore((state) => state.reconcileHostFilters);
+  const sortMode = useSidebarViewStore((state) => state.sortMode);
   const isActive = options?.enabled !== false;
 
   const serverIds = useMemo(() => {
@@ -148,7 +197,10 @@ export function useSidebarWorkspacesList(options?: {
     [hostProjects],
   );
 
-  const projects = sidebarModel.projects.length > 0 ? sidebarModel.projects : EMPTY_PROJECTS;
+  const projects =
+    sidebarModel.projects.length > 0
+      ? applySortMode(sidebarModel.projects, sortMode)
+      : EMPTY_PROJECTS;
   const workspacePlacements =
     sidebarModel.workspaces.length > 0 ? sidebarModel.workspaces : EMPTY_WORKSPACES;
   const projectNamesByViewKey =
