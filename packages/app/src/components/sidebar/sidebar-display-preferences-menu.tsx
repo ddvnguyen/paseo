@@ -14,7 +14,11 @@ import { HostStatusDot } from "@/components/host-status-dot";
 import { isWeb as platformIsWeb } from "@/constants/platform";
 import { useAppSettings, type WorkspaceTitleSource } from "@/hooks/use-settings";
 import { useHosts } from "@/runtime/host-runtime";
-import { useSidebarViewStore, type SidebarGroupMode } from "@/stores/sidebar-view-store";
+import {
+  useSidebarViewStore,
+  type SidebarGroupMode,
+  type SidebarSortMode,
+} from "@/stores/sidebar-view-store";
 
 const ThemedSettings2 = withUnistyles(Settings2);
 const filterColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
@@ -22,6 +26,11 @@ const filterColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMu
 const GROUP_MODE_ITEMS: Array<{ value: SidebarGroupMode; label: string }> = [
   { value: "project", label: "Project" },
   { value: "status", label: "Status" },
+];
+
+const SORT_MODE_ITEMS: Array<{ value: SidebarSortMode; label: string }> = [
+  { value: "recent", label: "Recent" },
+  { value: "title", label: "Title" },
 ];
 
 const WORKSPACE_TITLE_SOURCE_ITEMS: Array<{ value: WorkspaceTitleSource; label: string }> = [
@@ -36,8 +45,10 @@ interface DisplayPreferenceOption<Value extends string> {
 
 export function SidebarDisplayPreferencesMenu() {
   const groupMode = useSidebarViewStore((state) => state.groupMode);
+  const sortMode = useSidebarViewStore((state) => state.sortMode);
   const hostFilters = useSidebarViewStore((state) => state.hostFilters);
   const setGroupMode = useSidebarViewStore((state) => state.setGroupMode);
+  const setSortMode = useSidebarViewStore((state) => state.setSortMode);
   const toggleHostFilter = useSidebarViewStore((state) => state.toggleHostFilter);
   const clearHostFilters = useSidebarViewStore((state) => state.clearHostFilters);
   const hosts = useHosts();
@@ -51,6 +62,13 @@ export function SidebarDisplayPreferencesMenu() {
       setGroupMode(mode);
     },
     [setGroupMode],
+  );
+
+  const handleSortModeSelect = useCallback(
+    (mode: SidebarSortMode) => {
+      setSortMode(mode);
+    },
+    [setSortMode],
   );
 
   const handleWorkspaceTitleSourceSelect = useCallback(
@@ -92,6 +110,19 @@ export function SidebarDisplayPreferencesMenu() {
             isSelected={groupMode === item.value}
             testIDPrefix="sidebar-grouping"
             onSelect={handleSelectMode}
+          />
+        ))}
+        <DropdownMenuSeparator />
+        <View style={styles.menuHeader}>
+          <Text style={styles.menuHeaderLabel}>Sort by</Text>
+        </View>
+        {SORT_MODE_ITEMS.map((item) => (
+          <DisplayPreferenceMenuItem
+            key={item.value}
+            item={item}
+            isSelected={sortMode === item.value}
+            testIDPrefix="sidebar-sorting"
+            onSelect={handleSortModeSelect}
           />
         ))}
         {showHostFilter ? (

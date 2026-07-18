@@ -22,7 +22,7 @@ function getGitCommitShortHash() {
 const rootPackage = JSON.parse(readFileSync(rootPackagePath, "utf8"));
 const rootVersion = rootPackage.version;
 const gitHash = getGitCommitShortHash();
-const versionWithHash = gitHash ? `${rootVersion}-h-${gitHash}` : rootVersion;
+const versionWithHash = gitHash ? `${rootVersion}-${gitHash}` : rootVersion;
 const workspacePaths = Array.isArray(rootPackage.workspaces) ? rootPackage.workspaces : [];
 const sharedMetadata = {
   homepage: rootPackage.homepage,
