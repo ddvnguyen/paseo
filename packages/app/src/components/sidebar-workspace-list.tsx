@@ -65,6 +65,7 @@ import {
 } from "@/utils/host-routes";
 import {
   shouldShowSidebarHostLabels,
+  sortWorkspacesByRecent,
   type SidebarProjectEntry,
   type SidebarWorkspaceEntry,
   type SidebarWorkspacePlacement,
@@ -1650,6 +1651,15 @@ function ProjectBlock({
     [collapsed, project, supportsMultiplicityByServerId],
   );
 
+  const sortMode = useSidebarViewStore((state) => state.sortMode);
+
+  const sortedWorkspaces = useMemo(() => {
+    if (sortMode === "recent") {
+      return sortWorkspacesByRecent(project.workspaces, workspaceEntriesByKey);
+    }
+    return project.workspaces;
+  }, [project.workspaces, workspaceEntriesByKey, sortMode]);
+
   const active = isProjectSelectedByRoute({
     selection: activeWorkspaceSelection,
     project,
@@ -1795,7 +1805,7 @@ function ProjectBlock({
         <>
           <DraggableList
             testID={`sidebar-workspace-list-${project.projectKey}`}
-            data={visibleWorkspaces}
+            data={sortedWorkspaces}
             keyExtractor={workspaceKeyExtractor}
             renderItem={renderWorkspace}
             onDragEnd={handleWorkspaceDragEnd}
