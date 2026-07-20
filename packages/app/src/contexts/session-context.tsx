@@ -57,6 +57,8 @@ import { toErrorMessage } from "@/utils/error-messages";
 import { showProviderNoticeToast } from "@/utils/provider-notice-toast";
 import { applyCheckoutStatusUpdateFromEvent } from "@/git/checkout-status-cache";
 import { useProviderSubagentStore } from "@/subagents/provider-store";
+import { useBackgroundTaskStore } from "@/background-tasks/store";
+import { patchWorkspaceScripts } from "@/runtime/directory-sync/workspace-replica";
 import { revalidateSessionAfterResume } from "@/contexts/session-resume-revalidation";
 
 function consumeForcedTimelineTailReplacement(
@@ -247,6 +249,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
   const setAgents = useSessionStore((state) => state.setAgents);
   const flushAgentLastActivity = useSessionStore((state) => state.flushAgentLastActivity);
   const setPendingPermissions = useSessionStore((state) => state.setPendingPermissions);
+  const setWorkspaces = useSessionStore((state) => state.setWorkspaces);
   const updateSessionServerInfo = useSessionStore((state) => state.updateSessionServerInfo);
   const setViewedTimelineSync = useSessionStore((state) => state.setViewedTimelineSync);
   const upsertWorkspaceSetupProgress = useWorkspaceSetupStore((state) => state.upsertProgress);
@@ -596,6 +599,16 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       useProviderSubagentStore.getState().applyUpdate(serverId, message.payload);
     });
 
+    const unsubBackgroundTaskUpdate = client.on("agent.background_tasks.update", (message) => {
+      if (message.type !== "agent.background_tasks.update") return;
+      useBackgroundTaskStore.getState().applyUpdate(serverId, message.payload);
+    });
+
+    const unsubScriptStatusUpdate = client.on("script_status_update", (message) => {
+      if (message.type !== "script_status_update") return;
+      setWorkspaces(serverId, (prev) => patchWorkspaceScripts(prev, message.payload));
+    });
+
     const unsubCheckoutStatusUpdate = client.on("checkout_status_update", (message) => {
       if (message.type !== "checkout_status_update") return;
       applyCheckoutStatusUpdateFromEvent({ queryClient, serverId, message });
@@ -785,6 +798,8 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       unsubAgentStream();
       unsubAgentTimeline();
       unsubProviderSubagentUpdate();
+      unsubBackgroundTaskUpdate();
+      unsubScriptStatusUpdate();
       unsubAgentAttention();
       unsubCheckoutStatusUpdate();
       unsubWorkspaceSetupProgress();

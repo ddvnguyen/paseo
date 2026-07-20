@@ -5,6 +5,7 @@ import {
   AGENT_LIFECYCLE_STATUSES,
   type AgentLifecycleStatus,
 } from "@getpaseo/protocol/agent-lifecycle";
+import type { BackgroundTaskDescriptorPayload } from "@getpaseo/protocol/messages";
 import {
   getParentAgentIdFromLabels,
   hasOpenAgentTab,
@@ -393,6 +394,10 @@ interface ManagedAgentBase {
    * User-defined labels for categorizing agents (e.g., { surface: "workspace" }).
    */
   labels: Record<string, string>;
+  /**
+   * Tracked background bash tasks (bg-bash MCP + Claude native run_in_background).
+   */
+  backgroundTasks: Map<string, BackgroundTaskDescriptorPayload>;
 }
 
 type ManagedAgentWithSession = ManagedAgentBase & {
@@ -1130,6 +1135,194 @@ export class AgentManager {
     return this.providerSubagents.fetchTimeline(parentAgentId, subagentId, options);
   }
 
+  // ---------------------------------------------------------------------------
+  // Background task management
+  // ---------------------------------------------------------------------------
+
+  listBackgroundTasks(agentId: string): BackgroundTaskDescriptorPayload[] {
+    const agent = this.requireAgent(agentId);
+    return [...agent.backgroundTasks.values()].sort((a, b) =>
+      a.startedAt.localeCompare(b.startedAt),
+    );
+  }
+
+  upsertBackgroundTask(agentId: string, task: BackgroundTaskDescriptorPayload): void {
+    const agent = this.requireAgent(agentId);
+    agent.backgroundTasks.set(task.id, task);
+    this.dispatch({
+      type: "agent_state",
+      agent,
+    });
+  }
+
+  removeBackgroundTask(agentId: string, taskId: string): void {
+    const agent = this.requireAgent(agentId);
+    if (agent.backgroundTasks.delete(taskId)) {
+      this.dispatch({
+        type: "agent_state",
+        agent,
+      });
+    }
+  }
+
+  private interceptBackgroundTaskFromToolCall(
+    agent: ActiveManagedAgent,
+    item: Extract<AgentTimelineItem, { type: "tool_call" }>,
+  ): void {
+    const toolName = item.name;
+    const input = item.input as Record<string, unknown> | null | undefined;
+
+    // Detect bg-bash MCP tools (mcp__bg_bash__background_bash, etc.)
+    if (toolName.includes("bg_bash") || toolName.includes("background_bash")) {
+      this.handleBgBashToolCall(agent, item, input);
+      return;
+    }
+
+    // Detect Claude native Bash with run_in_background: true
+    if (toolName === "Bash" && input && typeof input === "object") {
+      const runInBackground = (input as Record<string, unknown>).run_in_background;
+      if (runInBackground === true || runInBackground === "true") {
+        const command = typeof input.command === "string" ? input.command : null;
+        const task: BackgroundTaskDescriptorPayload = {
+          id: item.callId ?? `bg-${Date.now()}`,
+          agentId: agent.id,
+          toolName: "Bash",
+          command,
+          status: "running",
+          startedAt: new Date().toISOString(),
+          finishedAt: null,
+          exitCode: null,
+          outputPreview: null,
+        };
+        this.upsertBackgroundTask(agent.id, task);
+      }
+    }
+  }
+
+  private handleBgBashToolCall(
+    agent: ActiveManagedAgent,
+    item: Extract<AgentTimelineItem, { type: "tool_call" }>,
+    input: Record<string, unknown> | null | undefined,
+  ): void {
+    if (!input || typeof input !== "object") {
+      return;
+    }
+
+    const toolName = item.name;
+
+    // background_bash tool - start mode (has command) or re-invoke mode (has job_id)
+    if (toolName.includes("background_bash")) {
+      const jobId = typeof input.job_id === "string" ? input.job_id : null;
+      const command = typeof input.command === "string" ? input.command : null;
+
+      if (command && !jobId) {
+        // Start mode - create a new background task
+        const task: BackgroundTaskDescriptorPayload = {
+          id: `bg-bash-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          agentId: agent.id,
+          toolName: "background_bash",
+          command,
+          status: "running",
+          startedAt: new Date().toISOString(),
+          finishedAt: null,
+          exitCode: null,
+          outputPreview: null,
+        };
+        this.upsertBackgroundTask(agent.id, task);
+      } else if (jobId) {
+        // Re-invoke mode - check result in tool output
+        const existingTask = this.findBackgroundTaskByCommand(agent.id, null, jobId);
+        if (existingTask && item.output) {
+          this.updateBackgroundTaskFromOutput(agent.id, existingTask.id, item.output);
+        }
+      }
+    }
+
+    // bash_status tool - update task status
+    if (toolName.includes("bash_status") && typeof input.job_id === "string") {
+      const existingTask = agent.backgroundTasks.get(input.job_id);
+      if (existingTask && item.output != null) {
+        this.updateBackgroundTaskFromOutput(agent.id, existingTask.id, item.output);
+      }
+    }
+
+    // bash_cancel tool - mark task as cancelled
+    if (toolName.includes("bash_cancel") && typeof input.job_id === "string") {
+      const existingTask = agent.backgroundTasks.get(input.job_id);
+      if (existingTask && existingTask.status === "running") {
+        const updated: BackgroundTaskDescriptorPayload = {
+          ...existingTask,
+          status: "cancelled",
+          finishedAt: new Date().toISOString(),
+        };
+        this.upsertBackgroundTask(agent.id, updated);
+      }
+    }
+  }
+
+  private findBackgroundTaskByCommand(
+    agentId: string,
+    command: string | null,
+    jobId?: string,
+  ): BackgroundTaskDescriptorPayload | undefined {
+    const agent = this.agents.get(agentId);
+    if (!agent) return undefined;
+
+    for (const task of agent.backgroundTasks.values()) {
+      if (task.status !== "running") continue;
+      if (jobId && task.id.includes(jobId)) return task;
+      if (command && task.command === command) return task;
+    }
+    return undefined;
+  }
+
+  private updateBackgroundTaskFromOutput(agentId: string, taskId: string, output: unknown): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
+
+    const task = agent.backgroundTasks.get(taskId);
+    if (!task || task.status !== "running") return;
+
+    const outputText = typeof output === "string" ? output : JSON.stringify(output);
+
+    // Parse output for status information
+    let status: BackgroundTaskDescriptorPayload["status"] = task.status;
+    let exitCode: number | null = null;
+    let finishedAt: string | null = null;
+
+    if (outputText.includes('"status":') || outputText.includes("'status':")) {
+      // JSON-like output from bg-bash
+      if (outputText.includes('"completed"') || outputText.includes("'completed'")) {
+        status = "completed";
+        finishedAt = new Date().toISOString();
+      } else if (outputText.includes('"failed"') || outputText.includes("'failed'")) {
+        status = "failed";
+        finishedAt = new Date().toISOString();
+      } else if (outputText.includes('"cancelled"') || outputText.includes("'cancelled'")) {
+        status = "cancelled";
+        finishedAt = new Date().toISOString();
+      }
+    }
+
+    // Try to extract exit code
+    const exitCodeMatch = outputText.match(/"exit_code"\s*:\s*(\d+)/);
+    if (exitCodeMatch) {
+      exitCode = parseInt(exitCodeMatch[1], 10);
+    }
+
+    // Extract output preview (first 200 chars)
+    const outputPreview = outputText.slice(0, 200);
+
+    const updated: BackgroundTaskDescriptorPayload = {
+      ...task,
+      status,
+      exitCode,
+      finishedAt,
+      outputPreview,
+    };
+    this.upsertBackgroundTask(agentId, updated);
+  }
+
   createAgent(
     config: AgentSessionConfig,
     agentId: string | undefined,
@@ -1513,6 +1706,11 @@ export class AgentManager {
     } catch (error) {
       closeError = error;
     }
+    this.timelineStore.delete(agentId);
+    agent.backgroundTasks.clear();
+    for (const event of this.providerSubagents.deleteParent(agentId)) {
+      this.dispatch({ type: "provider_subagent", event });
+    }
 
     let persistError: unknown;
     try {
@@ -1695,6 +1893,7 @@ export class AgentManager {
         attention: { requiresAttention: false },
         internal: record.internal,
         labels: record.labels,
+        backgroundTasks: new Map(),
       },
     });
   }
@@ -3340,6 +3539,7 @@ export class AgentManager {
       attention: resolveInitialAttention(options?.attention),
       internal: config.internal ?? false,
       labels: options?.labels ?? {},
+      backgroundTasks: new Map(),
     } as ActiveManagedAgent;
   }
 
@@ -4056,6 +4256,11 @@ export class AgentManager {
       flags.shouldDispatchEvent = false;
       flags.shouldNotifyWaiters = false;
       return;
+    }
+
+    // Intercept bg-bash MCP tool calls for background task tracking
+    if (event.item.type === "tool_call") {
+      this.interceptBackgroundTaskFromToolCall(agent, event.item);
     }
 
     if (options?.fromHistory) {

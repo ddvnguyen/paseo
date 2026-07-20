@@ -2231,6 +2231,8 @@ export class Session {
         return this.handleProviderSubagentListRequest(msg);
       case "agent.provider_subagents.timeline.get.request":
         return this.handleProviderSubagentTimelineRequest(msg);
+      case "agent.background_tasks.list.request":
+        return this.handleBackgroundTaskListRequest(msg);
       case "agent.timeline.set_subscription.request": {
         const agentIds = [...new Set(msg.agentIds)].sort();
         if (
@@ -7140,6 +7142,32 @@ export class Session {
           requestId: msg.requestId,
           parentAgentId: msg.parentAgentId,
           subagents: [],
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  private async handleBackgroundTaskListRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.background_tasks.list.request" }>,
+  ): Promise<void> {
+    try {
+      this.emit({
+        type: "agent.background_tasks.list.response",
+        payload: {
+          requestId: msg.payload.requestId,
+          agentId: msg.payload.agentId,
+          tasks: this.agentManager.listBackgroundTasks(msg.payload.agentId),
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "agent.background_tasks.list.response",
+        payload: {
+          requestId: msg.payload.requestId,
+          agentId: msg.payload.agentId,
+          tasks: [],
           error: error instanceof Error ? error.message : String(error),
         },
       });

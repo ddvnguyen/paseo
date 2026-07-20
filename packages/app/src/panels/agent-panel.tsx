@@ -97,10 +97,19 @@ import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { openWorkspaceChanges } from "@/workspace-tabs/open-supporting-view";
 import { useSettings } from "@/hooks/use-settings";
 import type { Theme } from "@/styles/theme";
+import {
+  useHideFinishedProviderSubagents,
+  useArchiveSubagent,
+  useDetachSubagent,
+  useSubagentsForParent,
+} from "@/subagents";
+import { SubagentsTrack } from "@/subagents/track";
+import { BackgroundTasksTrack } from "@/background-tasks/track";
+import { useBackgroundTasksForAgent } from "@/background-tasks/select";
 import type { PendingPermission } from "@/types/shared";
 import type { StreamItem, TodoEntry } from "@/types/stream";
 import type { ViewedTimelineStatus, ViewedTimelineUiBridge } from "@/timeline/viewed-timeline-sync";
-import { useArchiveFinishedSubagents, useSubagentsForParent } from "@/subagents";
+import { useArchiveFinishedSubagents } from "@/subagents";
 import { getInitDeferred, getInitKey } from "@/utils/agent-initialization";
 import { derivePendingPermissionKey, normalizeAgentSnapshot } from "@/utils/agent-snapshots";
 import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-workspaces";
@@ -1706,8 +1715,24 @@ function ActiveAgentComposer({
     [insets.bottom],
   );
 
+  const composerFooter = useMemo(
+    () =>
+      isCompactComposerLayout ? (
+        <AgentModeControl
+          serverId={serverId}
+          agentId={agentId}
+          placement="footer"
+          isCompactLayout={isCompactComposerLayout}
+        />
+      ) : undefined,
+    [isCompactComposerLayout, serverId, agentId],
+  );
+
+  const backgroundTasks = useBackgroundTasksForAgent(serverId, agentId);
+
   return (
     <View style={inputAreaStyle} onLayout={onInputAreaLayout}>
+      <BackgroundTasksTrack tasks={backgroundTasks} />
       <Composer
         agentId={agentId}
         serverId={serverId}

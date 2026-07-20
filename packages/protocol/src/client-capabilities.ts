@@ -28,6 +28,9 @@ export const CLIENT_CAPS = {
   // reconstructed timeline replay after 2027-02-21 once the client floor supports invalidation.
   timelineReplacementInvalidation: "timeline_replacement_invalidation",
   browserHost: "browser_host",
+  // COMPAT(backgroundTasks): added in v0.1.110. The daemon tracks and emits
+  // background bash task state for agents. Drop the gate when floor >= v0.1.110.
+  backgroundTasks: "background_tasks",
 } as const;
 
 export type ClientCapability = (typeof CLIENT_CAPS)[keyof typeof CLIENT_CAPS];

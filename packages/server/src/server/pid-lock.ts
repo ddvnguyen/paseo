@@ -160,7 +160,10 @@ async function writeNewPidLock(pidPath: string, lockInfo: PidLockInfo): Promise<
         raceLock,
       );
     }
-    throw new PidLockError("Failed to acquire PID lock due to race condition");
+    // File exists but is empty or invalid (e.g., from a crashed process) — treat as stale and retry.
+    await unlink(pidPath).catch(() => {});
+    await writeNewPidLock(pidPath, lockInfo);
+    return;
   } finally {
     await fd?.close();
   }
@@ -181,13 +184,16 @@ export async function acquirePidLock(
   // Try to read existing lock
   const existingLock = await readPidLock(pidPath);
 
-  // Check if existing lock is stale
+  // Check if existing lock is stale or invalid (empty/corrupted file)
   const lockOwnerPid = resolveOwnerPid(options?.ownerPid);
   if (existingLock) {
     const result = await clearExistingPidLock(pidPath, existingLock, lockOwnerPid, options);
     if (result === "already_owned") {
       return;
     }
+  } else if (existsSync(pidPath)) {
+    // File exists but is invalid — remove stale lock file
+    await unlink(pidPath).catch(() => {});
   }
 
   // Create new lock with exclusive flag
