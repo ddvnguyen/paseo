@@ -81,6 +81,8 @@ import {
   useSubagentsForParent,
 } from "@/subagents";
 import { SubagentsTrack } from "@/subagents/track";
+import { BackgroundTasksTrack } from "@/background-tasks/track";
+import { useBackgroundTasksForAgent } from "@/background-tasks/select";
 import type { PendingPermission } from "@/types/shared";
 import type { StreamItem } from "@/types/stream";
 import { getInitDeferred, getInitKey } from "@/utils/agent-initialization";
@@ -1528,8 +1530,24 @@ function ActiveAgentComposer({
     [insets.bottom, composerKeyboardStyle],
   );
 
+  const composerFooter = useMemo(
+    () =>
+      isCompactComposerLayout ? (
+        <AgentModeControl
+          serverId={serverId}
+          agentId={agentId}
+          placement="footer"
+          isCompactLayout={isCompactComposerLayout}
+        />
+      ) : undefined,
+    [isCompactComposerLayout, serverId, agentId],
+  );
+
+  const backgroundTasks = useBackgroundTasksForAgent(serverId, agentId);
+
   return (
     <ReanimatedAnimated.View style={inputAreaStyle} onLayout={onInputAreaLayout}>
+      <BackgroundTasksTrack tasks={backgroundTasks} />
       <SubagentsTrack
         rows={subagentRows}
         onOpenSubagent={handleOpenSubagent}

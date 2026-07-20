@@ -19,6 +19,7 @@ import { validateWSOutboundMessage } from "@getpaseo/protocol/validation/ws-outb
 import type {
   AgentStreamEventPayload,
   AgentSnapshotPayload,
+  BackgroundTaskDescriptorPayload,
   ProjectPlacementPayload,
   AgentPermissionResolvedMessage,
   CreateAgentRequestMessage,
@@ -2703,6 +2704,37 @@ export class DaemonClient {
       options: { skipQueue: true },
       select: (response) =>
         response.type === "agent.provider_subagents.list.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (payload.error) {
+      throw new Error(payload.error);
+    }
+    return payload;
+  }
+
+  async listBackgroundTasks(
+    agentId: string,
+    options: { requestId?: string; timeout?: number } = {},
+  ): Promise<{
+    requestId: string;
+    agentId: string;
+    tasks: BackgroundTaskDescriptorPayload[];
+    error: string | null;
+  }> {
+    const requestId = this.createRequestId(options.requestId);
+    const message = SessionInboundMessageSchema.parse({
+      type: "agent.background_tasks.list.request",
+      payload: { agentId, requestId },
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      timeout: options.timeout,
+      options: { skipQueue: true },
+      select: (response) =>
+        response.type === "agent.background_tasks.list.response" &&
         response.payload.requestId === requestId
           ? response.payload
           : null,
