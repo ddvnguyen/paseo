@@ -15,6 +15,7 @@ import React, {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet as RNStyleSheet, Text, View } from "react-native";
+import ReanimatedAnimated from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import invariant from "tiny-invariant";
@@ -104,8 +105,9 @@ import {
   useSubagentsForParent,
 } from "@/subagents";
 import { SubagentsTrack } from "@/subagents/track";
-import { BackgroundTasksTrack } from "@/background-tasks/track";
+import { BackgroundTasksIconButton } from "@/background-tasks/icon-button";
 import { useBackgroundTasksForAgent } from "@/background-tasks/select";
+import { BackgroundTasksTrack } from "@/background-tasks/track";
 import type { PendingPermission } from "@/types/shared";
 import type { StreamItem, TodoEntry } from "@/types/stream";
 import type { ViewedTimelineStatus, ViewedTimelineUiBridge } from "@/timeline/viewed-timeline-sync";
@@ -116,6 +118,7 @@ import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-w
 import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { buildDraftAgentSetup, type ClientSlashCommand } from "@/client-slash-commands";
+import { navigateToAgent } from "@/utils/navigate-to-agent";
 
 interface ChatAgentStateShape {
   serverId: string | null;
@@ -1643,7 +1646,7 @@ function ActiveAgentComposer({
   );
   const paneContext = usePaneContext();
   const openInSidePane = useSettings((settings) => settings.openInSidePane);
-  const { workspaceId, tabId, retargetCurrentTab } = paneContext;
+  const { workspaceId, tabId, retargetCurrentTab, openTab } = paneContext;
   const { archiveAgent } = useArchiveAgent();
   const closeWorkspaceTab = useWorkspaceLayoutStore((state) => state.closeTab);
   const hideWorkspaceAgent = useWorkspaceLayoutStore((state) => state.hideAgent);
@@ -1730,9 +1733,50 @@ function ActiveAgentComposer({
 
   const backgroundTasks = useBackgroundTasksForAgent(serverId, agentId);
 
+  const backgroundTasksIcon = useMemo(
+    () => <BackgroundTasksIconButton tasks={backgroundTasks} />,
+    [backgroundTasks],
+  );
+
+  const subagentRows = useSubagentsForParent({ serverId, parentAgentId: agentId });
+  const canDetachSubagents = useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.agentDetach === true,
+  );
+  const archiveSubagent = useArchiveSubagent({ serverId });
+  const detachSubagent = useDetachSubagent({ serverId });
+  const hideFinishedProviderSubagents = useHideFinishedProviderSubagents();
+
+  const handleOpenSubagent = useCallback(
+    (subagentId: string) => {
+      const session = useSessionStore.getState().sessions[serverId];
+      const agent = session?.agents.get(subagentId) ?? session?.agentDetails.get(subagentId);
+      if (agent?.workspaceId && agent.workspaceId !== workspaceId) {
+        navigateToAgent({ serverId, agentId: subagentId });
+        return;
+      }
+      navigateToAgent({ serverId, agentId: subagentId });
+    },
+    [serverId, workspaceId],
+  );
+
+  const handleOpenProviderSubagent = useCallback(
+    (parentAgentId: string, subagentId: string) => {
+      openTab({ kind: "provider_subagent", parentAgentId, subagentId });
+    },
+    [openTab],
+  );
+
   return (
-    <View style={inputAreaStyle} onLayout={onInputAreaLayout}>
+    <ReanimatedAnimated.View style={inputAreaStyle} onLayout={onInputAreaLayout}>
       <BackgroundTasksTrack tasks={backgroundTasks} />
+      <SubagentsTrack
+        rows={subagentRows}
+        onOpenSubagent={handleOpenSubagent}
+        onOpenProviderSubagent={handleOpenProviderSubagent}
+        onArchiveSubagent={handleArchiveSubagent}
+        onArchiveFinished={handleHideFinishedProviderSubagents}
+        onDetachSubagent={canDetachSubagents ? handleDetachSubagent : undefined}
+      />
       <Composer
         agentId={agentId}
         serverId={serverId}
@@ -1758,8 +1802,9 @@ function ActiveAgentComposer({
         onMessageSent={onMessageSent}
         onClientSlashCommand={handleClientSlashCommand}
         isCompactLayout={isCompactComposerLayout}
+        toolbarExtraContent={backgroundTasksIcon}
       />
-    </View>
+    </ReanimatedAnimated.View>
   );
 }
 

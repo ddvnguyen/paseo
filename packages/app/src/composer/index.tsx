@@ -294,9 +294,27 @@ function renderContextWindowMeter(
 
 function resolveContextWindowPlacement(
   meter: ReactElement | null,
-  reserveSlot: boolean,
-): ReactNode {
-  return reserveSlot ? <View style={styles.contextWindowMeterSlot}>{meter}</View> : null;
+  isMobile: boolean,
+  extraContent?: ReactNode,
+): { beforeVoiceContent: ReactNode; footerInlineContent: ReactNode } {
+  if (isMobile) {
+    return {
+      beforeVoiceContent: extraContent ? (
+        <View style={styles.toolbarExtraSlot}>{extraContent}</View>
+      ) : null,
+      footerInlineContent: meter,
+    };
+  }
+  const slot = (
+    <View style={styles.toolbarExtraSlot}>
+      {extraContent ? <View style={styles.toolbarExtraItem}>{extraContent}</View> : null}
+      {meter ? <View style={styles.contextWindowMeterSlot}>{meter}</View> : null}
+    </View>
+  );
+  return {
+    beforeVoiceContent: meter || extraContent ? slot : null,
+    footerInlineContent: null,
+  };
 }
 
 interface RenderLeftContentArgs {
@@ -973,6 +991,8 @@ interface ComposerProps {
   submitLabel?: string;
   /** Overrides the mode's default placeholder, for text only the caller can build. */
   placeholder?: string;
+  /** Extra content rendered in the toolbar area next to the context window meter. */
+  toolbarExtraContent?: ReactNode;
 }
 
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
@@ -1178,6 +1198,7 @@ function ComposerContentImpl({
   readOnly = false,
   submitLabel,
   placeholder,
+  toolbarExtraContent,
 }: ComposerContentProps) {
   const mode = resolveComposerInputMode(inputMode);
   const { t } = useTranslation();
@@ -1974,9 +1995,9 @@ function ComposerContentImpl({
       contextWindowMeterGlyphSize,
     ],
   );
-  const beforeVoiceContent = useMemo(
-    () => resolveContextWindowPlacement(contextWindowMeter, hasAgent),
-    [contextWindowMeter, hasAgent],
+  const { beforeVoiceContent, footerInlineContent } = useMemo(
+    () => resolveContextWindowPlacement(contextWindowMeter, isCompactLayout, toolbarExtraContent),
+    [contextWindowMeter, isCompactLayout, toolbarExtraContent],
   );
 
   const hasGithubAttachment = useMemo(
@@ -2418,6 +2439,17 @@ const styles = StyleSheet.create((theme: Theme) => ({
     width: 28,
     height: 28,
     flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  toolbarExtraSlot: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+  },
+  toolbarExtraItem: {
+    width: 28,
+    height: 28,
     alignItems: "center",
     justifyContent: "center",
   },
