@@ -46,6 +46,9 @@ export function BackgroundTasksTrack({ tasks }: BackgroundTasksTrackProps): Reac
   const headerLabel = useMemo(() => {
     const running = tasks.filter((t) => t.status === "running").length;
     const total = tasks.length;
+    if (total === 0) {
+      return "No background tasks";
+    }
     const parts = [`${total} ${total === 1 ? "background task" : "background tasks"}`];
     if (running > 0) {
       parts.push(`${running} running`);
@@ -62,10 +65,6 @@ export function BackgroundTasksTrack({ tasks }: BackgroundTasksTrackProps): Reac
     () => [styles.header, expanded ? styles.headerDivider : styles.headerCollapsed],
     [expanded],
   );
-
-  if (tasks.length === 0) {
-    return null;
-  }
 
   return (
     <View style={styles.outer} testID="background-tasks-track">
@@ -89,7 +88,7 @@ export function BackgroundTasksTrack({ tasks }: BackgroundTasksTrackProps): Reac
               </Text>
             </Pressable>
           </View>
-          {expanded ? (
+          {expanded && tasks.length > 0 ? (
             <ScrollView
               style={styles.scroll}
               contentContainerStyle={styles.scrollContent}
