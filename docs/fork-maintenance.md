@@ -180,6 +180,129 @@ git commit -m "chore: sync workspace versions with git hash suffix"
 - `0.1.109-hydra-h-ae5fc2d23`
 - `0.2.0-hydra-h-b66dadb99`
 
+## Deployment
+
+After rebasing and syncing versions, deploy the updated paseo to the systemd service.
+
+### Prerequisites
+
+- Paseo systemd service installed and enabled
+- Access to the paseo repository directory
+- npm and node available in PATH
+
+### Deployment Steps
+
+#### Option 1: Automated Deployment (Recommended)
+
+Use the deployment script for a complete deployment:
+
+```bash
+# Run the deployment script
+./scripts/deploy-production.sh
+```
+
+This script will:
+1. Pull latest from origin/hydra-paseo
+2. Install dependencies
+3. Build server and web app
+4. Copy web UI dist to server location
+5. Restart systemd service
+6. Verify health
+
+#### Option 2: Manual Deployment
+
+If you need more control, follow these steps:
+
+```bash
+# 1. Navigate to paseo directory
+cd external/paseo
+
+# 2. Install dependencies
+npm install --prefer-offline
+
+# 3. Build server and CLI
+npm run build --workspace=@getpaseo/highlight
+npm run build --workspace=@getpaseo/relay
+npm run build --workspace=@getpaseo/protocol
+npm run build --workspace=@getpaseo/client
+npm run build --workspace=@getpaseo/server
+npm run build --workspace=@getpaseo/cli
+
+# 4. Install paseo CLI globally
+npm install -g ./packages/cli
+
+# 5. Restart systemd service
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+systemctl --user restart paseo
+
+# 6. Verify deployment
+sleep 3
+curl -sf http://127.0.0.1:6767/api/health
+paseo --version
+```
+
+### Systemd Service Configuration
+
+The paseo service is configured as a user systemd service:
+
+**Location:** `~/.config/systemd/user/paseo.service`
+
+**Key Configuration:**
+- Listens on `0.0.0.0:6767`
+- Web UI enabled
+- Relay enabled with TLS
+- Auto-restart on failure
+
+**Service Management Commands:**
+
+```bash
+# Check service status
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+systemctl --user status paseo
+
+# Restart service
+systemctl --user restart paseo
+
+# Stop service
+systemctl --user stop paseo
+
+# View logs
+journalctl --user -u paseo -f
+
+# View recent logs
+journalctl --user -u paseo --since "10 minutes ago"
+```
+
+### Verification
+
+After deployment, verify:
+
+1. **Health endpoint:** `curl -sf http://127.0.0.1:6767/api/health`
+   - Should return: `{"status":"ok","timestamp":"..."}`
+
+2. **Version check:** `paseo --version`
+   - Should show: `0.2.0-beta.1-hydra-h-{commit-hash}`
+
+3. **Service status:** `systemctl --user status paseo`
+   - Should show: `Active: active (running)`
+
+### Troubleshooting Deployment
+
+**Service won't start:**
+- Check logs: `journalctl --user -u paseo --since "5 minutes ago"`
+- Verify node is in PATH: `which node`
+- Check port availability: `ss -tlnp | grep 6767`
+
+**Health endpoint fails:**
+- Wait a few seconds for service to fully start
+- Check if service is running: `systemctl --user status paseo`
+- Check logs for errors
+
+**Web UI returns 404:**
+- Build web app: `cd packages/app && npm run build:web`
+- Copy dist: `cp -r packages/app/dist packages/server/dist/server/web-ui/`
+- Restart service
+
 ## Troubleshooting
 
 ### Version not updating
