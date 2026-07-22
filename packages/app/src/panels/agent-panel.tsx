@@ -81,7 +81,7 @@ import {
   useSubagentsForParent,
 } from "@/subagents";
 import { SubagentsTrack } from "@/subagents/track";
-import { BackgroundTasksTrack } from "@/background-tasks/track";
+import { BackgroundTasksIconButton } from "@/background-tasks/icon-button";
 import { useBackgroundTasksForAgent } from "@/background-tasks/select";
 import type { PendingPermission } from "@/types/shared";
 import type { StreamItem } from "@/types/stream";
@@ -1545,9 +1545,13 @@ function ActiveAgentComposer({
 
   const backgroundTasks = useBackgroundTasksForAgent(serverId, agentId);
 
+  const backgroundTasksIcon = useMemo(
+    () => <BackgroundTasksIconButton tasks={backgroundTasks} />,
+    [backgroundTasks],
+  );
+
   return (
     <ReanimatedAnimated.View style={inputAreaStyle} onLayout={onInputAreaLayout}>
-      <BackgroundTasksTrack tasks={backgroundTasks} />
       <SubagentsTrack
         rows={subagentRows}
         onOpenSubagent={handleOpenSubagent}
@@ -1579,6 +1583,7 @@ function ActiveAgentComposer({
         onMessageSent={onMessageSent}
         onClientSlashCommand={handleClientSlashCommand}
         isCompactLayout={isCompactComposerLayout}
+        toolbarExtraContent={backgroundTasksIcon}
       />
     </ReanimatedAnimated.View>
   );
