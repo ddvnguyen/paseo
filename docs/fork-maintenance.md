@@ -23,11 +23,11 @@ All workspace packages in this fork include a git commit hash suffix in their ve
 
 Each component reads its version from its own `package.json`:
 
-| Component | File | Function |
-|-----------|------|----------|
-| CLI | `packages/cli/src/version.ts` | `resolveCliVersion()` |
-| Web App | `packages/app/src/utils/app-version.ts` | `resolveAppVersion()` |
-| Daemon | `packages/server/src/server/daemon-version.ts` | `resolveDaemonVersion()` |
+| Component | File                                           | Function                 |
+| --------- | ---------------------------------------------- | ------------------------ |
+| CLI       | `packages/cli/src/version.ts`                  | `resolveCliVersion()`    |
+| Web App   | `packages/app/src/utils/app-version.ts`        | `resolveAppVersion()`    |
+| Daemon    | `packages/server/src/server/daemon-version.ts` | `resolveDaemonVersion()` |
 
 ## Rebase Workflow
 
@@ -76,6 +76,7 @@ grep '"version"' package.json packages/cli/package.json packages/server/package.
 When resolving version conflicts in `package.json` files:
 
 **Before (conflict):**
+
 ```json
 {
   "name": "@getpaseo/cli",
@@ -87,6 +88,7 @@ When resolving version conflicts in `package.json` files:
 ```
 
 **After (resolved):**
+
 ```json
 {
   "name": "@getpaseo/cli",
@@ -94,6 +96,7 @@ When resolving version conflicts in `package.json` files:
 ```
 
 For internal dependencies, update them to match:
+
 ```json
 "dependencies": {
   "@getpaseo/client": "0.1.109-hydra",
@@ -164,11 +167,11 @@ git commit -m "chore: sync workspace versions with git hash suffix"
 
 ### Components
 
-| Part | Example | Description |
-|------|---------|-------------|
-| Base version | `0.1.109` | Upstream semver |
-| Fork suffix | `-hydra` | Fork identifier |
-| Hash suffix | `-h-ae5fc2d23` | Git commit short hash |
+| Part         | Example        | Description           |
+| ------------ | -------------- | --------------------- |
+| Base version | `0.1.109`      | Upstream semver       |
+| Fork suffix  | `-hydra`       | Fork identifier       |
+| Hash suffix  | `-h-ae5fc2d23` | Git commit short hash |
 
 ### Full Format
 
@@ -177,6 +180,7 @@ git commit -m "chore: sync workspace versions with git hash suffix"
 ```
 
 **Examples:**
+
 - `0.1.109-hydra-h-ae5fc2d23`
 - `0.2.0-hydra-h-b66dadb99`
 
@@ -202,6 +206,7 @@ Use the deployment script for a complete deployment:
 ```
 
 This script will:
+
 1. Pull latest from origin/hydra-paseo
 2. Install dependencies
 3. Build server and web app
@@ -248,6 +253,7 @@ The paseo service is configured as a user systemd service:
 **Location:** `~/.config/systemd/user/paseo.service`
 
 **Key Configuration:**
+
 - Listens on `0.0.0.0:6767`
 - Web UI enabled
 - Relay enabled with TLS
@@ -289,16 +295,19 @@ After deployment, verify:
 ### Troubleshooting Deployment
 
 **Service won't start:**
+
 - Check logs: `journalctl --user -u paseo --since "5 minutes ago"`
 - Verify node is in PATH: `which node`
 - Check port availability: `ss -tlnp | grep 6767`
 
 **Health endpoint fails:**
+
 - Wait a few seconds for service to fully start
 - Check if service is running: `systemctl --user status paseo`
 - Check logs for errors
 
 **Web UI returns 404:**
+
 - Build web app: `cd packages/app && npm run build:web`
 - Copy dist: `cp -r packages/app/dist packages/server/dist/server/web-ui/`
 - Restart service

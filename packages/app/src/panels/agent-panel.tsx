@@ -1530,19 +1530,6 @@ function ActiveAgentComposer({
     [insets.bottom, composerKeyboardStyle],
   );
 
-  const composerFooter = useMemo(
-    () =>
-      isCompactComposerLayout ? (
-        <AgentModeControl
-          serverId={serverId}
-          agentId={agentId}
-          placement="footer"
-          isCompactLayout={isCompactComposerLayout}
-        />
-      ) : undefined,
-    [isCompactComposerLayout, serverId, agentId],
-  );
-
   const backgroundTasks = useBackgroundTasksForAgent(serverId, agentId);
 
   const backgroundTasksIcon = useMemo(

@@ -1,5 +1,6 @@
 {
   "name": "@getpaseo/client",
+  "version": "0.2.0-beta.4-hydra-01b888d06",
   "description": "Paseo client SDK package",
   "files": [
     "dist",
@@ -34,14 +35,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@getpaseo/protocol": "0.2.0-beta.4-hydra-01ab14e01",
-    "@getpaseo/relay": "0.2.0-beta.4-hydra-01ab14e01",
+    "@getpaseo/protocol": "0.2.0-beta.4-hydra-01b888d06",
+    "@getpaseo/relay": "0.2.0-beta.4-hydra-01b888d06",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^20.9.0",
     "typescript": "^5.2.2",
     "vitest": "^4.1.6"
-  },
-  "version": "0.2.0-beta.4-hydra-01ab14e01"
+  }
 }

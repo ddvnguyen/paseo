@@ -52,10 +52,7 @@ function wrapInputSchemaWithPreprocessing(inputSchema: unknown): z.ZodType {
     return z.preprocess(preprocessMcpToolArgs, inputSchema as z.ZodType);
   }
   // Raw shape — wrap with preprocess then passthrough
-  return z.preprocess(
-    preprocessMcpToolArgs,
-    z.object(inputSchema as z.ZodRawShape).passthrough(),
-  );
+  return z.preprocess(preprocessMcpToolArgs, z.object(inputSchema as z.ZodRawShape).passthrough());
 }
 
 export type AgentMcpServerOptions = PaseoToolHostDependencies;

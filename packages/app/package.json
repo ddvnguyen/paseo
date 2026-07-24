@@ -1,5 +1,6 @@
 {
   "name": "@getpaseo/app",
+  "version": "0.2.0-beta.4-hydra-01b888d06",
   "private": true,
   "main": "index.ts",
   "scripts": {
@@ -142,6 +143,5 @@
     "vitest": "^4.1.6",
     "wrangler": "^4.105.0",
     "ws": "^8.20.0"
-  },
-  "version": "0.2.0-beta.4-hydra-01ab14e01"
+  }
 }
