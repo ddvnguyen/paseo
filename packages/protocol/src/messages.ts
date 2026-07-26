@@ -2484,7 +2484,6 @@ export const BackgroundTaskUpdateMessageSchema = z.object({
     }),
   ]),
 });
->>>>>>> 01ab14e01 (feat: add background task tracking and UI)
 
 export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   BackgroundTaskListRequestMessageSchema,
