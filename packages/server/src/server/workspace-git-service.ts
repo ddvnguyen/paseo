@@ -57,7 +57,27 @@ export const WORKSPACE_GIT_SELF_HEAL_INTERVAL_MS = 60_000;
 const FORGE_PR_STATUS_POLL_FAST_INTERVAL_MS = 20_000;
 const FORGE_PR_STATUS_POLL_SLOW_INTERVAL_MS = 120_000;
 const FORGE_PR_STATUS_POLL_ERROR_BACKOFF_CAP_MS = 300_000;
-const DEGRADED_GIT_POLL_INTERVAL_MS = 5_000;
+const DEGRADED_GIT_POLL_INTERVAL_MS = 30_000;
+// @parcel/watcher's inotify backend treats a transient EINTR on poll() as fatal
+// and kills the subscription (the startup git-refresh storm interrupts poll with
+// SIGCHLD). Rather than permanently degrading such watchers to polling — which at
+// scale storms the git pool and wedges the event loop — re-subscribe with backoff.
+// EINTR is transient, so a retry after the startup storm settles re-establishes
+// the watcher. Only fall back to bounded polling after repeated failures.
+const WORKING_TREE_WATCH_MAX_RETRIES = 4;
+const WORKING_TREE_WATCH_RETRY_BASE_DELAY_MS = 2_000;
+const WORKING_TREE_WATCH_RETRY_MAX_DELAY_MS = 30_000;
+// A re-established watcher counts as recovered only after it has stayed
+// error-free for this long. EINTR errors are delivered asynchronously after
+// subscribe() resolves, so resetting the retry count on every successful
+// subscribe would never accumulate and would re-subscribe forever (each
+// re-subscribe walks the directory tree synchronously — a wedge source).
+const WORKING_TREE_WATCH_STABLE_MS = 60_000;
+// Repository metadata watchers are few (one per repo), so a transient EINTR there
+// never storms the pool; still, re-subscribe with backoff for consistency.
+const REPO_METADATA_WATCH_MAX_RETRIES = 4;
+const REPO_METADATA_WATCH_RETRY_BASE_DELAY_MS = 2_000;
+const REPO_METADATA_WATCH_RETRY_MAX_DELAY_MS = 30_000;
 // Auxiliary reads may reuse cached values within this window; snapshots do not expire on read.
 const WORKSPACE_GIT_AUXILIARY_READ_TTL_MS = 15_000;
 // Non-forced refresh triggers share this minimum gap to absorb watcher/self-heal bursts; force bypasses it.
@@ -374,6 +394,9 @@ interface RepoGitTarget {
   fallbackPollTimer: NodeJS.Timeout | null;
   intervalId: NodeJS.Timeout | null;
   fetchInFlight: boolean;
+  watchRetryTimer: NodeJS.Timeout | null;
+  watchRetryCount: number;
+  watchStableTimer: NodeJS.Timeout | null;
   closed: boolean;
 }
 
@@ -391,6 +414,9 @@ interface WorkingTreeWatchTarget {
   aliases: Set<string>;
   workspaceKeys: Set<string>;
   fallbackPollTimer: NodeJS.Timeout | null;
+  watchRetryTimer: NodeJS.Timeout | null;
+  watchRetryCount: number;
+  watchStableTimer: NodeJS.Timeout | null;
   listeners: Set<() => void>;
   closed: boolean;
 }
@@ -1154,6 +1180,9 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       aliases: new Set([cwd]),
       workspaceKeys: new Set(),
       fallbackPollTimer: null,
+      watchRetryTimer: null,
+      watchRetryCount: 0,
+      watchStableTimer: null,
       listeners: new Set(),
       closed: false,
     };
@@ -1178,9 +1207,9 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
           if (error) {
             this.logger.warn(
               { err: error, cwd: target.cwd },
-              "Working tree watcher error; using degraded polling",
+              "Working tree watcher error; scheduling re-subscribe",
             );
-            this.degradeWorkingTreeWatch(target, "watcher_error");
+            this.degradeOrRetryWorkingTreeWatch(target, "watcher_error");
             return;
           }
           if (!this.hasRelevantWorkingTreeEvent(target, events)) {
@@ -1194,14 +1223,75 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         await subscription.unsubscribe();
       } else {
         target.subscription = subscription;
+        // EINTR errors are delivered asynchronously after subscribe() resolves,
+        // so a fresh subscription does NOT prove recovery. Only reset the retry
+        // budget once the watcher has stayed error-free for a stability window;
+        // otherwise a permanently-erroring watcher re-subscribes forever, and
+        // each re-subscribe walks the tree synchronously (event-loop wedge).
+        if (target.watchRetryCount > 0 && !target.watchStableTimer) {
+          target.watchStableTimer = setTimeout(() => {
+            target.watchStableTimer = null;
+            target.watchRetryCount = 0;
+          }, WORKING_TREE_WATCH_STABLE_MS);
+        }
       }
     } catch (error) {
       this.logger.warn(
         { err: error, cwd: target.cwd },
-        "Failed to start working tree watcher; using degraded polling",
+        "Failed to start working tree watcher; scheduling re-subscribe",
       );
-      this.startWorkingTreeWatchFallback(target, "watcher_setup_failed");
+      this.degradeOrRetryWorkingTreeWatch(target, "watcher_setup_failed");
     }
+  }
+
+  private scheduleWorkingTreeWatchRetry(target: WorkingTreeWatchTarget): void {
+    if (target.closed || target.watchRetryTimer || target.fallbackPollTimer) {
+      return;
+    }
+    // The errored subscription is dead; drop it so the retry's fresh
+    // subscription is adopted instead of being discarded as a duplicate.
+    if (target.subscription) {
+      const subscription = target.subscription;
+      target.subscription = null;
+      void subscription.unsubscribe().catch((error) => {
+        this.logger.warn({ err: error, cwd: target.cwd }, "Failed to stop working tree watcher");
+      });
+    }
+    const delayMs = Math.min(
+      WORKING_TREE_WATCH_RETRY_BASE_DELAY_MS * 2 ** target.watchRetryCount,
+      WORKING_TREE_WATCH_RETRY_MAX_DELAY_MS,
+    );
+    target.watchRetryCount += 1;
+    target.watchRetryTimer = setTimeout(() => {
+      target.watchRetryTimer = null;
+      void this.startWorkingTreeSubscription(target).catch((error) => {
+        this.logger.warn(
+          { err: error, cwd: target.cwd },
+          "Working tree watcher re-subscribe failed",
+        );
+      });
+    }, delayMs);
+  }
+
+  private degradeOrRetryWorkingTreeWatch(
+    target: WorkingTreeWatchTarget,
+    reason: "watcher_error" | "watcher_setup_failed",
+  ): void {
+    // A fresh error breaks any stability window: it must count against the
+    // retry budget or persistent failures would re-subscribe forever.
+    if (target.watchStableTimer) {
+      clearTimeout(target.watchStableTimer);
+      target.watchStableTimer = null;
+    }
+    if (target.watchRetryCount >= WORKING_TREE_WATCH_MAX_RETRIES) {
+      this.logger.warn(
+        { cwd: target.cwd, retries: target.watchRetryCount },
+        "Working tree watcher retries exhausted; using degraded polling",
+      );
+      this.degradeWorkingTreeWatch(target, reason);
+      return;
+    }
+    this.scheduleWorkingTreeWatchRetry(target);
   }
 
   private startWorkingTreeWatchFallback(
@@ -1254,7 +1344,18 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     );
   }
 
-  private degradeWorkingTreeWatch(target: WorkingTreeWatchTarget, reason: "watcher_error"): void {
+  private degradeWorkingTreeWatch(
+    target: WorkingTreeWatchTarget,
+    reason: "watcher_error" | "watcher_setup_failed",
+  ): void {
+    if (target.watchRetryTimer) {
+      clearTimeout(target.watchRetryTimer);
+      target.watchRetryTimer = null;
+    }
+    if (target.watchStableTimer) {
+      clearTimeout(target.watchStableTimer);
+      target.watchStableTimer = null;
+    }
     if (target.subscription) {
       const subscription = target.subscription;
       target.subscription = null;
@@ -1455,6 +1556,9 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       fallbackPollTimer: null,
       intervalId: null,
       fetchInFlight: false,
+      watchRetryTimer: null,
+      watchRetryCount: 0,
+      watchStableTimer: null,
       closed: false,
     };
     this.repoTargets.set(repoGitRoot, repoTarget);
@@ -1502,9 +1606,9 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
           if (error) {
             this.logger.warn(
               { err: error, repoGitRoot: target.repoGitRoot },
-              "Repository metadata watcher error; using degraded polling",
+              "Repository metadata watcher error; scheduling re-subscribe",
             );
-            this.degradeRepoMetadataWatch(target);
+            this.degradeOrRetryRepoMetadataWatch(target);
             return;
           }
           const relevantEvents = events.filter(
@@ -1531,17 +1635,67 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
         await subscription.unsubscribe();
       } else {
         target.subscription = subscription;
+        if (target.watchRetryCount > 0 && !target.watchStableTimer) {
+          target.watchStableTimer = setTimeout(() => {
+            target.watchStableTimer = null;
+            target.watchRetryCount = 0;
+          }, WORKING_TREE_WATCH_STABLE_MS);
+        }
       }
     } catch (error) {
       this.logger.warn(
         { err: error, repoGitRoot: target.repoGitRoot },
-        "Failed to start repository metadata watcher; using degraded polling",
+        "Failed to start repository metadata watcher; scheduling re-subscribe",
       );
-      this.startRepoMetadataFallback(target);
+      this.degradeOrRetryRepoMetadataWatch(target);
     }
   }
 
+  private scheduleRepoMetadataWatchRetry(target: RepoGitTarget): void {
+    if (target.closed || target.watchRetryTimer || target.fallbackPollTimer) {
+      return;
+    }
+    const delayMs = Math.min(
+      REPO_METADATA_WATCH_RETRY_BASE_DELAY_MS * 2 ** target.watchRetryCount,
+      REPO_METADATA_WATCH_RETRY_MAX_DELAY_MS,
+    );
+    target.watchRetryCount += 1;
+    target.watchRetryTimer = setTimeout(() => {
+      target.watchRetryTimer = null;
+      void this.startRepoMetadataObservation(target).catch((error) => {
+        this.logger.warn(
+          { err: error, repoGitRoot: target.repoGitRoot },
+          "Repository metadata watcher re-subscribe failed",
+        );
+      });
+    }, delayMs);
+  }
+
+  private degradeOrRetryRepoMetadataWatch(target: RepoGitTarget): void {
+    if (target.watchStableTimer) {
+      clearTimeout(target.watchStableTimer);
+      target.watchStableTimer = null;
+    }
+    if (target.watchRetryCount >= REPO_METADATA_WATCH_MAX_RETRIES) {
+      this.logger.warn(
+        { repoGitRoot: target.repoGitRoot, retries: target.watchRetryCount },
+        "Repository metadata watcher retries exhausted; using degraded polling",
+      );
+      this.degradeRepoMetadataWatch(target);
+      return;
+    }
+    this.scheduleRepoMetadataWatchRetry(target);
+  }
+
   private degradeRepoMetadataWatch(target: RepoGitTarget): void {
+    if (target.watchRetryTimer) {
+      clearTimeout(target.watchRetryTimer);
+      target.watchRetryTimer = null;
+    }
+    if (target.watchStableTimer) {
+      clearTimeout(target.watchStableTimer);
+      target.watchStableTimer = null;
+    }
     if (target.subscription) {
       const subscription = target.subscription;
       target.subscription = null;
@@ -2647,6 +2801,14 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       clearTimeout(target.fallbackPollTimer);
       target.fallbackPollTimer = null;
     }
+    if (target.watchRetryTimer) {
+      clearTimeout(target.watchRetryTimer);
+      target.watchRetryTimer = null;
+    }
+    if (target.watchStableTimer) {
+      clearTimeout(target.watchStableTimer);
+      target.watchStableTimer = null;
+    }
 
     if (target.subscription) {
       const subscription = target.subscription;
@@ -2668,6 +2830,14 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     if (target.fallbackPollTimer) {
       clearTimeout(target.fallbackPollTimer);
       target.fallbackPollTimer = null;
+    }
+    if (target.watchRetryTimer) {
+      clearTimeout(target.watchRetryTimer);
+      target.watchRetryTimer = null;
+    }
+    if (target.watchStableTimer) {
+      clearTimeout(target.watchStableTimer);
+      target.watchStableTimer = null;
     }
     if (target.subscription) {
       const subscription = target.subscription;

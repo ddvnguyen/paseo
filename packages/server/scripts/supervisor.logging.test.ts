@@ -203,4 +203,45 @@ describe("supervisor durable logging", () => {
       expect(result.log).toContain("Supervisor exiting");
     },
   );
+
+  test("force-restarts a worker that stops replying to heartbeats", async () => {
+    const markerFile = path.join(tmpdir(), `paseo-supervisor-hang-${process.pid}.marker`);
+    const originalTimeout = process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS;
+    try {
+      // Shorten the hang timeout so the test does not wait the 10s default.
+      process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS = "1500";
+
+      const result = await runSupervisorFixture({
+        restartOnCrash: true,
+        workerSource: `
+        import { existsSync, writeFileSync } from "node:fs";
+
+        // First run wedges the event loop so heartbeats are never answered.
+        // After the watchdog force-restarts us, exit cleanly so the
+        // supervisor can shut down and the fixture can finish.
+        const marker = ${JSON.stringify(markerFile)};
+        if (existsSync(marker)) {
+          process.exit(0);
+        }
+        writeFileSync(marker, "1");
+        process.on("message", () => {
+          while (true) {}
+        });
+      `,
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.signal).toBeNull();
+      expect(result.log).toContain('"msg":"Worker considered hung; force-restarting"');
+      expect(result.log).toContain('"signal":"SIGKILL"');
+      expect(result.log).toContain("Worker crashed");
+      expect(result.log).toContain("Restarting worker");
+    } finally {
+      if (originalTimeout === undefined) {
+        delete process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS;
+      } else {
+        process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS = originalTimeout;
+      }
+    }
+  });
 });

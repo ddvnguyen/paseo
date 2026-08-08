@@ -939,6 +939,89 @@ describe("WorkspaceGitServiceImpl", () => {
     service.dispose();
   });
 
+  test("re-subscribes a degraded working tree watcher after a transient error", async () => {
+    const watchCallbacks: Array<{
+      path: string;
+      callback: (error: Error | null, events: Array<{ path: string; type: "update" }>) => void;
+    }> = [];
+    const subscribe = vi.fn(
+      async (watchPath: string, callback: (typeof watchCallbacks)[number]["callback"]) => {
+        watchCallbacks.push({ path: watchPath, callback });
+        return createAsyncSubscription();
+      },
+    );
+    const service = createService({ subscribe });
+    const workspaceListener = vi.fn();
+    const workspaceSubscription = service.registerWorkspace({ cwd: REPO_CWD }, workspaceListener);
+    const diffSubscription = await service.requestWorkingTreeWatch(REPO_CWD, vi.fn());
+    await vi.waitFor(() => {
+      expect(service.getMetrics().repositoryWorkspaceLinkCount).toBe(1);
+    });
+
+    const repoRootWatch = watchCallbacks.find((entry) => entry.path === REPO_CWD);
+    expect(repoRootWatch).toBeDefined();
+    const subscribeCountAfterSetup = subscribe.mock.calls.length;
+
+    // A transient EINTR-style error must trigger a re-subscribe, not permanent
+    // degradation into bounded polling.
+    repoRootWatch?.callback(new Error("Unable to poll: Interrupted system call"), []);
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(2_000);
+    await flushPromises();
+
+    expect(subscribe.mock.calls.length).toBeGreaterThan(subscribeCountAfterSetup);
+
+    diffSubscription.unsubscribe();
+    workspaceSubscription.unsubscribe();
+    service.dispose();
+  });
+
+  test("caps re-subscribes and degrades when a watcher keeps erroring", async () => {
+    const watchCallbacks: Array<{
+      path: string;
+      callback: (error: Error | null, events: Array<{ path: string; type: "update" }>) => void;
+    }> = [];
+    const subscribe = vi.fn(
+      async (watchPath: string, callback: (typeof watchCallbacks)[number]["callback"]) => {
+        watchCallbacks.push({ path: watchPath, callback });
+        return createAsyncSubscription();
+      },
+    );
+    const service = createService({ subscribe });
+    const workspaceListener = vi.fn();
+    const workspaceSubscription = service.registerWorkspace({ cwd: REPO_CWD }, workspaceListener);
+    const diffSubscription = await service.requestWorkingTreeWatch(REPO_CWD, vi.fn());
+    await vi.waitFor(() => {
+      expect(service.getMetrics().repositoryWorkspaceLinkCount).toBe(1);
+    });
+
+    // Each re-subscribed watcher immediately errors again (persistent EINTR).
+    // This must NOT re-subscribe forever: after MAX_RETRIES the watcher degrades
+    // to bounded polling, so the subscribe count stops growing.
+    const workingTreeSubscribes = () =>
+      watchCallbacks.filter((entry) => entry.path === REPO_CWD).length;
+    const initialSubscribes = workingTreeSubscribes();
+    const maxRetries = 4;
+
+    for (let attempt = 0; attempt < maxRetries + 3; attempt += 1) {
+      const callback = watchCallbacks
+        .toReversed()
+        .find((entry) => entry.path === REPO_CWD)?.callback;
+      expect(callback).toBeDefined();
+      callback?.(new Error("Unable to poll: Interrupted system call"), []);
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(2_000 * 2 ** attempt + 100);
+      await flushPromises();
+    }
+
+    // 1 initial + MAX_RETRIES re-subscribes; no unbounded growth.
+    expect(workingTreeSubscribes()).toBeLessThanOrEqual(initialSubscribes + maxRetries + 1);
+
+    diffSubscription.unsubscribe();
+    workspaceSubscription.unsubscribe();
+    service.dispose();
+  });
+
   test("checkoutDiffCache evicts least-recently-used entries past its size cap", async () => {
     vi.useRealTimers();
     const getCheckoutDiff = vi.fn(async (cwd: string) => ({

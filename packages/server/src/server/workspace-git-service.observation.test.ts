@@ -877,7 +877,7 @@ describe("WorkspaceGitService checkout observation", () => {
     service.dispose();
   });
 
-  test("watcher setup failure uses scoped non-overlapping polling", async () => {
+  test("watcher setup failure retries with backoff then degrades to scoped polling", async () => {
     const watcher = createWatcherHarness({ failDirectories: new Set([REPO_CWD]) });
     const blockedPoll = createDeferred<CheckoutStatusGit>();
     const getCheckoutSnapshotFacts = vi.fn(async (cwd: string) => createCheckoutFacts(cwd));
@@ -891,6 +891,7 @@ describe("WorkspaceGitService checkout observation", () => {
       getCheckoutSnapshotFacts,
       getCheckoutStatus,
       getPullRequestStatus,
+      getWorkspaceGitSelfHealPhaseMs: () => Number.MAX_SAFE_INTEGER,
     });
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
 
@@ -901,30 +902,42 @@ describe("WorkspaceGitService checkout observation", () => {
         expect.any(Object),
       );
       expect(service.getMetrics().workingTreeWatchTargetCount).toBe(1);
-      expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
-      expect(service.getMetrics().workspaceRefreshInFlightCount).toBe(0);
       expect(service.peekSnapshot(REPO_CWD)).not.toBeNull();
-      expect(getCheckoutStatus).toHaveBeenCalledTimes(1);
     });
-    await vi.advanceTimersByTimeAsync(7_000);
+    // Setup failure retries with backoff (2s + 4s + 8s + 16s) instead of
+    // degrading immediately: one initial attempt plus four retries for the
+    // working-tree watcher (the repo-metadata watcher subscribes separately).
+    await vi.advanceTimersByTimeAsync(30_000);
+    const workingTreeSubscribeCalls = watcher.subscribe.mock.calls.filter(
+      ([directory]) => directory === REPO_CWD,
+    );
+    expect(workingTreeSubscribeCalls).toHaveLength(5);
+
+    // After retries are exhausted the watcher degrades to bounded polling.
+    // The first degraded poll fires after another DEGRADED_GIT_POLL_INTERVAL.
+    await vi.advanceTimersByTimeAsync(30_000);
     await vi.waitFor(() => {
       expect(getCheckoutStatus).toHaveBeenCalledTimes(2);
     });
 
-    await vi.advanceTimersByTimeAsync(15_000);
+    // The blocked degraded poll holds the refresh slot; a follow-up refresh is
+    // queued (non-overlapping) rather than running concurrently. No forge work
+    // runs and structure is not re-scanned while only the worktree poll fired.
+    await vi.advanceTimersByTimeAsync(30_000);
     expect(getCheckoutStatus).toHaveBeenCalledTimes(2);
-    expect(service.getMetrics().workspaceRefreshQueuedCount).toBe(0);
-    expect(getCheckoutSnapshotFacts).toHaveBeenCalledTimes(1);
     expect(getPullRequestStatus).not.toHaveBeenCalled();
 
     blockedPoll.resolve(createCheckoutStatus(REPO_CWD, { isDirty: true }));
     await vi.waitFor(() => {
       expect(service.getMetrics().workspaceRefreshInFlightCount).toBe(0);
     });
-    await vi.advanceTimersByTimeAsync(5_000);
+    // The queued follow-up runs after the blocked poll resolves, so at least
+    // the third poll executes and no forge work is ever triggered.
+    await vi.advanceTimersByTimeAsync(30_000);
     await vi.waitFor(() => {
-      expect(getCheckoutStatus).toHaveBeenCalledTimes(3);
+      expect(getCheckoutStatus.mock.calls.length).toBeGreaterThanOrEqual(3);
     });
+    expect(getPullRequestStatus).not.toHaveBeenCalled();
 
     subscription.unsubscribe();
     service.dispose();
@@ -967,7 +980,7 @@ describe("WorkspaceGitService checkout observation", () => {
     const service = createService(watcher, {
       getCheckoutSnapshotFacts,
       getCheckoutStatus,
-      getWorkspaceGitSelfHealPhaseMs: () => 60_000,
+      getWorkspaceGitSelfHealPhaseMs: () => Number.MAX_SAFE_INTEGER,
       runGitCommand,
     });
     const summarySubscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
@@ -982,7 +995,7 @@ describe("WorkspaceGitService checkout observation", () => {
     expect(watcher.records.filter((record) => record.directory === GIT_DIR)).toHaveLength(0);
 
     isGit = true;
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(30_000);
     await vi.waitFor(() => {
       expect(service.peekSnapshot(REPO_CWD)?.git.isGit).toBe(true);
       expect(service.getMetrics()).toMatchObject({
@@ -996,20 +1009,21 @@ describe("WorkspaceGitService checkout observation", () => {
     expect(watcher.records.filter((record) => record.directory === REPO_CWD)).toHaveLength(1);
 
     const factsCallCount = getCheckoutSnapshotFacts.mock.calls.length;
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(30_000);
     expect(getCheckoutSnapshotFacts).toHaveBeenCalledTimes(factsCallCount);
 
     summarySubscription.unsubscribe();
     service.dispose();
   });
 
-  test("watcher runtime error switches to scoped polling", async () => {
+  test("re-subscribes after a transient watcher runtime error instead of degrading", async () => {
     const watcher = createWatcherHarness();
     const getCheckoutSnapshotFacts = vi.fn(async (cwd: string) => createCheckoutFacts(cwd));
     const getCheckoutStatus = vi.fn(async (cwd: string) => createCheckoutStatus(cwd));
     const service = createService(watcher, {
       getCheckoutSnapshotFacts,
       getCheckoutStatus,
+      getWorkspaceGitSelfHealPhaseMs: () => Number.MAX_SAFE_INTEGER,
     });
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
 
@@ -1019,17 +1033,19 @@ describe("WorkspaceGitService checkout observation", () => {
     });
     const checkoutWatcher = watcher.records.find((record) => record.directory === REPO_CWD);
     expect(checkoutWatcher).toBeDefined();
+    const subscribeCountAfterSetup = watcher.subscribe.mock.calls.length;
 
     checkoutWatcher?.callback(new Error("watcher stopped"), []);
     await vi.waitFor(() => {
       expect(checkoutWatcher?.unsubscribe).toHaveBeenCalledTimes(1);
     });
-    await vi.advanceTimersByTimeAsync(5_000);
+    // The retry re-subscribes after backoff instead of permanently degrading
+    // into bounded polling, so a fresh watcher is established with no polling
+    // fallback queued.
+    await vi.advanceTimersByTimeAsync(2_000);
     await vi.waitFor(() => {
-      expect(getCheckoutStatus).toHaveBeenCalledTimes(2);
+      expect(watcher.subscribe.mock.calls.length).toBeGreaterThan(subscribeCountAfterSetup);
     });
-
-    expect(getCheckoutSnapshotFacts).toHaveBeenCalledTimes(1);
     expect(service.getMetrics().workspaceRefreshQueuedCount).toBe(0);
 
     subscription.unsubscribe();

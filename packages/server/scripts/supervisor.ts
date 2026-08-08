@@ -29,6 +29,19 @@ interface SupervisorHeartbeatMessage {
   type: "paseo:supervisor-heartbeat";
 }
 
+interface WorkerHeartbeatMessage {
+  type: "paseo:worker-heartbeat";
+}
+
+// If the worker stops replying to heartbeats for this long, the supervisor
+// treats it as hung (event loop wedged) and force-restarts it. The worker
+// replies on every supervisor heartbeat (~1s), so missing replies for longer
+// than this means the event loop is no longer processing messages.
+function resolveWorkerHangTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : 10_000;
+}
+
 interface SupervisorOptions {
   name: string;
   startupMessage: string;
@@ -111,6 +124,7 @@ function createSupervisorLogStream(options: SupervisorLogFileOptions | undefined
 
 export function runSupervisor(options: SupervisorOptions): SupervisorController {
   const restartOnCrash = options.restartOnCrash ?? false;
+  const workerHangTimeoutMs = resolveWorkerHangTimeoutMs();
   const workerArgs = options.workerArgs ?? process.argv.slice(2);
   const workerEnv = options.workerEnv ?? process.env;
   const workerExecArgv = options.workerExecArgv ?? ["--import", "tsx"];
@@ -197,6 +211,8 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
     }
 
     const currentChild = child;
+    let lastWorkerHeartbeatAt = Date.now();
+
     const heartbeat = setInterval(() => {
       const message: SupervisorHeartbeatMessage = { type: "paseo:supervisor-heartbeat" };
       if (currentChild.connected) {
@@ -213,6 +229,28 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
     }, 1000);
     heartbeat.unref();
 
+    // Liveness watchdog: if the worker stops replying to heartbeats its event
+    // loop is wedged (e.g. git-pool deadlock). A wedged worker is still a live
+    // process, so without this the supervisor would never restart it and the
+    // daemon would hang until a manual `systemctl --user restart`.
+    const watchdog = setInterval(() => {
+      const hangMs = Date.now() - lastWorkerHeartbeatAt;
+      if (hangMs < workerHangTimeoutMs) {
+        return;
+      }
+      if (restarting || shuttingDown || exiting) {
+        return;
+      }
+      restarting = true;
+      writeLifecycleLog("Worker considered hung; force-restarting", {
+        hangMs,
+        workerPid: currentChild.pid ?? null,
+      });
+      log(`Worker unresponsive for ${hangMs}ms. Killing for restart...`);
+      signalWorker("SIGKILL", "worker_hung_watchdog");
+    }, 1000);
+    watchdog.unref();
+
     child.on("disconnect", () => {
       writeLifecycleLog("Worker IPC channel disconnected");
     });
@@ -228,6 +266,16 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
     });
 
     child.on("message", (msg: unknown) => {
+      if (
+        typeof msg === "object" &&
+        msg !== null &&
+        "type" in msg &&
+        (msg as WorkerHeartbeatMessage).type === "paseo:worker-heartbeat"
+      ) {
+        lastWorkerHeartbeatAt = Date.now();
+        return;
+      }
+
       const lifecycleMessage = parseLifecycleMessage(msg);
       if (!lifecycleMessage) {
         return;
@@ -258,6 +306,7 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
 
     child.on("close", (code, signal) => {
       clearInterval(heartbeat);
+      clearInterval(watchdog);
       const exitDescriptor = describeExit(code, signal);
       writeLifecycleLog("Worker exited", { code, signal, exit: exitDescriptor });
 

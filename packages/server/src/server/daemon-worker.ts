@@ -27,6 +27,10 @@ interface SupervisorHeartbeatMessage {
   type: "paseo:supervisor-heartbeat";
 }
 
+interface WorkerHeartbeatMessage {
+  type: "paseo:worker-heartbeat";
+}
+
 interface BootstrapResult {
   paseoHome: string;
   logger: ReturnType<typeof createRootLogger>;
@@ -257,6 +261,11 @@ async function main() {
         (message as SupervisorHeartbeatMessage).type === "paseo:supervisor-heartbeat"
       ) {
         lastSupervisorHeartbeatAt = Date.now();
+        // Reply so the supervisor can distinguish a responsive worker from a
+        // wedged one (event loop stuck, e.g. git-pool deadlock). Without this
+        // the supervisor only detects a dead worker, never a hung one.
+        const reply: WorkerHeartbeatMessage = { type: "paseo:worker-heartbeat" };
+        process.send?.(reply);
       }
     });
     process.on("disconnect", () => exitAfterSupervisorLoss("ipc_disconnect_event"));
