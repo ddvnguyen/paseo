@@ -875,6 +875,9 @@ describe("WorkspaceGitServiceImpl primitive refresh entrypoint", () => {
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, () => {
       initialSnapshotReady.resolve();
     });
+    // Keep a live watcher so the idle poll does not add refreshes; this test
+    // exercises the self-heal timer cadence only.
+    service.touchWorkspaceWatch(REPO_CWD);
     await initialSnapshotReady.promise;
 
     nowMs = 120_000;
@@ -933,6 +936,10 @@ describe("WorkspaceGitServiceImpl primitive refresh entrypoint", () => {
     });
     const first = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
     const second = service.registerWorkspace({ cwd: otherRepoCwd }, vi.fn());
+    // Keep both on live watchers; this test exercises self-heal cadence, not
+    // the idle-poll demotion.
+    service.touchWorkspaceWatch(REPO_CWD);
+    service.touchWorkspaceWatch(otherRepoCwd);
     await Promise.all([service.getSnapshot(REPO_CWD), service.getSnapshot(otherRepoCwd)]);
 
     await vi.advanceTimersByTimeAsync(300_000);
@@ -969,6 +976,7 @@ describe("WorkspaceGitServiceImpl primitive refresh entrypoint", () => {
     });
 
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
     await vi.waitFor(() => {
       expect(getCheckoutSnapshotFacts).toHaveBeenCalled();
       expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
@@ -1013,6 +1021,7 @@ describe("WorkspaceGitServiceImpl primitive refresh entrypoint", () => {
     });
 
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
     await flushPromises();
 
     await vi.waitFor(() => {
@@ -1507,6 +1516,7 @@ describe("WorkspaceGitServiceImpl primitive refresh entrypoint", () => {
     });
     const first = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
     const second = service.registerWorkspace({ cwd: join(REPO_CWD, ".") }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
     await service.getSnapshot(REPO_CWD);
 
     nowMs = 120_000;

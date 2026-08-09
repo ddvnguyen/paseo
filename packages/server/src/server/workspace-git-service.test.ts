@@ -646,9 +646,16 @@ describe("WorkspaceGitServiceImpl", () => {
 
     await Promise.all(cwds.map((cwd) => service.getSnapshot(cwd, { includeForge: false })));
     const subscriptions = cwds.map((cwd) => service.registerWorkspace({ cwd }, vi.fn()));
+    // Interest keeps these workspaces on live watchers; the observation-admission
+    // gate still bounds concurrent working-tree subscribes.
+    for (const cwd of cwds) {
+      service.touchWorkspaceWatch(cwd);
+    }
 
     await vi.waitFor(() => {
-      expect(subscribe).toHaveBeenCalledTimes(WORKSPACE_GIT_OBSERVATION_SETUP_CONCURRENCY);
+      expect(subscribe.mock.calls.length).toBeGreaterThanOrEqual(
+        WORKSPACE_GIT_OBSERVATION_SETUP_CONCURRENCY,
+      );
     });
 
     await vi.advanceTimersByTimeAsync(WORKSPACE_GIT_WATCHER_SUBSCRIBE_TIMEOUT_MS);

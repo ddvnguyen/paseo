@@ -156,6 +156,10 @@ import {
   type WorkspaceGitObserverService,
 } from "./session/workspace-git-observer/workspace-git-observer-service.js";
 import {
+  createWorkspaceWatchActivityService,
+  type WorkspaceWatchActivityService,
+} from "./session/workspace-watch-activity-service.js";
+import {
   createAgentStructuredTextGeneration,
   createGitMetadataGenerator,
 } from "./session/checkout/git-metadata-generator.js";
@@ -668,6 +672,7 @@ export class Session {
   private readonly workspaceSetupSnapshots: Map<string, WorkspaceSetupSnapshot>;
   private readonly workspaceSetupRuntime: WorkspaceSetupRuntime;
   private readonly workspaceGitObserver: WorkspaceGitObserverService;
+  private readonly workspaceWatchActivity: WorkspaceWatchActivityService;
   private readonly workspaceDirectory: WorkspaceDirectory;
   private readonly voiceSession: VoiceSession;
   private readonly checkoutSession: CheckoutSession;
@@ -831,6 +836,10 @@ export class Session {
       emitStatusUpdate: (cwd, snapshot) => this.checkoutSession.emitStatusUpdate(cwd, snapshot),
       onBranchChanged,
       logger: this.sessionLogger,
+    });
+    this.workspaceWatchActivity = createWorkspaceWatchActivityService({
+      agentManager: this.agentManager,
+      workspaceGitService: this.workspaceGitService,
     });
     this.chatScheduleLoopSession = new ChatScheduleLoopSession({
       host: {
@@ -1555,6 +1564,7 @@ export class Session {
 
     this.unsubscribeAgentEvents = this.agentManager.subscribe(
       (event) => {
+        this.workspaceWatchActivity.handleAgentEvent(event);
         if (event.type === "agent_state") {
           this.sessionLogger.trace(
             {
@@ -3759,6 +3769,13 @@ export class Session {
     };
     if (msg.appVisible && focusedTerminalId) {
       void this.clearFocusedTerminalAttention(focusedTerminalId);
+    }
+    // A visible client focused on an agent keeps that workspace's watcher live.
+    if (msg.appVisible && msg.focusedAgentId) {
+      const focusedAgent = this.agentManager.getAgent(msg.focusedAgentId);
+      if (focusedAgent) {
+        this.workspaceWatchActivity.touchCwd(focusedAgent.cwd);
+      }
     }
   }
 
@@ -6954,6 +6971,7 @@ export class Session {
       this.unsubscribeAgentEvents();
       this.unsubscribeAgentEvents = null;
     }
+    this.workspaceWatchActivity.dispose();
     this.unsubscribeProjectMutations?.();
     this.unsubscribeProjectMutations = null;
     this.unsubscribeWorkspaceMutations?.();

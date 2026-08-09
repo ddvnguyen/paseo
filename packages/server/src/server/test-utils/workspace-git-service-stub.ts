@@ -68,6 +68,7 @@ export function createNoopWorkspaceGitService(
       repoRoot: null,
       unsubscribe: () => {},
     }),
+    touchWorkspaceWatch: () => {},
     scheduleRefreshForCwd: () => {},
     onWorkspaceStateMayHaveChanged: () => {},
     invalidateForge: () => {},

@@ -260,6 +260,8 @@ describe("WorkspaceGitService checkout observation", () => {
 
     const first = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
     const second = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    // A live watcher needs interest; both clients count as one observer.
+    service.touchWorkspaceWatch(REPO_CWD);
     await vi.waitFor(() => {
       expect(service.peekSnapshot(REPO_CWD)).not.toBeNull();
       expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
@@ -284,6 +286,7 @@ describe("WorkspaceGitService checkout observation", () => {
     watcher.subscribe.mockImplementationOnce(async () => openedSubscription.promise);
     const service = createService(watcher);
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
 
     await vi.waitFor(() => {
       expect(watcher.subscribe).toHaveBeenCalledTimes(1);
@@ -385,6 +388,7 @@ describe("WorkspaceGitService checkout observation", () => {
     );
     const service = createService(watcher, { getCheckoutDiff });
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
 
     await vi.waitFor(() => {
       expect(service.peekSnapshot(REPO_CWD)).not.toBeNull();
@@ -1179,8 +1183,10 @@ describe("WorkspaceGitService checkout observation", () => {
 
     await service.getSnapshot(REPO_CWD);
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, listener);
+    service.touchWorkspaceWatch(REPO_CWD);
     await vi.waitFor(() => {
       expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
+      expect(watcher.records[0]).toBeDefined();
     });
 
     const edit = { path: path.join(REPO_CWD, "tracked.txt"), type: "update" as const };
@@ -1234,8 +1240,10 @@ describe("WorkspaceGitService checkout observation", () => {
 
     await service.getSnapshot(REPO_CWD);
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, listener);
+    service.touchWorkspaceWatch(REPO_CWD);
     await vi.waitFor(() => {
       expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
+      expect(watcher.records[0]).toBeDefined();
     });
 
     const edit = { path: path.join(REPO_CWD, "tracked.txt"), type: "update" as const };
@@ -1301,6 +1309,10 @@ describe("WorkspaceGitService checkout observation", () => {
       runGitFetch,
     });
     const subscriptions = worktrees.map((cwd) => service.registerWorkspace({ cwd }, vi.fn()));
+    // Interest keeps all ten worktrees on live watchers.
+    for (const cwd of worktrees) {
+      service.touchWorkspaceWatch(cwd);
+    }
 
     await vi.waitFor(() => {
       expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
@@ -1352,6 +1364,7 @@ describe("WorkspaceGitService checkout observation", () => {
       getPullRequestStatus,
     });
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
 
     await vi.waitFor(() => {
       expect(watcher.subscribe).toHaveBeenCalledWith(
@@ -1441,7 +1454,8 @@ describe("WorkspaceGitService checkout observation", () => {
     expect(watcher.records.filter((record) => record.directory === GIT_DIR)).toHaveLength(0);
 
     isGit = true;
-    await vi.advanceTimersByTimeAsync(5_000);
+    service.touchWorkspaceWatch(REPO_CWD);
+    await vi.advanceTimersByTimeAsync(30_000);
     await vi.waitFor(() => {
       expect(service.peekSnapshot(REPO_CWD)?.git.isGit).toBe(true);
       expect(service.getMetrics()).toMatchObject({
@@ -1472,6 +1486,7 @@ describe("WorkspaceGitService checkout observation", () => {
       getWorkspaceGitSelfHealPhaseMs: () => 1_000_000,
     });
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
 
     await vi.waitFor(() => {
       expect(service.peekSnapshot(REPO_CWD)).not.toBeNull();
@@ -1531,6 +1546,7 @@ describe("WorkspaceGitService checkout observation", () => {
     });
 
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
     await vi.waitFor(() => {
       expect(watcher.subscribe).toHaveBeenCalledTimes(1);
     });
@@ -1586,6 +1602,7 @@ describe("WorkspaceGitService checkout observation", () => {
       getWorkspaceGitSelfHealPhaseMs: () => 1_000_000,
     });
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
 
     await vi.waitFor(() => {
       expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
@@ -1631,6 +1648,7 @@ describe("WorkspaceGitService checkout observation", () => {
       getWorkspaceGitSelfHealPhaseMs: () => 1_000_000,
     });
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
 
     await vi.waitFor(() => {
       expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
@@ -1689,6 +1707,7 @@ describe("WorkspaceGitService checkout observation", () => {
       getWorkspaceGitSelfHealPhaseMs: () => 1_000_000,
     });
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
 
     await vi.waitFor(() => {
       expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
@@ -1735,6 +1754,7 @@ describe("WorkspaceGitService checkout observation", () => {
       runGitCommand,
     });
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
 
     await vi.waitFor(() => {
       expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
@@ -1779,6 +1799,7 @@ describe("WorkspaceGitService checkout observation", () => {
       runGitCommand,
     });
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
 
     await vi.waitFor(() => {
       expect(getWatcherRecordsForDirectory(watcher, REPO_CWD)).toHaveLength(1);
@@ -1831,6 +1852,7 @@ describe("WorkspaceGitService checkout observation", () => {
       runGitCommand,
     });
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
 
     await vi.waitFor(() => {
       expect(getWatcherRecordsForDirectory(watcher, REPO_CWD)).toHaveLength(1);
@@ -1882,6 +1904,7 @@ describe("WorkspaceGitService checkout observation", () => {
       logger,
     );
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
 
     await vi.waitFor(() => {
       expect(getWatcherRecordsForDirectory(watcher, REPO_CWD)).toHaveLength(1);
@@ -1970,6 +1993,110 @@ describe("WorkspaceGitService checkout observation", () => {
     diffSubscription.unsubscribe();
     subscription.unsubscribe();
     diffManager.dispose();
+    service.dispose();
+  });
+
+  test("starts a git worktree watcher in idle-poll mode until touched", async () => {
+    const watcher = createWatcherHarness();
+    const getCheckoutStatus = vi.fn(async (cwd: string) => createCheckoutStatus(cwd));
+    const service = createService(watcher, {
+      getCheckoutStatus,
+      getWorkspaceGitSelfHealPhaseMs: () => Number.MAX_SAFE_INTEGER,
+    });
+    const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+
+    await vi.waitFor(() => {
+      expect(service.peekSnapshot(REPO_CWD)).not.toBeNull();
+      expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
+    });
+
+    // Without any interest, the working tree has no live @parcel/watcher
+    // subscription — only the slow idle poll keeps coarse freshness.
+    const checkoutWatcher = watcher.records.find((record) => record.directory === REPO_CWD);
+    expect(checkoutWatcher).toBeUndefined();
+    expect(service.getMetrics().workingTreeWatchTargetCount).toBe(1);
+    const statusCallsBeforeIdlePoll = getCheckoutStatus.mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(getCheckoutStatus.mock.calls.length).toBeGreaterThan(statusCallsBeforeIdlePoll);
+
+    subscription.unsubscribe();
+    service.dispose();
+  });
+
+  test("touchWorkspaceWatch promotes a watcher to live and idle timeout demotes it", async () => {
+    const watcher = createWatcherHarness();
+    const getCheckoutStatus = vi.fn(async (cwd: string) => createCheckoutStatus(cwd));
+    const service = createService(watcher, {
+      getCheckoutStatus,
+      getWorkspaceGitSelfHealPhaseMs: () => Number.MAX_SAFE_INTEGER,
+    });
+    const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+
+    await vi.waitFor(() => {
+      expect(service.peekSnapshot(REPO_CWD)).not.toBeNull();
+      expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
+    });
+
+    // No live watcher until touched.
+    let checkoutWatcher = watcher.records.find((record) => record.directory === REPO_CWD);
+    expect(checkoutWatcher).toBeUndefined();
+
+    // Touch re-arms interest and promotes to a live watcher.
+    service.touchWorkspaceWatch(REPO_CWD);
+    await vi.waitFor(() => {
+      checkoutWatcher = getWatcherRecordsForDirectory(watcher, REPO_CWD).at(-1);
+      expect(checkoutWatcher).toBeDefined();
+    });
+    expect(checkoutWatcher?.unsubscribe).not.toHaveBeenCalled();
+    checkoutWatcher?.callback(null, [{ path: path.join(REPO_CWD, "tracked.txt"), type: "update" }]);
+    await vi.waitFor(() => {
+      expect(getCheckoutStatus.mock.calls.length).toBeGreaterThan(0);
+    });
+
+    // After the idle timeout with no further interest, the watcher is torn
+    // down and replaced by the slow idle poll.
+    await vi.advanceTimersByTimeAsync(30 * 60_000 + 1_000);
+    await vi.waitFor(() => {
+      expect(checkoutWatcher?.unsubscribe).toHaveBeenCalled();
+    });
+    expect(service.getMetrics().workingTreeWatchTargetCount).toBe(1);
+
+    subscription.unsubscribe();
+    service.dispose();
+  });
+
+  test("touchWorkspaceWatch re-arms the idle timeout for a long-running workspace", async () => {
+    const watcher = createWatcherHarness();
+    const getCheckoutStatus = vi.fn(async (cwd: string) => createCheckoutStatus(cwd));
+    const service = createService(watcher, {
+      getCheckoutStatus,
+      getWorkspaceGitSelfHealPhaseMs: () => Number.MAX_SAFE_INTEGER,
+    });
+    const subscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
+    service.touchWorkspaceWatch(REPO_CWD);
+
+    await vi.waitFor(() => {
+      expect(service.peekSnapshot(REPO_CWD)).not.toBeNull();
+      expect(service.getMetrics().workspaceObservationSetupInFlightCount).toBe(0);
+    });
+
+    service.touchWorkspaceWatch(REPO_CWD);
+    await vi.waitFor(() => {
+      expect(getWatcherRecordsForDirectory(watcher, REPO_CWD).length).toBeGreaterThan(0);
+    });
+
+    // Re-touch every ~20 minutes; the watcher must survive past a single TTL.
+    for (let index = 0; index < 5; index += 1) {
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      service.touchWorkspaceWatch(REPO_CWD);
+    }
+
+    const liveWatcher = watcher.records.find((record) => record.directory === REPO_CWD);
+    expect(liveWatcher).toBeDefined();
+    expect(liveWatcher?.unsubscribe).not.toHaveBeenCalled();
+
+    subscription.unsubscribe();
     service.dispose();
   });
 });
