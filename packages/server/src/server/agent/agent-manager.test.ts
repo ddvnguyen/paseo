@@ -7825,6 +7825,213 @@ test("idle agents remain resident until an explicit lifecycle action closes them
   }
 });
 
+test("demoteIdleAgentToCold tears down an idle agent's session but keeps it listed as idle", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-demote-"));
+  let resumeCount = 0;
+  const session = new CloseRecordingTestAgentSession({ provider: "codex", cwd: workdir });
+  const client = new (class extends TestAgentClient {
+    override async createSession(): Promise<AgentSession> {
+      return session;
+    }
+
+    override async resumeSession(
+      handle: AgentPersistenceHandle,
+      config?: Partial<AgentSessionConfig>,
+    ): Promise<AgentSession> {
+      resumeCount += 1;
+      return new CloseRecordingTestAgentSession({
+        ...config,
+        provider: this.provider,
+        cwd: config?.cwd ?? workdir,
+      });
+    }
+  })();
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const emitted: ManagedAgent[] = [];
+  const firstIdle = new Promise<string>((resolve) => {
+    manager.subscribe((event) => {
+      if (event.type === "agent_state" && event.agent.lifecycle === "idle" && !event.agent.cold) {
+        emitted.push(event.agent);
+        resolve(event.agent.id);
+      } else if (event.type === "agent_state") {
+        emitted.push(event.agent);
+      }
+    });
+  });
+
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    await firstIdle;
+
+    const demoted = await manager.demoteIdleAgentToCold(agent.id);
+    expect(demoted).toBe(true);
+    expect(session.closed).toBe(true);
+    expect(manager.getAgent(agent.id)).toBeNull();
+
+    const record = await storage.get(agent.id);
+    expect(record?.lastStatus).toBe("idle");
+    expect(record?.persistence?.sessionId).toBe(session.id);
+
+    const lastEmit = emitted.at(-1);
+    expect(lastEmit?.id).toBe(agent.id);
+    expect(lastEmit?.lifecycle).toBe("idle");
+    expect(lastEmit?.cold).toBe(true);
+
+    expect(resumeCount).toBe(0);
+  } finally {
+    await Promise.all(manager.listAgents().map((a) => manager.closeAgent(a.id))).catch(
+      () => undefined,
+    );
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("demoteIdleAgentToCold is a no-op for unknown agents and honored keepWarm", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-demote-guards-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+  });
+
+  try {
+    expect(await manager.demoteIdleAgentToCold("unknown-agent")).toBe(false);
+
+    const firstIdle = new Promise<string>((resolve) => {
+      manager.subscribe((event) => {
+        if (event.type === "agent_state" && event.agent.lifecycle === "idle") {
+          resolve(event.agent.id);
+        }
+      });
+    });
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    await firstIdle;
+
+    let keepWarmCalls = 0;
+    const demoted = await manager.demoteIdleAgentToCold(agent.id, {
+      keepWarm: () => {
+        keepWarmCalls += 1;
+        return true;
+      },
+    });
+    expect(demoted).toBe(false);
+    expect(keepWarmCalls).toBe(1);
+    expect(manager.getAgent(agent.id)).not.toBeNull();
+  } finally {
+    await Promise.all(manager.listAgents().map((a) => manager.closeAgent(a.id))).catch(
+      () => undefined,
+    );
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("demoteIdleAgentToCold is a no-op while the agent is running", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-demote-running-"));
+  const session = new ControlledInterruptSession(
+    { provider: "codex", cwd: workdir },
+    "demote-turn",
+    async () => {},
+  );
+  const client = new (class extends TestAgentClient {
+    override async createSession(): Promise<AgentSession> {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, logger });
+
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+
+    const runningPromise = new Promise<void>((resolve) => {
+      manager.subscribe(
+        (event) => {
+          if (
+            event.type === "agent_state" &&
+            event.agent.id === agent.id &&
+            event.agent.lifecycle === "running"
+          ) {
+            resolve();
+          }
+        },
+        { agentId: agent.id, replayState: true },
+      );
+    });
+    const runPromise = manager.runAgent(agent.id, "Start a turn that never completes");
+    await runningPromise;
+
+    expect(await manager.demoteIdleAgentToCold(agent.id)).toBe(false);
+    expect(manager.getAgent(agent.id)).not.toBeNull();
+
+    await manager.cancelAgentRun(agent.id).catch(() => undefined);
+    await runPromise.catch(() => undefined);
+  } finally {
+    await Promise.all(manager.listAgents().map((a) => manager.closeAgent(a.id))).catch(
+      () => undefined,
+    );
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("a demoted agent resumes lazily via ensureAgentLoaded", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-demote-resume-"));
+  let resumeCount = 0;
+  const client = new (class extends TestAgentClient {
+    override async resumeSession(
+      handle: AgentPersistenceHandle,
+      config?: Partial<AgentSessionConfig>,
+    ): Promise<AgentSession> {
+      resumeCount += 1;
+      return new CloseRecordingTestAgentSession({
+        ...config,
+        provider: this.provider,
+        cwd: config?.cwd ?? workdir,
+      });
+    }
+  })();
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+
+  try {
+    const firstIdle = new Promise<string>((resolve) => {
+      manager.subscribe((event) => {
+        if (event.type === "agent_state" && event.agent.lifecycle === "idle") {
+          resolve(event.agent.id);
+        }
+      });
+    });
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    await firstIdle;
+
+    await manager.demoteIdleAgentToCold(agent.id);
+    expect(manager.getAgent(agent.id)).toBeNull();
+
+    const resumed = await ensureAgentLoaded(agent.id, {
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+    });
+    expect(resumed.lifecycle).toBe("idle");
+    expect(resumed.cold).toBeUndefined();
+    expect(manager.getAgent(agent.id)).not.toBeNull();
+    expect(resumeCount).toBe(1);
+  } finally {
+    await Promise.all(manager.listAgents().map((a) => manager.closeAgent(a.id))).catch(
+      () => undefined,
+    );
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("archiving a closed parent still cascades to its managed children", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-closed-parent-archive-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);

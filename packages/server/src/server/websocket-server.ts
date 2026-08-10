@@ -57,6 +57,7 @@ import type { VoiceCallerContext, VoiceSpeakHandler } from "./voice-types.js";
 import {
   computeNotificationPlan,
   isPushEligibleAttentionReason,
+  PRESENCE_THRESHOLD_MS,
   type ClientPresenceState,
 } from "./agent-attention-policy.js";
 import {
@@ -891,6 +892,31 @@ export class VoiceAssistantWebSocketServer {
           .map((connection) => connection.session),
       ),
     );
+  }
+
+  /**
+   * Whether any trusted client is actively viewing the agent: either focused on
+   * it with the app visible within the presence window, or holding a live
+   * timeline subscription for it. Used by idle-session reaping to avoid
+   * demoting an agent a client is looking at.
+   */
+  public isAgentViewerPresent(agentId: string): boolean {
+    const nowMs = Date.now();
+    for (const session of this.listTrustedSessions()) {
+      if (session.isViewingAgent(agentId)) {
+        return true;
+      }
+      const state = this.getClientActivityState(session);
+      if (
+        state.focusedAgentId === agentId &&
+        state.appVisible &&
+        state.lastActivityAtMs !== null &&
+        nowMs - state.lastActivityAtMs <= PRESENCE_THRESHOLD_MS
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   public publishProjectUpdate(update: ProjectUpdate): void {

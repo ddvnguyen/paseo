@@ -21,8 +21,16 @@ the agent runs through `ensureAgentLoaded()`, which resumes the durable provider
 same Paseo agent ID. Provider history is not appended again when the canonical timeline is already
 primed.
 
-Idle agents remain resident indefinitely. Runtime closure happens only through an explicit lifecycle
-action such as archive, replacement, reload, workspace teardown, or daemon shutdown.
+Idle agents remain resident while they have recent activity or a client is viewing them. After
+`daemon.sessionIdleTimeoutMs` (default 30 minutes, `0` disables) without activity the daemon reaps the
+agent: it tears down the provider session — which frees the agent's opencode serve REPL process and
+the MCP stack it owns — while keeping the agent registered and listed as `idle` (`cold: true`). An
+idle agent is never reaped while it is running, has a pending permission or turn waiter, or a client
+is actively viewing it. Re-activation is lazy: prompting, attaching, refreshing, timeline fetch, and
+schedules all run through `ensureAgentLoaded()`, which resumes the durable provider session under the
+same Paseo agent ID with provider history already primed. Runtime closure of a cold agent's record
+happens only through an explicit lifecycle action such as archive, replacement, reload, workspace
+teardown, or daemon shutdown.
 
 A provider runtime can still die on its own — crash, OOM kill, host suspend. Work the agent parked
 inside that process dies with it: Claude Code's background Bash shells, `Monitor` watches, and

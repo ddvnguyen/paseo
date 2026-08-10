@@ -198,6 +198,7 @@ import {
 import { createWebUiMiddleware } from "./web-ui.js";
 import { WorkspaceAutoName } from "./workspace-auto-name.js";
 import { createGitMutationService } from "./session/git-mutation/git-mutation-service.js";
+import { createAgentSessionIdleService } from "./session/agent-session-idle-service.js";
 import { workspaceIdsOnCheckout } from "./workspace-directory.js";
 import { configureGitProcessPolicy } from "../utils/run-git-command.js";
 import { resolveGitProcessPolicy } from "../utils/git-process-scheduler.js";
@@ -397,6 +398,7 @@ export interface PaseoDaemonConfig {
   };
   autoArchiveAfterMerge?: boolean;
   enableTerminalAgentHooks?: boolean;
+  sessionIdleTimeoutMs?: number;
   appendSystemPrompt?: string;
   terminalProfiles?: TerminalProfile[];
   staticDir: string;
@@ -840,6 +842,21 @@ export async function createPaseoDaemon(
     mcpAuthToken: agentMcpAuthToken,
     logger,
   });
+
+  const agentSessionIdleService = createAgentSessionIdleService({
+    agentManager,
+    timeoutMs: config.sessionIdleTimeoutMs ?? 0,
+    logger,
+  });
+  // Global subscription: the idle service arms a reap timer per agent on
+  // activity (agent_state transitions + turn_started). Replay arms timers for
+  // any already-live agents on (re)subscribe.
+  const unsubscribeAgentSessionIdle = agentManager.subscribe((event) =>
+    agentSessionIdleService.handleAgentEvent(event),
+  );
+  const setAgentSessionIdleViewerChecker = (checker: (agentId: string) => boolean): void => {
+    agentSessionIdleService.setViewerChecker(checker);
+  };
 
   const detachAgentStoragePersistence = attachAgentStoragePersistence(
     logger,
@@ -1593,6 +1610,12 @@ export async function createPaseoDaemon(
             await hubRelationships.start();
           };
 
+          // The idle-reap service can now ask whether any client is actively
+          // viewing an agent, so a reaped agent is never one a client is looking at.
+          setAgentSessionIdleViewerChecker(
+            (agentId) => wsServer?.isAgentViewerPresent(agentId) ?? false,
+          );
+
           logAndResolve().then(resolve, reject);
         };
         httpServer.once("error", onError);
@@ -1626,6 +1649,8 @@ export async function createPaseoDaemon(
     await hubRelationships.stop();
     workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
+    unsubscribeAgentSessionIdle();
+    agentSessionIdleService.dispose();
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();

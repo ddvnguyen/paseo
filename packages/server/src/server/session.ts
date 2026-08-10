@@ -1288,6 +1288,15 @@ export class Session {
     return this.clientActivity;
   }
 
+  /**
+   * Whether this client has a live timeline subscription for the agent. Used by
+   * idle-session reaping so an agent whose chat a client has open is never
+   * demoted to cold while it is being viewed.
+   */
+  public isViewingAgent(agentId: string): boolean {
+    return this.viewedTimelineAgentIds.has(agentId);
+  }
+
   private getFocusedAgentSelectionForCwd(cwd: string):
     | {
         provider?: string | null;

@@ -366,6 +366,11 @@ interface ManagedAgentBase {
    */
   internal?: boolean;
   /**
+   * True when the agent's provider session was torn down by idle reaping. The
+   * agent still lists as "idle"; its session is lazily resumed on activation.
+   */
+  cold?: boolean;
+  /**
    * User-defined labels for categorizing agents (e.g., { surface: "workspace" }).
    */
   labels: Record<string, string>;
@@ -402,11 +407,26 @@ type ManagedAgentClosed = ManagedAgentBase & {
   activeForegroundTurnId: null;
 };
 
+/**
+ * An agent whose provider session was torn down after idle reaping but which
+ * stays registered and listed as "idle". Same public shape as a closed agent
+ * (session null), but with lifecycle "idle" and `cold: true` so listings and
+ * clients keep treating it as an active idle agent rather than a closed one.
+ * Re-activation lazily resumes the provider session via ensureAgentLoaded.
+ */
+type ManagedAgentCold = ManagedAgentBase & {
+  lifecycle: "idle";
+  session: null;
+  cold: true;
+  activeForegroundTurnId: null;
+};
+
 export type ManagedAgent =
   | ManagedAgentInitializing
   | ManagedAgentIdle
   | ManagedAgentRunning
   | ManagedAgentError
+  | ManagedAgentCold
   | ManagedAgentClosed;
 
 export interface AgentMetricsSnapshot {
@@ -1477,6 +1497,153 @@ export class AgentManager {
     if (persistError !== undefined) {
       throw persistError;
     }
+  }
+
+  /**
+   * Tear down an idle agent's provider session (freeing its opencode serve REPL
+   * process and the MCP stack it owns) while keeping the agent registered and
+   * listed as "idle". The agent is removed from the live registry but its stored
+   * record keeps `lastStatus: "idle"`, so listings and clients still see it as
+   * idle; any later activation (send, attach, refresh, timeline fetch, schedule)
+   * lazily resumes the session via ensureAgentLoaded -> resumeAgentFromPersistence.
+   *
+   * Returns false (no-op) when the agent is not idle, is busy, or has a client
+   * actively viewing it. This is deliberately conservative: we only reap agents
+   * that are provably quiet.
+   */
+  async demoteIdleAgentToCold(
+    agentId: string,
+    options?: { keepWarm?: (agent: ManagedAgent) => boolean },
+  ): Promise<boolean> {
+    const agent = this.getAgent(agentId);
+    if (!agent) {
+      return false;
+    }
+    if (!this.isIdleAgentReapable(agent, agentId, options?.keepWarm)) {
+      return false;
+    }
+
+    // Cold agents (lifecycle "idle", session null) never live in this.agents,
+    // so after the idle narrowing the agent is guaranteed to hold a session.
+    const idleAgent = agent as ManagedAgentIdle;
+
+    this.logger.trace(
+      {
+        agentId,
+        provider: idleAgent.provider,
+        sessionId: idleAgent.persistence?.sessionId ?? undefined,
+        lifecycle: idleAgent.lifecycle,
+      },
+      "agent.manager.idle-reap.start",
+    );
+
+    await this.drainSessionEvents(agentId);
+    this.cancelRunningProviderSubagents(agentId);
+
+    const coldAgent: ManagedAgentCold = {
+      ...idleAgent,
+      lifecycle: "idle",
+      session: null,
+      cold: true,
+      activeForegroundTurnId: null,
+      activeTurnId: null,
+      activeTurnStartedAt: null,
+      pendingPermissions: new Map(),
+      bufferedPermissionResolutions: new Map(),
+      inFlightPermissionResponses: new Set(),
+      pendingReplacement: false,
+      foregroundTurnWaiters: new Set(),
+      finalizedForegroundTurnIds: new Set(),
+      unsubscribeSession: null,
+    };
+
+    this.agentStreamCoalescer.flushAndDiscard(idleAgent.id);
+    this.agents.delete(idleAgent.id);
+    this.previousStatuses.delete(idleAgent.id);
+    if (idleAgent.unsubscribeSession) {
+      idleAgent.unsubscribeSession();
+      idleAgent.unsubscribeSession = null;
+    }
+    this.runs.cancelWaiters(idleAgent, (turnId) => ({
+      type: "turn_canceled",
+      provider: idleAgent.provider,
+      reason: "agent demoted to cold",
+      turnId,
+    }));
+    this.runs.clearAgentRun(idleAgent.id);
+
+    let closeError: unknown;
+    try {
+      await idleAgent.session.close();
+    } catch (error) {
+      closeError = error;
+    }
+
+    let persistError: unknown;
+    try {
+      await this.persistSnapshot(coldAgent);
+    } catch (error) {
+      persistError = error;
+    }
+    this.emitState(coldAgent, { persist: false });
+
+    this.logger.trace(
+      {
+        agentId,
+        provider: coldAgent.provider,
+        sessionId: coldAgent.persistence?.sessionId ?? undefined,
+      },
+      "agent.manager.idle-reap.complete",
+    );
+
+    if (closeError !== undefined) {
+      this.logger.warn(
+        { err: closeError, agentId },
+        "agent.manager.idle-reap.session-close-failed",
+      );
+    }
+    if (persistError !== undefined) {
+      this.logger.warn({ err: persistError, agentId }, "agent.manager.idle-reap.persist-failed");
+    }
+    return true;
+  }
+
+  /**
+   * Whether an agent may be reaped right now. Deliberately conservative: we
+   * only tear down sessions that are provably quiet — not running, no pending
+   * permission or turn work, no run bookkeeping, and no caller requesting the
+   * agent stay warm.
+   */
+  private isIdleAgentReapable(
+    agent: ManagedAgent,
+    agentId: string,
+    keepWarm?: (agent: ManagedAgent) => boolean,
+  ): boolean {
+    if (agent.lifecycle !== "idle" || agent.activeForegroundTurnId !== null) {
+      return false;
+    }
+    if (agent.pendingReplacement) {
+      return false;
+    }
+    if (agent.pendingPermissions.size > 0) {
+      return false;
+    }
+    if (agent.bufferedPermissionResolutions.size > 0) {
+      return false;
+    }
+    if (agent.inFlightPermissionResponses.size > 0) {
+      return false;
+    }
+    if (agent.foregroundTurnWaiters.size > 0) {
+      return false;
+    }
+    if (this.runs.hasRun(agentId)) {
+      return false;
+    }
+    if (keepWarm?.(agent)) {
+      return false;
+    }
+    return true;
   }
 
   private cancelRunningProviderSubagents(parentAgentId: string): void {

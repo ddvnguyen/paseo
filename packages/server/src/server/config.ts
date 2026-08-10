@@ -28,6 +28,7 @@ const DEFAULT_PORT = 6767;
 const DEFAULT_RELAY_ENDPOINT = "relay.paseo.sh:443";
 const DEFAULT_APP_BASE_URL = "https://app.paseo.sh";
 const DEFAULT_TRUSTED_PROXIES = ["loopback"];
+const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 30 * 60_000;
 
 interface ResolveBundledWebUiDistDirInput {
   moduleUrl?: string | URL;
@@ -438,6 +439,21 @@ function resolveBrowserToolsEnabled(persisted: ReturnType<typeof loadPersistedCo
   return persisted.daemon?.browserTools?.enabled ?? false;
 }
 
+function resolveSessionIdleTimeoutMs(
+  env: NodeJS.ProcessEnv,
+  persisted: ReturnType<typeof loadPersistedConfig>,
+): number {
+  const envValue = env.PASEO_SESSION_IDLE_TIMEOUT_MS;
+  if (envValue !== undefined && envValue !== "") {
+    const parsed = Number(envValue);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return DEFAULT_SESSION_IDLE_TIMEOUT_MS;
+    }
+    return parsed;
+  }
+  return persisted.daemon?.sessionIdleTimeoutMs ?? DEFAULT_SESSION_IDLE_TIMEOUT_MS;
+}
+
 function resolveStaticLoadConfigSettings(
   env: NodeJS.ProcessEnv,
   cli: CliConfigOverrides | undefined,
@@ -450,6 +466,7 @@ function resolveStaticLoadConfigSettings(
     browserToolsEnabled: resolveBrowserToolsEnabled(persisted),
     autoArchiveAfterMerge: persisted.daemon?.autoArchiveAfterMerge ?? false,
     appendSystemPrompt: resolveAppendSystemPrompt(persisted),
+    sessionIdleTimeoutMs: resolveSessionIdleTimeoutMs(env, persisted),
     terminalProfiles: persisted.daemon?.terminalProfiles,
     hostnames: mergeHostnames([
       persisted.daemon?.hostnames,
@@ -479,6 +496,7 @@ export function loadConfig(
     autoArchiveAfterMerge,
     appendSystemPrompt,
     terminalProfiles,
+    sessionIdleTimeoutMs,
     hostnames,
     trustedProxies,
     appBaseUrl,
@@ -519,6 +537,7 @@ export function loadConfig(
     autoArchiveAfterMerge,
     enableTerminalAgentHooks: persisted.daemon?.enableTerminalAgentHooks ?? false,
     appendSystemPrompt,
+    sessionIdleTimeoutMs,
     terminalProfiles,
     mcpDebug: env.MCP_DEBUG === "1",
     isDev: resolvePaseoNodeEnv(env) === "development",
