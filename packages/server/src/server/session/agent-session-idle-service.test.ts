@@ -109,6 +109,30 @@ describe("createAgentSessionIdleService", () => {
     service.dispose();
   });
 
+  test("reaps a viewed agent once the viewer leaves (re-arms while viewed)", async () => {
+    const harness = buildHarness();
+    const service = createAgentSessionIdleService({
+      agentManager: harness.agentManager,
+      timeoutMs: IDLE_TIMEOUT_MS,
+      logger: createTestLogger(),
+    });
+    let viewing = true;
+    service.setViewerChecker(() => viewing);
+
+    service.handleAgentEvent({ type: "agent_state", agent: makeAgent({ lifecycle: "idle" }) });
+
+    // First expiry is skipped because the viewer is present, but the lease re-arms.
+    await vi.advanceTimersByTimeAsync(IDLE_TIMEOUT_MS);
+    expect(harness.demoted).toHaveLength(0);
+
+    // Viewer leaves; the next expiry reaps.
+    viewing = false;
+    await vi.advanceTimersByTimeAsync(IDLE_TIMEOUT_MS);
+    expect(harness.demoted).toEqual([AGENT_ID]);
+
+    service.dispose();
+  });
+
   test("skips already-cold agents", async () => {
     const harness = buildHarness();
     const service = createAgentSessionIdleService({

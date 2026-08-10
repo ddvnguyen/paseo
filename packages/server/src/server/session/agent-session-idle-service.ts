@@ -68,13 +68,17 @@ export function createAgentSessionIdleService(
   async function onExpire(agentId: string): Promise<void> {
     const agent = agentManager.getAgent(agentId);
     if (!agent || agent.cold) {
+      // Already demoted or gone; nothing left to reap.
       return;
     }
     if (agent.lifecycle !== "idle" || agent.activeForegroundTurnId !== null) {
+      // Active; its own activity events re-arm the lease.
       return;
     }
     if (viewerChecker?.(agentId)) {
-      // A client is actively viewing this agent; leave it warm.
+      // A client is actively viewing this agent; re-check after another full
+      // timeout so we reap it once the viewer leaves instead of skipping once.
+      armTimer(agentId);
       return;
     }
     logger.info({ agentId, provider: agent.provider }, "agent.idle-reap.demoting");
@@ -83,6 +87,8 @@ export function createAgentSessionIdleService(
     });
     if (!demoted) {
       logger.trace({ agentId }, "agent.idle-reap.skipped");
+      // Became busy between the check and the demote; retry after a full timeout.
+      armTimer(agentId);
     }
   }
 
