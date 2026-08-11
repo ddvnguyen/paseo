@@ -17,8 +17,8 @@ SOURCE_FILE="$WATCHER_DIR/src/linux/InotifyBackend.cc"
 PREBUILT_BIN="$REPO_ROOT/node_modules/@parcel/watcher-linux-x64-glibc/watcher.node"
 
 if [ ! -d "$WATCHER_DIR" ]; then
-  echo "ERROR: @parcel/watcher not installed (npm ci incomplete?)"
-  exit 1
+  echo "  @parcel/watcher not installed — skipping (upstream file-observer is used instead)"
+  exit 0
 fi
 
 # Idempotent: if the fix is already applied, skip the source patch + rebuild.
