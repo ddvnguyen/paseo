@@ -92,11 +92,20 @@ cd "$REPO_ROOT"
 SHORT_HASH=$(git rev-parse --short HEAD)
 CURRENT_VERSION=$(node -p "require('./package.json').version")
 
+# A stale "-<githash>" suffix from an interrupted earlier deploy makes an
+# invalid double-stamped version (e.g. 0.3.1-<old>-<new>) which breaks the
+# expo web build. Strip any single previous hash suffix before stamping.
+if [[ "$CURRENT_VERSION" =~ ^(.*)-[0-9a-f]{7,40}$ ]]; then
+  BASE_VERSION="${BASH_REMATCH[1]}"
+else
+  BASE_VERSION="$CURRENT_VERSION"
+fi
+
 if [[ "$CURRENT_VERSION" == *"-$SHORT_HASH" ]]; then
   STAMPED_VERSION="$CURRENT_VERSION"
   say "  Version already stamped ($CURRENT_VERSION) — skipping"
 else
-  STAMPED_VERSION="${CURRENT_VERSION}-${SHORT_HASH}"
+  STAMPED_VERSION="${BASE_VERSION}-${SHORT_HASH}"
   say "  Version: $CURRENT_VERSION -> $STAMPED_VERSION"
   node -e "
 const fs = require('fs');
