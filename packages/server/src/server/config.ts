@@ -454,6 +454,18 @@ function resolveSessionIdleTimeoutMs(
   return persisted.daemon?.sessionIdleTimeoutMs ?? DEFAULT_SESSION_IDLE_TIMEOUT_MS;
 }
 
+/**
+ * Both profile lists stay `undefined` when absent rather than defaulting to an
+ * empty array: for terminal profiles that is what selects the built-in
+ * defaults, so an empty array has to keep meaning "the user removed them all".
+ */
+function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) {
+  return {
+    terminalProfiles: persisted.daemon?.terminalProfiles,
+    agentProfiles: persisted.daemon?.agentProfiles,
+  };
+}
+
 function resolveStaticLoadConfigSettings(
   env: NodeJS.ProcessEnv,
   cli: CliConfigOverrides | undefined,
@@ -467,7 +479,7 @@ function resolveStaticLoadConfigSettings(
     autoArchiveAfterMerge: persisted.daemon?.autoArchiveAfterMerge ?? false,
     appendSystemPrompt: resolveAppendSystemPrompt(persisted),
     sessionIdleTimeoutMs: resolveSessionIdleTimeoutMs(env, persisted),
-    terminalProfiles: persisted.daemon?.terminalProfiles,
+    ...resolveProfileLists(persisted),
     hostnames: mergeHostnames([
       persisted.daemon?.hostnames,
       parseHostnamesEnv(env.PASEO_HOSTNAMES ?? env.PASEO_ALLOWED_HOSTS),
@@ -496,6 +508,7 @@ export function loadConfig(
     autoArchiveAfterMerge,
     appendSystemPrompt,
     terminalProfiles,
+    agentProfiles,
     sessionIdleTimeoutMs,
     hostnames,
     trustedProxies,
@@ -539,6 +552,7 @@ export function loadConfig(
     appendSystemPrompt,
     sessionIdleTimeoutMs,
     terminalProfiles,
+    agentProfiles,
     mcpDebug: env.MCP_DEBUG === "1",
     isDev: resolvePaseoNodeEnv(env) === "development",
     agentStoragePath: path.join(paseoHome, "agents"),
