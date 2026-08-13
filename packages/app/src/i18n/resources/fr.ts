@@ -619,6 +619,7 @@ export const fr: TranslationResources = {
         reloadingAgent: "Agent de rechargement...",
         reloadedAgent: "Agent rechargé",
         failedToReloadAgent: "Échec du rechargement de l'agent",
+        failedToCloseAgent: "Échec de la fermeture de l'agent",
       },
       confirmations: {
         unsavedTitle: "Modifications non enregistrées",
@@ -2465,6 +2466,9 @@ export const fr: TranslationResources = {
           "Voir la documentation pour plus de détails et les variables d'environnement disponibles pour ces commandes",
         setup: "Installation",
         setupAccessibility: "Commandes de configuration de Worktree",
+        uncommittedTitle: "Validez les modifications de paseo.json",
+        uncommittedDescription:
+          "Les nouveaux worktrees utilisent le script de configuration de la branche de base sélectionnée.",
         teardown: "Démolir",
         teardownAccessibility: "Commandes de démontage de Worktree",
       },

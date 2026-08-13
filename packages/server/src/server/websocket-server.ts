@@ -92,6 +92,7 @@ import {
 } from "@getpaseo/protocol/browser-automation/capabilities";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
+import { DirectorySyncService } from "./directory-sync/index.js";
 import {
   APPLICATION_SOCKET_LEASE_CHECK_INTERVAL_MS,
   ApplicationSocketLease,
@@ -230,7 +231,6 @@ function createFallbackWorkspaceGitService(): WorkspaceGitService {
     resolveDefaultBranch: async () => "main",
     resolveRepoRemoteUrl: async () => null,
     refresh: async () => {},
-    touchWorkspaceWatch: () => {},
     requestWorkingTreeWatch: async () => ({
       repoRoot: null,
       unsubscribe: () => {},
@@ -579,6 +579,7 @@ export class VoiceAssistantWebSocketServer {
   private acceptingConnections = true;
   private readonly advertiseDaemonStatusRpc: boolean;
   private readonly advertiseRelayConfig: boolean;
+  private readonly directorySync = new DirectorySyncService();
 
   constructor(
     server: HTTPServer,
@@ -927,7 +928,11 @@ export class VoiceAssistantWebSocketServer {
   }
 
   public publishProjectUpdate(update: ProjectUpdate): void {
-    for (const session of this.listTrustedSessions()) session.emitProjectUpdate(update);
+    for (const session of this.listTrustedSessions()) {
+      void session
+        .emitProjectUpdate(update)
+        .catch((error) => this.logger.warn({ err: error }, "Failed to publish project update"));
+    }
   }
 
   public publishSpeechReadiness(readiness: SpeechReadinessSnapshot | null): void {
@@ -1371,6 +1376,7 @@ export class VoiceAssistantWebSocketServer {
       agentStorage: this.agentStorage,
       projectRegistry: this.projectRegistry,
       workspaceRegistry: this.workspaceRegistry,
+      directorySync: this.directorySync,
       scheduleService: this.scheduleService,
       checkoutDiffManager: this.checkoutDiffManager,
       github: this.github,
@@ -1556,6 +1562,8 @@ export class VoiceAssistantWebSocketServer {
       desktopManaged: this.daemonRuntimeConfig?.desktopManaged === true,
       ...(this.serverCapabilities ? { capabilities: this.serverCapabilities } : {}),
       features: {
+        // COMPAT(directorySync): added in v0.3.x, remove gate after 2027-02-12.
+        directorySync: true,
         // COMPAT(providersSnapshot): keep optional until all clients rely on snapshot flow.
         providersSnapshot: true,
         // COMPAT(providersSnapshotCwd): added in v0.3.2, remove gate after 2027-02-10.
