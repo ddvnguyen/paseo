@@ -39,6 +39,7 @@ import { CodexAppServerAgentClient } from "./providers/codex-app-server-agent.js
 import { CopilotACPAgentClient } from "./providers/copilot-acp-agent.js";
 import { CursorACPAgentClient } from "./providers/cursor-acp-agent.js";
 import { GenericACPAgentClient } from "./providers/generic-acp-agent.js";
+import { HermesACPAgentClient } from "./providers/hermes-acp-agent.js";
 import { KimiACPAgentClient } from "./providers/kimi-acp-agent.js";
 import { KiroACPAgentClient } from "./providers/kiro-acp-agent.js";
 import { OpenCodeAgentClient } from "./providers/opencode-agent.js";
@@ -209,6 +210,12 @@ const PROVIDER_CLIENT_FACTORIES: Record<string, ProviderClientFactory> = {
       command: getCursorACPCommand(runtimeSettings),
       env: runtimeSettings?.env,
     }),
+  hermes: (logger, runtimeSettings) =>
+    new HermesACPAgentClient({
+      logger,
+      command: getHermesACPCommand(runtimeSettings),
+      env: runtimeSettings?.env,
+    }),
   opencode: (logger, runtimeSettings, options) =>
     new OpenCodeAgentClient(logger, runtimeSettings, {
       managedProcesses: options?.managedProcesses,
@@ -241,6 +248,19 @@ function getCursorACPCommand(
   }
 
   return ["cursor-agent", "acp"];
+}
+
+function getHermesACPCommand(
+  runtimeSettings: ProviderRuntimeSettings | undefined,
+): [string, ...string[]] {
+  if (
+    runtimeSettings?.command?.mode === "replace" &&
+    isNonEmptyStringArray(runtimeSettings.command.argv)
+  ) {
+    return runtimeSettings.command.argv;
+  }
+
+  return ["hermes", "acp"];
 }
 
 function getProviderClientFactory(provider: string): ProviderClientFactory {
@@ -792,6 +812,9 @@ function addDerivedProviders(
           };
           if (providerId === "cursor") {
             return new CursorACPAgentClient(acpOptions);
+          }
+          if (providerId === "hermes") {
+            return new HermesACPAgentClient(acpOptions);
           }
           if (providerId === "kimi") {
             return new KimiACPAgentClient(acpOptions);

@@ -3610,6 +3610,53 @@ describe("processAgentStreamEvent", () => {
     expect(gapped.taskSnapshot).toBeUndefined();
   });
 
+  it("publishes background task snapshots only from accepted timeline events", () => {
+    const backgroundTasks = [
+      {
+        id: "task-1",
+        agentId: "agent-1",
+        toolName: "Bash",
+        command: "npm run build",
+        status: "running" as const,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: null,
+        exitCode: null,
+        outputPreview: null,
+      },
+    ];
+    const event: AgentStreamEventPayload = {
+      type: "timeline",
+      provider: "claude",
+      item: {
+        type: "background_task",
+        tasks: backgroundTasks,
+      },
+    };
+    const currentCursor: TimelineCursor = {
+      epoch: "epoch-1",
+      startSeq: 1,
+      endSeq: 4,
+    };
+
+    const accepted = processAgentStreamEvent({
+      ...baseStreamInput,
+      event,
+      seq: 5,
+      epoch: "epoch-1",
+      currentCursor,
+    });
+    const stale = processAgentStreamEvent({
+      ...baseStreamInput,
+      event,
+      seq: 4,
+      epoch: "epoch-1",
+      currentCursor,
+    });
+
+    expect(accepted.backgroundTasksSnapshot).toEqual(backgroundTasks);
+    expect(stale.backgroundTasksSnapshot).toBeUndefined();
+  });
+
   it("detects gap and emits catch-up side effect", () => {
     const existingCursor: TimelineCursor = {
       epoch: "epoch-1",

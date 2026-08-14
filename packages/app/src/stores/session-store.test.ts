@@ -84,6 +84,10 @@ function taskTexts(tasks: ReadonlyArray<{ text: string }>): string[] {
   return tasks.map((task) => task.text);
 }
 
+function backgroundTaskCommands(tasks: ReadonlyArray<{ command: string | null }>): string[] {
+  return tasks.map((task) => task.command ?? "");
+}
+
 describe("agent task state", () => {
   it("notifies the task subscriber only when its task snapshot changes", () => {
     initializeTestSession();
@@ -133,6 +137,77 @@ describe("agent task state", () => {
     expect(useSessionStore.getState().sessions["test-server"]?.agentTasks.get("agent-1")).toEqual(
       todo.items,
     );
+  });
+});
+
+describe("agent background task state", () => {
+  it("notifies the background task subscriber only when its snapshot changes", () => {
+    initializeTestSession();
+    const snapshots: string[][] = [];
+    const unsubscribe = useSessionStore.subscribe(
+      (state) => state.sessions["test-server"]?.agentBackgroundTasks.get("agent-1") ?? [],
+      (tasks) => snapshots.push(backgroundTaskCommands(tasks)),
+    );
+
+    const running = [
+      {
+        id: "t1",
+        agentId: "agent-1",
+        toolName: "Bash",
+        command: "npm run build",
+        status: "running" as const,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: null,
+        exitCode: null,
+        outputPreview: null,
+      },
+    ];
+    useSessionStore
+      .getState()
+      .setAgentStreamState("test-server", "agent-1", { backgroundTasksSnapshot: running });
+    useSessionStore.getState().setIsPlayingAudio("test-server", true);
+    useSessionStore.getState().setAgentStreamState("test-server", "agent-1", {
+      backgroundTasksSnapshot: [...running],
+    });
+    useSessionStore.getState().setAgentStreamState("test-server", "agent-1", {
+      backgroundTasksSnapshot: [
+        { ...running[0], status: "completed", finishedAt: "2026-01-01T00:01:00.000Z" },
+      ],
+    });
+    unsubscribe();
+
+    expect(snapshots).toEqual([["npm run build"], ["npm run build"]]);
+  });
+
+  it("clears background tasks when the snapshot is empty", () => {
+    initializeTestSession();
+    useSessionStore.getState().setAgentStreamState("test-server", "agent-1", {
+      backgroundTasksSnapshot: [
+        {
+          id: "t1",
+          agentId: "agent-1",
+          toolName: "Bash",
+          command: "npm run build",
+          status: "running" as const,
+          startedAt: "2026-01-01T00:00:00.000Z",
+          finishedAt: null,
+          exitCode: null,
+          outputPreview: null,
+        },
+      ],
+    });
+    expect(
+      useSessionStore.getState().sessions["test-server"]?.agentBackgroundTasks.get("agent-1")
+        ?.length,
+    ).toBe(1);
+
+    useSessionStore
+      .getState()
+      .setAgentStreamState("test-server", "agent-1", { backgroundTasksSnapshot: [] });
+
+    expect(
+      useSessionStore.getState().sessions["test-server"]?.agentBackgroundTasks.get("agent-1"),
+    ).toBeUndefined();
   });
 });
 

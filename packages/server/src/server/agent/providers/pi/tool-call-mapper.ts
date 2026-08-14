@@ -64,6 +64,7 @@ interface PiToolResultDetails {
   tool?: string;
   mcpResult?: unknown;
   xdev?: unknown;
+  phases?: unknown;
 }
 
 interface PiToolResultTextContent {

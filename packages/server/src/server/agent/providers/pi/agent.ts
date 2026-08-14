@@ -86,6 +86,7 @@ import {
   type PiToolResult,
   type PiTrackedToolCall,
 } from "./tool-call-mapper.js";
+import { mapPiTodoState, mapPiTodoToolResult } from "./todo-mapper.js";
 
 const PI_PROVIDER = "pi";
 const DEFAULT_PI_THINKING_LEVEL: PiThinkingLevel = "medium";
@@ -1252,6 +1253,7 @@ export class PiRpcAgentSession implements AgentSession {
   private interruptingTurnId: string | null = null;
   private lastInterruptedTurnId: string | null = null;
   private interruptedTerminalError: { turnId: string; error: string } | null = null;
+  private lastTodoItem: Extract<AgentStreamEvent, { type: "timeline" }>["item"] | null = null;
 
   constructor(options: PiRpcAgentSessionOptions) {
     this.runtimeSession = options.runtimeSession;
@@ -1372,6 +1374,13 @@ export class PiRpcAgentSession implements AgentSession {
       await this.runtimeSession.getMessages(),
       this.capturedUserEntries,
     );
+    for (const item of mapPiTodoState(this.state)) {
+      yield {
+        type: "timeline",
+        provider: this.provider,
+        item,
+      };
+    }
   }
 
   async getRuntimeInfo(): Promise<AgentRuntimeInfo> {
@@ -2155,6 +2164,12 @@ export class PiRpcAgentSession implements AgentSession {
     const error = event.isError ? event.result : null;
     const status = event.isError ? "failed" : "completed";
     this.emitToolCallEvent(event.toolCallId, toolCall, status, result, error);
+    if (event.toolName === "todo") {
+      const item = mapPiTodoToolResult(result);
+      if (item) {
+        this.emitTodoItem(item);
+      }
+    }
   }
 
   private emitCompactionTimeline(input: {
@@ -2279,6 +2294,31 @@ export class PiRpcAgentSession implements AgentSession {
       item,
     });
     return true;
+  }
+
+  private emitTodoItem(item: Extract<AgentStreamEvent, { type: "timeline" }>["item"]): void {
+    if (item.type === "todo") {
+      const previous = this.lastTodoItem;
+      const isDuplicate =
+        previous?.type === "todo" &&
+        previous.items.length === item.items.length &&
+        previous.items.every((previousItem, index) => {
+          const nextItem = item.items[index];
+          return (
+            nextItem?.text === previousItem.text && nextItem.completed === previousItem.completed
+          );
+        });
+      if (isDuplicate) {
+        return;
+      }
+      this.lastTodoItem = item;
+    }
+    this.emit({
+      type: "timeline",
+      provider: this.provider,
+      turnId: this.currentTurnIdForEvent(),
+      item,
+    });
   }
 
   private mapToolDetail(

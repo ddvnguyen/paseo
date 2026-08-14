@@ -8,6 +8,7 @@ import {
   appendSubmittedUserMessage,
   handoffCreatedAgentUserMessageToStream,
   removeSubmittedUserMessage,
+  type BackgroundTaskEntry,
   type StreamItem,
   type TodoEntry,
   type UserMessageItem,
@@ -376,6 +377,22 @@ function updateAgentTasks(
   return next;
 }
 
+function updateAgentBackgroundTasks(
+  current: Map<string, BackgroundTaskEntry[]>,
+  agentId: string,
+  backgroundTasksSnapshot: BackgroundTaskEntry[] | undefined,
+): Map<string, BackgroundTaskEntry[]> {
+  if (
+    backgroundTasksSnapshot === undefined ||
+    equal(current.get(agentId) ?? [], backgroundTasksSnapshot)
+  )
+    return current;
+  const next = new Map(current);
+  if (backgroundTasksSnapshot.length > 0) next.set(agentId, backgroundTasksSnapshot);
+  else next.delete(agentId);
+  return next;
+}
+
 export type WorkspaceRestoreStatus = "restoring" | "failed" | "needs-host-upgrade";
 
 // Per-session state
@@ -406,6 +423,7 @@ export interface SessionState {
   agentStreamTail: Map<string, StreamItem[]>;
   agentStreamHead: Map<string, StreamItem[]>;
   agentTasks: Map<string, TodoEntry[]>;
+  agentBackgroundTasks: Map<string, BackgroundTaskEntry[]>;
   agentTurnLiveness: Map<string, TurnLiveness>;
   messageSubmissions: Map<string, MessageSubmissionRecord[]>;
   agentTimelineCursor: Map<string, AgentTimelineCursorState>;
@@ -494,6 +512,7 @@ interface SessionStoreActions {
       head?: StreamItem[];
       acknowledgedClientMessageIds?: readonly string[];
       taskSnapshot?: TodoEntry[];
+      backgroundTasksSnapshot?: BackgroundTaskEntry[];
     },
   ) => void;
   applyAgentTurnLiveness: (
@@ -663,6 +682,7 @@ function createInitialSessionState(
     agentStreamTail: new Map(),
     agentStreamHead: new Map(),
     agentTasks: new Map(),
+    agentBackgroundTasks: new Map(),
     agentTurnLiveness: new Map(),
     messageSubmissions: new Map(),
     agentTimelineCursor: new Map(),
@@ -1084,8 +1104,20 @@ export const useSessionStore = create<SessionStore>()(
           const changedSubmissions = observedSubmissions !== currentSubmissions;
           const agentTasks = updateAgentTasks(session.agentTasks, agentId, state.taskSnapshot);
           const changedTasks = agentTasks !== session.agentTasks;
+          const agentBackgroundTasks = updateAgentBackgroundTasks(
+            session.agentBackgroundTasks,
+            agentId,
+            state.backgroundTasksSnapshot,
+          );
+          const changedBackgroundTasks = agentBackgroundTasks !== session.agentBackgroundTasks;
 
-          if (!changedTail && !changedHead && !changedSubmissions && !changedTasks) {
+          if (
+            !changedTail &&
+            !changedHead &&
+            !changedSubmissions &&
+            !changedTasks &&
+            !changedBackgroundTasks
+          ) {
             return prev;
           }
 
@@ -1108,6 +1140,7 @@ export const useSessionStore = create<SessionStore>()(
                 agentStreamTail: nextTail,
                 agentStreamHead: nextHead,
                 agentTasks,
+                agentBackgroundTasks,
                 messageSubmissions,
               },
             },

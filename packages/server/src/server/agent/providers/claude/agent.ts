@@ -45,6 +45,7 @@ import {
 import { parsePartialJsonObject } from "./partial-json.js";
 import { ClaudeSidechainTracker } from "./sidechain-tracker.js";
 import { ClaudeTaskState } from "./task-state.js";
+import { ClaudeBackgroundTaskState } from "./background-task-state.js";
 import {
   ClaudeTaskProtocolSource,
   type ClaudeHookObservationInput,
@@ -2035,6 +2036,7 @@ class ClaudeAgentSession implements AgentSession {
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
   private readonly timelineAssembler = new TimelineAssembler();
   private readonly taskState = new ClaudeTaskState();
+  private readonly backgroundTaskState = new ClaudeBackgroundTaskState();
   private readonly taskProtocolSource = new ClaudeTaskProtocolSource({
     getToolInput: (toolUseId) => this.toolUseCache.get(toolUseId)?.input ?? null,
     readWorkflowResult: readClaudeWorkflowResultFile,
@@ -2805,6 +2807,7 @@ class ClaudeAgentSession implements AgentSession {
     this.emittedUserMessageIds.clear();
     this.rewindTurnAnchors.length = 0;
     this.taskState.reset();
+    this.backgroundTaskState.reset();
     this.loadPersistedHistory(sessionId);
     if (oldSessionId && oldSessionId !== sessionId) {
       this.dispatchEvents([
@@ -2836,6 +2839,7 @@ class ClaudeAgentSession implements AgentSession {
     this.emittedUserMessageIds.clear();
     this.rewindTurnAnchors.length = 0;
     this.taskState.reset();
+    this.backgroundTaskState.reset();
   }
 
   private rememberUserMessageId(messageId: string | null | undefined): void {
@@ -3910,6 +3914,8 @@ class ClaudeAgentSession implements AgentSession {
   private appendTaskStateEvent(message: SDKMessage, events: AgentStreamEvent[]): void {
     const item = this.taskState.observe(message);
     if (item) events.push({ type: "timeline", provider: "claude", item });
+    const backgroundItem = this.backgroundTaskState.observe(message);
+    if (backgroundItem) events.push({ type: "timeline", provider: "claude", item: backgroundItem });
   }
 
   /**
@@ -4571,6 +4577,7 @@ class ClaudeAgentSession implements AgentSession {
   private loadPersistedHistory(sessionId: string): void {
     try {
       this.taskState.reset();
+      this.backgroundTaskState.reset();
       const historyPath = this.resolveHistoryPath(sessionId);
       if (!historyPath || !fs.existsSync(historyPath)) {
         return;
@@ -4696,7 +4703,12 @@ class ClaudeAgentSession implements AgentSession {
 
     const historyTimestamp = normalizeProviderReplayTimestamp(entry.timestamp);
     const taskSnapshot = this.taskState.observe(entry);
-    const items = [...(taskSnapshot ? [taskSnapshot] : []), ...this.convertHistoryEntry(entry)];
+    const backgroundTaskSnapshot = this.backgroundTaskState.observe(entry);
+    const items = [
+      ...(taskSnapshot ? [taskSnapshot] : []),
+      ...(backgroundTaskSnapshot ? [backgroundTaskSnapshot] : []),
+      ...this.convertHistoryEntry(entry),
+    ];
     const isVisibleUserEntry =
       entry.type === "user" &&
       typeof entry.uuid === "string" &&

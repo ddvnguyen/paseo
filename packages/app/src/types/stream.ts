@@ -771,6 +771,18 @@ export interface TodoEntry {
   activeForm?: string;
 }
 
+export interface BackgroundTaskEntry {
+  id: string;
+  agentId: string;
+  toolName: string;
+  command: string | null;
+  status: "running" | "completed" | "failed" | "cancelled";
+  startedAt: string;
+  finishedAt: string | null;
+  exitCode: number | null;
+  outputPreview: string | null;
+}
+
 export type TaskActivity =
   | { type: "created"; count: number }
   | { type: "added" | "started" | "completed" | "reopened"; task: string };

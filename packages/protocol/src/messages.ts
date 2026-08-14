@@ -666,6 +666,22 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     ),
   }),
   z.object({
+    type: z.literal("background_task"),
+    tasks: z.array(
+      z.object({
+        id: z.string(),
+        agentId: z.string(),
+        toolName: z.string(),
+        command: z.string().nullable(),
+        status: z.enum(["running", "completed", "failed", "cancelled"]),
+        startedAt: z.string(),
+        finishedAt: z.string().nullable(),
+        exitCode: z.number().nullable(),
+        outputPreview: z.string().nullable(),
+      }),
+    ),
+  }),
+  z.object({
     type: z.literal("error"),
     message: z.string(),
   }),

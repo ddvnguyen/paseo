@@ -1,4 +1,5 @@
 import type {
+  AgentBackgroundTaskDescriptor,
   AgentProviderNotice,
   AgentTaskItem,
   ProviderOptions,
@@ -7,7 +8,7 @@ import type {
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { PaseoToolCatalog } from "./tools/types.js";
 
-export type { AgentProviderNotice, AgentTaskItem };
+export type { AgentBackgroundTaskDescriptor, AgentProviderNotice, AgentTaskItem };
 
 export type AgentProvider = string;
 
@@ -385,6 +386,7 @@ export type AgentTimelineItem =
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
   | { type: "todo"; items: AgentTaskItem[] }
+  | { type: "background_task"; tasks: AgentBackgroundTaskDescriptor[] }
   | { type: "error"; message: string }
   | CompactionTimelineItem;
 

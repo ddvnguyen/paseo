@@ -347,12 +347,25 @@ export interface AgentTaskItem {
   activeForm?: string;
 }
 
+export interface AgentBackgroundTaskDescriptor {
+  id: string;
+  agentId: string;
+  toolName: string;
+  command: string | null;
+  status: "running" | "completed" | "failed" | "cancelled";
+  startedAt: string;
+  finishedAt: string | null;
+  exitCode: number | null;
+  outputPreview: string | null;
+}
+
 export type AgentTimelineItem =
   | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
   | { type: "assistant_message"; text: string; messageId?: string }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
   | { type: "todo"; items: AgentTaskItem[] }
+  | { type: "background_task"; tasks: AgentBackgroundTaskDescriptor[] }
   | { type: "error"; message: string }
   | CompactionTimelineItem;
 

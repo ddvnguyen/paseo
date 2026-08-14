@@ -255,6 +255,15 @@ export const AGENT_PROVIDER_DEFINITIONS: AgentProviderDefinition[] = [
     defaultModeId: "full",
     modes: OMP_MODES,
   },
+  {
+    id: "hermes",
+    label: "Hermes",
+    description:
+      "Nous Research's self-improving agent with memory, skills, and ACP editor integration",
+    enabledByDefault: false,
+    defaultModeId: null,
+    modes: [],
+  },
 ];
 
 export const DEV_AGENT_PROVIDER_DEFINITIONS: AgentProviderDefinition[] = [

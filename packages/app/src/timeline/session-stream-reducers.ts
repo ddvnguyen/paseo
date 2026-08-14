@@ -1,6 +1,11 @@
 import type { AgentStreamEventPayload } from "@getpaseo/protocol/messages";
 import { selectAgentTimelineState, useSessionStore } from "@/stores/session-store";
-import type { AssistantMessageItem, StreamItem, TodoEntry } from "@/types/stream";
+import type {
+  AssistantMessageItem,
+  BackgroundTaskEntry,
+  StreamItem,
+  TodoEntry,
+} from "@/types/stream";
 import type { TurnLivenessTransition } from "@/timeline/turn-liveness";
 import {
   applyStreamEvent,
@@ -1437,6 +1442,7 @@ export interface ProcessAgentStreamEventOutput {
   cursorChanged: boolean;
   acknowledgedClientMessageIds: string[];
   taskSnapshot?: TodoEntry[];
+  backgroundTasksSnapshot?: BackgroundTaskEntry[];
   sideEffects: AgentStreamReducerSideEffect[];
 }
 
@@ -1646,6 +1652,11 @@ export function processAgentStreamEvent(
     ...(sequencing.shouldApplyStreamEvent && event.type === "timeline" && event.item.type === "todo"
       ? { taskSnapshot: event.item.items }
       : {}),
+    ...(sequencing.shouldApplyStreamEvent &&
+    event.type === "timeline" &&
+    event.item.type === "background_task"
+      ? { backgroundTasksSnapshot: event.item.tasks }
+      : {}),
     sideEffects: sequencing.sideEffects,
   };
 }
@@ -1672,6 +1683,7 @@ export function processAgentStreamEvents(
   let changedHead = false;
   let cursorChanged = false;
   let taskSnapshot: TodoEntry[] | undefined;
+  let backgroundTasksSnapshot: BackgroundTaskEntry[] | undefined;
   const acknowledgedClientMessageIds = new Set<string>();
   const sideEffects: AgentStreamReducerSideEffect[] = [];
 
@@ -1698,6 +1710,9 @@ export function processAgentStreamEvents(
     if (result.taskSnapshot !== undefined) {
       taskSnapshot = result.taskSnapshot;
     }
+    if (result.backgroundTasksSnapshot !== undefined) {
+      backgroundTasksSnapshot = result.backgroundTasksSnapshot;
+    }
 
     if (result.cursorChanged) {
       cursor = result.cursor ?? undefined;
@@ -1714,6 +1729,7 @@ export function processAgentStreamEvents(
     cursorChanged,
     acknowledgedClientMessageIds: [...acknowledgedClientMessageIds],
     ...(taskSnapshot !== undefined ? { taskSnapshot } : {}),
+    ...(backgroundTasksSnapshot !== undefined ? { backgroundTasksSnapshot } : {}),
     sideEffects,
   };
 }
@@ -1798,6 +1814,7 @@ interface StreamStatePatch {
   head?: StreamItem[];
   acknowledgedClientMessageIds?: readonly string[];
   taskSnapshot?: TodoEntry[];
+  backgroundTasksSnapshot?: BackgroundTaskEntry[];
 }
 
 export function deriveAgentStreamTurnLiveness(
@@ -1861,7 +1878,8 @@ export function createSessionAgentStreamReducerQueue(
         result.changedTail ||
         result.changedHead ||
         result.acknowledgedClientMessageIds.length > 0 ||
-        result.taskSnapshot !== undefined
+        result.taskSnapshot !== undefined ||
+        result.backgroundTasksSnapshot !== undefined
       ) {
         setAgentStreamState(serverId, agentId, {
           ...(result.changedTail ? { tail: result.tail } : {}),
@@ -1870,6 +1888,9 @@ export function createSessionAgentStreamReducerQueue(
             ? { acknowledgedClientMessageIds: result.acknowledgedClientMessageIds }
             : {}),
           ...(result.taskSnapshot !== undefined ? { taskSnapshot: result.taskSnapshot } : {}),
+          ...(result.backgroundTasksSnapshot !== undefined
+            ? { backgroundTasksSnapshot: result.backgroundTasksSnapshot }
+            : {}),
         });
       }
       if (result.cursorChanged && result.cursor) {
