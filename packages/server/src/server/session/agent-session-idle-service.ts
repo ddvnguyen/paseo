@@ -71,7 +71,10 @@ export function createAgentSessionIdleService(
       // Already demoted or gone; nothing left to reap.
       return;
     }
-    if (agent.lifecycle !== "idle" || agent.activeForegroundTurnId !== null) {
+    if (
+      (agent.lifecycle !== "idle" && agent.lifecycle !== "error") ||
+      agent.activeForegroundTurnId !== null
+    ) {
       // Active; its own activity events re-arm the lease.
       return;
     }
@@ -99,8 +102,13 @@ export function createAgentSessionIdleService(
         return;
       }
       // Any lifecycle transition is activity: freshly resumed agents (idle)
-      // start the countdown, and running/active agents keep it re-armed.
-      if (agent.lifecycle === "running" || agent.activeForegroundTurnId !== null) {
+      // and failed agents (error) start the countdown, and running/active
+      // agents keep it re-armed.
+      if (
+        agent.lifecycle === "running" ||
+        agent.lifecycle === "error" ||
+        agent.activeForegroundTurnId !== null
+      ) {
         touch(agent.id);
       } else if (agent.lifecycle === "idle") {
         touch(agent.id);

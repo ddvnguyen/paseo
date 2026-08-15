@@ -411,13 +411,13 @@ type ManagedAgentClosed = ManagedAgentBase & {
 
 /**
  * An agent whose provider session was torn down after idle reaping but which
- * stays registered and listed as "idle". Same public shape as a closed agent
- * (session null), but with lifecycle "idle" and `cold: true` so listings and
- * clients keep treating it as an active idle agent rather than a closed one.
+ * stays registered and listed under its prior lifecycle (idle or error). Same
+ * public shape as a closed agent (session null), but with `cold: true` so
+ * listings and clients keep treating it as active rather than closed.
  * Re-activation lazily resumes the provider session via ensureAgentLoaded.
  */
 type ManagedAgentCold = ManagedAgentBase & {
-  lifecycle: "idle";
+  lifecycle: "idle" | "error";
   session: null;
   cold: true;
   activeForegroundTurnId: null;
@@ -1549,6 +1549,8 @@ export class AgentManager {
 
     // Cold agents (lifecycle "idle", session null) never live in this.agents,
     // so after the idle narrowing the agent is guaranteed to hold a session.
+    // Cold agents (lifecycle "idle"/"error", session null) never live in
+    // this.agents, so after the reapability guard the agent holds a session.
     const idleAgent = agent as ManagedAgentIdle;
 
     this.logger.trace(
@@ -1566,7 +1568,7 @@ export class AgentManager {
 
     const coldAgent: ManagedAgentCold = {
       ...idleAgent,
-      lifecycle: "idle",
+      lifecycle: idleAgent.lifecycle,
       session: null,
       cold: true,
       activeForegroundTurnId: null,
@@ -1643,7 +1645,13 @@ export class AgentManager {
     agentId: string,
     keepWarm?: (agent: ManagedAgent) => boolean,
   ): boolean {
-    if (agent.lifecycle !== "idle" || agent.activeForegroundTurnId !== null) {
+    // Reap idle agents and failed (error) agents once they quiet down; both
+    // hold a provider session that is pure overhead while unattended. The
+    // remaining guards keep busy or attention-needing agents warm.
+    if (
+      (agent.lifecycle !== "idle" && agent.lifecycle !== "error") ||
+      agent.activeForegroundTurnId !== null
+    ) {
       return false;
     }
     if (agent.pendingReplacement) {

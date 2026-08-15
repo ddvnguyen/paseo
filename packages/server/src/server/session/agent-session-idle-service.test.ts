@@ -170,6 +170,24 @@ describe("createAgentSessionIdleService", () => {
     service.dispose();
   });
 
+  test("reaps an error-state agent once the timeout expires", async () => {
+    const harness = buildHarness();
+    harness.agents.set(AGENT_ID, makeAgent({ lifecycle: "error" }));
+    const service = createAgentSessionIdleService({
+      agentManager: harness.agentManager,
+      timeoutMs: IDLE_TIMEOUT_MS,
+      logger: createTestLogger(),
+    });
+
+    service.handleAgentEvent({ type: "agent_state", agent: makeAgent({ lifecycle: "error" }) });
+    expect(harness.demoted).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(IDLE_TIMEOUT_MS);
+    expect(harness.demoted).toEqual([AGENT_ID]);
+
+    service.dispose();
+  });
+
   test("is disabled when timeoutMs is 0", async () => {
     const harness = buildHarness();
     const service = createAgentSessionIdleService({

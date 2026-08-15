@@ -922,17 +922,16 @@ export class VoiceAssistantWebSocketServer {
   }
 
   /**
-   * Whether any trusted client is actively viewing the agent: either focused on
-   * it with the app visible within the presence window, or holding a live
-   * timeline subscription for it. Used by idle-session reaping to avoid
-   * demoting an agent a client is looking at.
+   * Whether any trusted client is actively viewing the agent: focused on it
+   * with the app visible within the presence window. Used by idle-session
+   * reaping to avoid demoting an agent a human is looking at. Passive timeline
+   * subscriptions are deliberately NOT counted — orchestrator agents and
+   * background UI tabs would otherwise pin sessions forever in an
+   * orchestration-heavy environment.
    */
   public isAgentViewerPresent(agentId: string): boolean {
     const nowMs = Date.now();
     for (const session of this.listTrustedSessions()) {
-      if (session.isViewingAgent(agentId)) {
-        return true;
-      }
       const state = this.getClientActivityState(session);
       if (
         state.focusedAgentId === agentId &&
