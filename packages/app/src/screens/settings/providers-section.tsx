@@ -10,6 +10,7 @@ import {
   type PressableStateCallbackType,
 } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import { settingsStyles } from "@/styles/settings";
 import { useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useHostFeature } from "@/runtime/host-features";
@@ -33,6 +34,7 @@ import {
 import { SettingsSection } from "@/screens/settings/settings-section";
 import { useProviderSettingsStore } from "@/stores/provider-settings-store";
 import { confirmDialog } from "@/utils/confirm-dialog";
+import { filterSelectableModels } from "@/provider-selection/model-catalog";
 import { ChevronRight, MoreHorizontal, Trash2 } from "lucide-react-native";
 
 type ProviderDefinition = ReturnType<typeof buildProviderDefinitions>[number];
@@ -178,6 +180,7 @@ function ProviderRow({
 }: ProviderRowProps) {
   const { t } = useTranslation();
   const { theme } = useUnistyles();
+  const isCompact = useIsCompactFormFactor();
   const ProviderIcon = getProviderIcon(def.id);
   const providerError =
     enabled &&
@@ -186,7 +189,7 @@ function ProviderRow({
     entry.error.trim().length > 0
       ? entry.error.trim()
       : null;
-  const modelCount = entry.models?.length ?? 0;
+  const modelCount = filterSelectableModels(entry.models ?? null)?.length ?? 0;
   const providerStatus = getProviderStatus(entry.status, enabled, modelCount, t);
 
   const handlePress = useCallback(() => {
@@ -229,10 +232,10 @@ function ProviderRow({
                 <Text style={settingsStyles.rowTitle} numberOfLines={1}>
                   {def.label}
                 </Text>
-                <Text style={styles.separator}>·</Text>
-                <StatusIndicator status={providerStatus} />
+                {!isCompact ? <Text style={styles.separator}>·</Text> : null}
+                <StatusIndicator status={providerStatus} compact={isCompact} />
               </View>
-              {providerError ? (
+              {providerError && !isCompact ? (
                 <Text style={styles.errorText} numberOfLines={3}>
                   {providerError}
                 </Text>
@@ -246,18 +249,20 @@ function ProviderRow({
               disabled={isToggling || isRemoving}
               accessibilityLabel={t("settings.providers.enableProvider", { name: def.label })}
             />
-            {canRemove ? (
-              <ProviderActionsMenu
-                providerId={def.id}
-                providerLabel={def.label}
-                isRemoving={isRemoving}
-                iconSize={theme.iconSize.sm}
-                foregroundColor={theme.colors.foreground}
-                foregroundMutedColor={theme.colors.foregroundMuted}
-                dangerColor={theme.colors.statusDanger}
-                onRemove={onRemove}
-              />
-            ) : null}
+            <View style={styles.menuSlot}>
+              {canRemove ? (
+                <ProviderActionsMenu
+                  providerId={def.id}
+                  providerLabel={def.label}
+                  isRemoving={isRemoving}
+                  iconSize={theme.iconSize.sm}
+                  foregroundColor={theme.colors.foreground}
+                  foregroundMutedColor={theme.colors.foregroundMuted}
+                  dangerColor={theme.colors.statusDanger}
+                  onRemove={onRemove}
+                />
+              ) : null}
+            </View>
           </View>
         </>
       )}
@@ -278,7 +283,7 @@ function getDotColor(tone: StatusTone, theme: ReturnType<typeof useUnistyles>["t
   }
 }
 
-function StatusIndicator({ status }: { status: ProviderStatus }) {
+function StatusIndicator({ status, compact }: { status: ProviderStatus; compact: boolean }) {
   const { t } = useTranslation();
   const { theme } = useUnistyles();
   const dotStyle = useMemo(
@@ -293,15 +298,19 @@ function StatusIndicator({ status }: { status: ProviderStatus }) {
       ) : (
         <View style={dotStyle} />
       )}
-      <Text style={styles.statusLabel}>{status.label}</Text>
-      {status.modelCount !== null ? (
+      {!compact ? (
         <>
-          <Text style={styles.separator}>·</Text>
-          <Text style={styles.statusLabel}>
-            {status.modelCount === 1
-              ? t("settings.providers.models.one")
-              : t("settings.providers.models.many", { count: status.modelCount })}
-          </Text>
+          <Text style={styles.statusLabel}>{status.label}</Text>
+          {status.modelCount !== null ? (
+            <>
+              <Text style={styles.separator}>·</Text>
+              <Text style={styles.statusLabel}>
+                {status.modelCount === 1
+                  ? t("settings.providers.models.one")
+                  : t("settings.providers.models.many", { count: status.modelCount })}
+              </Text>
+            </>
+          ) : null}
         </>
       ) : null}
     </View>
@@ -474,7 +483,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   emptyText: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
   },
   row: {
     gap: theme.spacing[3],
@@ -513,15 +522,15 @@ const styles = StyleSheet.create((theme) => ({
   },
   statusLabel: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
   },
   separator: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
   },
   errorText: {
     color: theme.colors.palette.red[300],
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     marginTop: theme.spacing[1],
   },
   trailingControls: {
@@ -535,6 +544,10 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.lg,
     alignItems: "center",
     justifyContent: "center",
+  },
+  menuSlot: {
+    width: 32,
+    height: 32,
   },
   menuButtonHovered: {
     backgroundColor: theme.colors.surface2,

@@ -1,12 +1,7 @@
+import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { type ReactElement, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ActivityIndicator,
-  Pressable,
-  Text,
-  View,
-  type PressableStateCallbackType,
-} from "react-native";
+import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { useMutation } from "@tanstack/react-query";
 import { Check, ChevronDown } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -32,6 +27,8 @@ import { planWorkspaceOpenTargets } from "@/workspace/open-target-planner";
 import type { Theme } from "@/styles/theme";
 import { ForgeBrandIcon } from "@/git/forge-icon";
 import { getForgePresentation } from "@/git/forge";
+import { buttonControlHeight, HEADER_CONTROL_HEIGHT } from "@/components/ui/control-geometry";
+import { extraMutedIconColorMapping } from "@/components/ui/icon-button-chrome";
 
 interface WorkspaceOpenInEditorButtonProps {
   serverId: string;
@@ -47,7 +44,7 @@ interface OpenTarget {
   onOpen: () => Promise<void> | void;
 }
 
-const ThemedActivityIndicator = withUnistyles(ActivityIndicator);
+const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedEditorTargetIcon = withUnistyles(EditorTargetIcon);
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedCheckIcon = withUnistyles(Check);
@@ -189,11 +186,11 @@ export function WorkspaceOpenInEditorButton({
 
   const primaryPressableStyle = useCallback(
     ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
-      styles.splitButtonPrimary,
+      hideLabels ? styles.splitButtonPrimaryIconOnly : styles.splitButtonPrimary,
       (Boolean(hovered) || pressed) && styles.splitButtonPrimaryHovered,
       openMutation.isPending && styles.splitButtonPrimaryDisabled,
     ],
-    [openMutation.isPending],
+    [hideLabels, openMutation.isPending],
   );
 
   const caretTriggerStyle = useCallback(
@@ -235,7 +232,7 @@ export function WorkspaceOpenInEditorButton({
           }
         >
           {openMutation.isPending ? (
-            <ThemedActivityIndicator
+            <ThemedLoadingSpinner
               size="small"
               uniProps={foregroundColorMapping}
               style={styles.splitButtonSpinnerOnly}
@@ -257,7 +254,7 @@ export function WorkspaceOpenInEditorButton({
               accessibilityRole="button"
               accessibilityLabel={t("workspace.git.openInEditor.chooseEditor")}
             >
-              <ThemedChevronDown size={16} uniProps={mutedColorMapping} />
+              <ThemedChevronDown size={16} uniProps={extraMutedIconColorMapping} />
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"
@@ -289,6 +286,10 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 0,
   },
   splitButton: {
+    height: {
+      xs: buttonControlHeight.xs,
+      md: HEADER_CONTROL_HEIGHT,
+    },
     flexDirection: "row",
     alignItems: "stretch",
     borderRadius: theme.borderRadius.md,
@@ -297,16 +298,19 @@ const styles = StyleSheet.create((theme) => ({
     overflow: "hidden",
   },
   splitButtonPrimary: {
-    paddingLeft: theme.spacing[3],
-    paddingRight: theme.spacing[3],
-    paddingVertical: theme.spacing[1],
+    paddingHorizontal: {
+      xs: theme.spacing[3],
+      md: theme.spacing[2],
+    },
     justifyContent: "center",
     position: "relative",
   },
   splitButtonPrimaryIconOnly: {
-    paddingLeft: theme.spacing[2],
-    paddingRight: theme.spacing[2],
-    paddingVertical: theme.spacing[1],
+    width: {
+      xs: buttonControlHeight.xs,
+      md: HEADER_CONTROL_HEIGHT,
+    },
+    paddingHorizontal: 0,
     justifyContent: "center",
     position: "relative",
   },
@@ -317,8 +321,8 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.6,
   },
   splitButtonText: {
-    fontSize: theme.fontSize.sm,
-    lineHeight: theme.fontSize.sm * 1.5,
+    fontSize: theme.fontSize.base,
+    lineHeight: theme.fontSize.base * 1.5,
     color: theme.colors.foreground,
     fontWeight: theme.fontWeight.normal,
   },
@@ -327,13 +331,16 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     gap: theme.spacing[2],
-    minHeight: theme.fontSize.sm * 1.5,
+    minHeight: theme.fontSize.base * 1.5,
   },
   splitButtonSpinnerOnly: {
     transform: [{ scale: 0.8 }],
   },
   splitButtonCaret: {
-    width: 28,
+    width: {
+      xs: buttonControlHeight.xs,
+      md: HEADER_CONTROL_HEIGHT,
+    },
     alignItems: "center",
     justifyContent: "center",
     borderLeftWidth: theme.borderWidth[1],

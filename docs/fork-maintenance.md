@@ -80,12 +80,7 @@ When resolving version conflicts in `package.json` files:
 ```json
 {
   "name": "@getpaseo/cli",
-<<<<<<< HEAD
-  "version": "0.1.109",
-=======
-  "version": "0.1.107-hydra",
->>>>>>> b66dadb99 (chore: rebase on v0.1.107, keep hydra patches)
-```
+  "version": "0.1.109-hydra",```
 
 **After (resolved):**
 
