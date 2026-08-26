@@ -8,7 +8,8 @@ const FDROID_ABI_VERSION_CODE_SUFFIXES = {
 };
 
 function getNativeReleaseVersion(version) {
-  const match = versionPattern.exec(version);
+  const normalizedVersion = version.replace(/-hydra.*$/, "");
+  const match = versionPattern.exec(normalizedVersion);
   if (!match) {
     throw new Error(`Cannot derive native release version from unsupported version: ${version}`);
   }
