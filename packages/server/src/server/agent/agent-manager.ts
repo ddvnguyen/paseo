@@ -4251,6 +4251,7 @@ export class AgentManager {
     // Intercept bg-bash MCP tool calls for background task tracking
     if (event.item.type === "tool_call") {
       this.interceptBackgroundTaskFromToolCall(agent, event.item);
+    }
     if (
       event.item.type === "user_message" &&
       event.item.clientMessageId &&
