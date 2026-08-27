@@ -2,6 +2,7 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import {
   View,
   Text,
+  Pressable,
   useWindowDimensions,
   NativeSyntheticEvent,
   TextInputKeyPressEventData,
@@ -510,15 +511,26 @@ function usePasteImagesEffect(args: PasteImagesEffectArgs): void {
   ]);
 }
 
-function useAutoFocusOnWebEffect(
+/**
+ * Reveal-then-focus: the idle composer keeps no TextInput mounted, so a
+ * focus request first expands the surface, then transfers keyboard focus
+ * to the freshly-mounted input on the following commit. Web retries because
+ * focus() aimed at a mid-commit element can be swallowed; native is direct.
+ */
+function useRevealInputFocusEffect(
+  wantsInputFocus: boolean,
   textInputRef: React.MutableRefObject<ComposerTextInputHandle | null>,
-  autoFocus: boolean,
-  autoFocusKey: string | undefined,
 ): void {
   useEffect(() => {
-    if (!isWeb || !autoFocus) return;
+    if (!wantsInputFocus) return undefined;
+    const handle = textInputRef.current;
+    if (!handle) return undefined;
+    if (!isWeb) {
+      handle.focus();
+      return undefined;
+    }
     return focusWithRetries({
-      focus: () => textInputRef.current?.focus(),
+      focus: () => handle.focus(),
       isFocused: () => {
         const element = getTextInputNativeElement(textInputRef.current);
         const active = typeof document !== "undefined" ? document.activeElement : null;
@@ -526,21 +538,29 @@ function useAutoFocusOnWebEffect(
       },
       deferInitialAttempt: true,
     });
+    // Focus transfer only depends on the reveal pulse; refs are stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoFocus, autoFocusKey]);
+  }, [wantsInputFocus]);
 }
 
 function MessageInputAutoFocus({
   enabled,
   autoFocusKey,
-  textInputRef,
+  onRequestFocus,
 }: {
   enabled: boolean;
   autoFocusKey: string | undefined;
-  textInputRef: React.MutableRefObject<ComposerTextInputHandle | null>;
+  onRequestFocus: () => void;
 }) {
   const { isActiveComposer } = useComposerKeyboardScope();
-  useAutoFocusOnWebEffect(textInputRef, enabled && isActiveComposer, autoFocusKey);
+  useEffect(() => {
+    if (!isWeb || !enabled || !isActiveComposer) return;
+    // Auto-focus goes through the shared focus request so the input is
+    // revealed first if it collapsed back to the idle surface.
+    onRequestFocus();
+    // Keyed as a focus pulse: callers bump autoFocusKey to re-request focus.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFocusKey]);
   return null;
 }
 
@@ -995,6 +1015,10 @@ function resolveMaxInputHeight(windowHeight: number): number {
   return Math.max(DEFAULT_MAX_INPUT_HEIGHT, Math.floor(windowHeight * MAX_INPUT_VIEWPORT_RATIO));
 }
 
+function resolveMinInputHeight(isInputExpanded: boolean): number {
+  return isInputExpanded ? MIN_INPUT_HEIGHT_FOCUSED : MIN_INPUT_HEIGHT;
+}
+
 function isTextAreaLike(v: unknown): v is TextAreaHandle {
   return typeof v === "object" && v !== null && "scrollHeight" in v;
 }
@@ -1205,6 +1229,9 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const dictationToggleKeys = useShortcutKeys("dictation-toggle");
     const focusInputKeys = useShortcutKeys("focus-message-input");
     const [isInputFocused, setIsInputFocused] = useState(false);
+    // Set when something asks the composer to gain focus while its TextInput
+    // may not be mounted (the idle surface hides it). Cleared on real blur.
+    const [wantsInputFocus, setWantsInputFocus] = useState(false);
     // Web text is DOM-owned between deferred draft publications. The action button only needs
     // this boundary, so publish empty/non-empty transitions without rerendering for every key.
     const initialHasLiveText = value.trim().length > 0;
@@ -1218,10 +1245,17 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const selectionRef = useRef({ start: value.length, end: value.length });
     const appliedTextReplacementKeyRef = useRef(textReplacement.key);
     const webTextareaRef = useRef<HTMLElement | null>(null);
-    // Focus-aware collapse: idle composers sit at one text line tall and open
-    // to two once focused (handleInputFocus/handleInputBlur toggle the state).
-    // Blur re-clamps the height back down via useComposerHeight's bounds.
-    const minInputHeight = isInputFocused ? MIN_INPUT_HEIGHT_FOCUSED : MIN_INPUT_HEIGHT;
+    // Focus-aware collapse: an idle composer with no draft hides its text
+    // input entirely and shows a tappable placeholder surface instead. A
+    // focus request reveals the two-line-tall input and moves keyboard focus
+    // onto it (requestComposerFocus + reveal effect below). Blur collapses
+    // again, unless a draft is present — visible drafts are never hidden.
+    const hasDraftContent = hasLiveText || value.trim().length > 0;
+    const isInputExpanded = isInputFocused || wantsInputFocus;
+    const showTextInput = readOnly || isInputExpanded || hasDraftContent;
+    // Focused/receiving input sits two lines tall (COMPOSER_INPUT_LINE_HEIGHT
+    // matches styles.textInput.lineHeight); idle one-liners stay compact.
+    const minInputHeight = resolveMinInputHeight(isInputExpanded);
     const composerHeight = useComposerHeight({
       value,
       textareaRef: webTextareaRef,
@@ -1232,6 +1266,15 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const measuredComposerHeight = composerHeight.mode === "measured" ? composerHeight : undefined;
     const updateComposerHeightForText = measuredComposerHeight?.onTextChange;
     const resetComposerHeight = measuredComposerHeight?.reset;
+
+    // Single funnel for every focus entry point (idle-surface tap, imperative
+    // ref.focus(), keyboard action, auto-focus). Safe to call while the text
+    // input is hidden: useRevealInputFocusEffect focuses it once mounted.
+    const requestComposerFocus = useCallback(() => {
+      setWantsInputFocus(true);
+    }, []);
+
+    useRevealInputFocusEffect(wantsInputFocus, textInputRef);
 
     const handleComposerLayout = useCallback(
       (event: LayoutChangeEvent) => onHeightChange?.(event.nativeEvent.layout.height),
@@ -1259,7 +1302,9 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     useImperativeHandle(ref, () => ({
       focus: () => {
-        textInputRef.current?.focus();
+        // The input may be hidden (idle collapse): this reveals it first,
+        // then focuses it via the reveal effect.
+        requestComposerFocus();
       },
       blur: () => {
         textInputRef.current?.blur();
@@ -1270,7 +1315,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       replaceText,
       runKeyboardAction: (action) =>
         runMessageInputKeyboardAction(action, {
-          focusInput: () => textInputRef.current?.focus(),
+          focusInput: requestComposerFocus,
           isDictationRecording: isDictationActive,
           markTranscriptForSend: () => {
             sendAfterTranscriptRef.current = true;
@@ -1688,6 +1733,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const handleInputBlur = useCallback(() => {
       isInputFocusedRef.current = false;
       setIsInputFocused(false);
+      setWantsInputFocus(false);
       onFocusChange?.(false);
     }, [onFocusChange]);
 
@@ -1782,6 +1828,11 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       [isDictating, isRealtimeVoiceForCurrentAgent, voice?.isMuted, buttonIconSize],
     );
 
+    const focusHintLabelText = t("composer.input.focusHint", {
+      shortcut: focusInputKeys ? formatShortcut(focusInputKeys[0], getShortcutOs()) : "",
+    });
+    const focusHintVisible = isWeb && !isInputFocused && !value;
+
     return (
       <View
         ref={rootRef}
@@ -1792,7 +1843,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         <MessageInputAutoFocus
           enabled={autoFocus}
           autoFocusKey={autoFocusKey}
-          textInputRef={textInputRef}
+          onRequestFocus={requestComposerFocus}
         />
         {/* Regular input */}
         <View
@@ -1801,32 +1852,51 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           pointerEvents={surfacePresentation.input.pointerEvents}
         >
           {attachmentSlot}
-          {/* Text input */}
+          {/* Text input — hidden while idle+empty; a tappable placeholder
+              surface takes its slot and expands on press. */}
           <RenderProfile id="ComposerTextSurface">
-            <ComposerTextSurface
-              readOnly={readOnly}
-              value={value}
-              textInputRef={textInputRef}
-              textInputStyle={textInputStyle}
-              readOnlyTextStyle={readOnlyTextStyle}
-              placeholder={placeholder ?? t("composer.placeholders.fallback")}
-              accessibilityLabel={t(mode.accessibilityLabelKey)}
-              onChangeText={handleInputChange}
-              onFocus={handleInputFocus}
-              onBlur={handleInputBlur}
-              editable={!isDictating && !isRealtimeVoiceForCurrentAgent && !disabled}
-              scrollEnabled={isComposerScrollEnabled}
-              autoFocus={false}
-              onKeyPress={shouldHandleWebKeyPress ? handleDesktopKeyPress : undefined}
-              onSelectionChange={handleSelectionChange}
-              onPasteImages={onPasteImages}
-              onPasteError={handlePasteError}
-              focusHintVisible={isWeb && !isInputFocused && !value}
-              focusInputKeys={focusInputKeys}
-              focusHintLabel={t("composer.input.focusHint", {
-                shortcut: focusInputKeys ? formatShortcut(focusInputKeys[0], getShortcutOs()) : "",
-              })}
-            />
+            {showTextInput ? (
+              <ComposerTextSurface
+                readOnly={readOnly}
+                value={value}
+                textInputRef={textInputRef}
+                textInputStyle={textInputStyle}
+                readOnlyTextStyle={readOnlyTextStyle}
+                placeholder={placeholder ?? t("composer.placeholders.fallback")}
+                accessibilityLabel={t(mode.accessibilityLabelKey)}
+                onChangeText={handleInputChange}
+                onFocus={handleInputFocus}
+                onBlur={handleInputBlur}
+                editable={!isDictating && !isRealtimeVoiceForCurrentAgent && !disabled}
+                scrollEnabled={isComposerScrollEnabled}
+                autoFocus={false}
+                onKeyPress={shouldHandleWebKeyPress ? handleDesktopKeyPress : undefined}
+                onSelectionChange={handleSelectionChange}
+                onPasteImages={onPasteImages}
+                onPasteError={handlePasteError}
+                focusHintVisible={focusHintVisible}
+                focusInputKeys={focusInputKeys}
+                focusHintLabel={focusHintLabelText}
+              />
+            ) : (
+              <Pressable
+                testID="composer-idle-input"
+                accessibilityRole="button"
+                accessibilityLabel={t(mode.accessibilityLabelKey)}
+                style={styles.idleInputSurface}
+                onPress={requestComposerFocus}
+                disabled={disabled}
+              >
+                <Text numberOfLines={1} style={styles.idleInputPlaceholderText}>
+                  {placeholder ?? t("composer.placeholders.fallback")}
+                </Text>
+                <FocusHint
+                  visible={focusHintVisible}
+                  focusInputKeys={focusInputKeys}
+                  label={focusHintLabelText}
+                />
+              </Pressable>
+            )}
           </RenderProfile>
 
           {/* Button row */}
@@ -1944,6 +2014,20 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   textInputScrollWrapper: {
     position: "relative",
+  },
+  // Collapsed composer: occupies the input's slot, single text line tall,
+  // reads as an invitation to tap rather than a disabled field.
+  idleInputSurface: {
+    position: "relative",
+    width: "100%",
+    minHeight: MIN_INPUT_HEIGHT,
+    justifyContent: "center",
+    alignItems: "flex-start",
+  },
+  idleInputPlaceholderText: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.content,
+    fontWeight: theme.fontWeight.normal,
   },
   focusHintText: {
     position: "absolute",
