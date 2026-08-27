@@ -2,7 +2,6 @@ import { useMemo } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { MarkdownRenderer } from "@/components/markdown/renderer";
-import { MAX_CONTENT_WIDTH } from "@/constants/layout";
 import { parseMarkdownPreviewDocument } from "./document";
 
 export function FileMarkdownPreview({ source }: { source: string }) {
@@ -47,10 +46,11 @@ const styles = StyleSheet.create((theme) => ({
     },
     paddingVertical: theme.spacing[4],
   },
+  // Full lane width: the preview surface is the pane itself, so an artificial
+  // reading-measure cap just leaves dead gutters in wide view lanes. Long code
+  // lines keep their own horizontal scrolling inside the renderer.
   readingFrame: {
     width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
-    alignSelf: "center",
     paddingHorizontal: theme.spacing[2],
   },
   frontMatterTable: {
