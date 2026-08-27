@@ -20,7 +20,7 @@ import {
 } from "react";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { ICON_SIZE, type Theme } from "@/styles/theme";
+import { FONT_SIZE, ICON_SIZE, type Theme } from "@/styles/theme";
 import { ArrowUp, Mic, MicOff, CornerDownLeft, Plus, Square } from "lucide-react-native";
 import { useDictation } from "@/hooks/use-dictation";
 import { DictationOverlay } from "@/components/dictation-controls";
@@ -191,9 +191,16 @@ export interface MessageInputRef {
 
 const MIN_INPUT_HEIGHT_MOBILE = 30;
 const MIN_INPUT_HEIGHT_DESKTOP = 36;
+// Same formula as styles.textInput.lineHeight, so "two lines" tracks real text metrics.
+const COMPOSER_INPUT_LINE_HEIGHT = Math.round(FONT_SIZE.content * 1.4);
+const MIN_INPUT_HEIGHT_FOCUSED_MOBILE = MIN_INPUT_HEIGHT_MOBILE + COMPOSER_INPUT_LINE_HEIGHT;
+const MIN_INPUT_HEIGHT_FOCUSED_DESKTOP = MIN_INPUT_HEIGHT_DESKTOP + COMPOSER_INPUT_LINE_HEIGHT;
 const DEFAULT_MAX_INPUT_HEIGHT = 160;
 const MAX_INPUT_VIEWPORT_RATIO = 0.5;
 const MIN_INPUT_HEIGHT = isWeb ? MIN_INPUT_HEIGHT_DESKTOP : MIN_INPUT_HEIGHT_MOBILE;
+const MIN_INPUT_HEIGHT_FOCUSED = isWeb
+  ? MIN_INPUT_HEIGHT_FOCUSED_DESKTOP
+  : MIN_INPUT_HEIGHT_FOCUSED_MOBILE;
 type WebTextInputKeyPressEvent = NativeSyntheticEvent<
   TextInputKeyPressEventData & {
     metaKey?: boolean;
@@ -1211,10 +1218,14 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const selectionRef = useRef({ start: value.length, end: value.length });
     const appliedTextReplacementKeyRef = useRef(textReplacement.key);
     const webTextareaRef = useRef<HTMLElement | null>(null);
+    // Focus-aware collapse: idle composers sit at one text line tall and open
+    // to two once focused (handleInputFocus/handleInputBlur toggle the state).
+    // Blur re-clamps the height back down via useComposerHeight's bounds.
+    const minInputHeight = isInputFocused ? MIN_INPUT_HEIGHT_FOCUSED : MIN_INPUT_HEIGHT;
     const composerHeight = useComposerHeight({
       value,
       textareaRef: webTextareaRef,
-      minHeight: MIN_INPUT_HEIGHT,
+      minHeight: minInputHeight,
       maxHeight: maxInputHeight,
     });
     const { style: composerHeightStyle, scrollEnabled: isComposerScrollEnabled } = composerHeight;
