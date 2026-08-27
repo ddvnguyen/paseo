@@ -67,11 +67,13 @@ export function smallIconButtonChromeFrameSize(compact = false): number {
 const styles = StyleSheet.create((theme) => ({
   large: {
     width: {
-      xs: 32,
+      // 40px on compact form factors keeps header touch targets at the
+      // minimum accessible size even when the mobile header row is short.
+      xs: 40,
       md: HEADER_CONTROL_HEIGHT,
     },
     height: {
-      xs: 32,
+      xs: 40,
       md: HEADER_CONTROL_HEIGHT,
     },
     padding: 0,
