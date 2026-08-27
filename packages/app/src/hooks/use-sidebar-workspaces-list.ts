@@ -107,7 +107,7 @@ function applySortMode(
     return sortedProjects.map((project) => {
       const sortedWorkspaces = sortWorkspacesByTitle(project.workspaces);
       return {
-        projectKey: project.projectKey,
+        viewKey: project.viewKey,
         projectName: project.projectName,
         projectKind: project.projectKind,
         iconWorkingDir: project.iconWorkingDir,
