@@ -1852,8 +1852,9 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           pointerEvents={surfacePresentation.input.pointerEvents}
         >
           {attachmentSlot}
-          {/* Text input — hidden while idle+empty; a tappable placeholder
-              surface takes its slot and expands on press. */}
+          {/* Text input — hidden entirely while idle+empty; the action row
+              below becomes the tap target that expands it (no input-shaped
+              element is rendered until focus). */}
           <RenderProfile id="ComposerTextSurface">
             {showTextInput ? (
               <ComposerTextSurface
@@ -1878,28 +1879,11 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
                 focusInputKeys={focusInputKeys}
                 focusHintLabel={focusHintLabelText}
               />
-            ) : (
-              <Pressable
-                testID="composer-idle-input"
-                accessibilityRole="button"
-                accessibilityLabel={t(mode.accessibilityLabelKey)}
-                style={styles.idleInputSurface}
-                onPress={requestComposerFocus}
-                disabled={disabled}
-              >
-                <Text numberOfLines={1} style={styles.idleInputPlaceholderText}>
-                  {placeholder ?? t("composer.placeholders.fallback")}
-                </Text>
-                <FocusHint
-                  visible={focusHintVisible}
-                  focusInputKeys={focusInputKeys}
-                  label={focusHintLabelText}
-                />
-              </Pressable>
-            )}
+            ) : null}
           </RenderProfile>
 
           {/* Button row */}
+          {showTextInput ? (
           <View style={styles.buttonRow}>
             {/* Toolbar left: attachment button + agent controls */}
             <View style={styles.leftButtonGroup}>
@@ -1951,6 +1935,68 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
               />
             </View>
           </View>
+          ) : (
+            <Pressable
+              testID="composer-idle-input"
+              accessibilityRole="button"
+              accessibilityLabel={t(mode.accessibilityLabelKey)}
+              style={styles.idleComposerSurface}
+              onPress={requestComposerFocus}
+              disabled={disabled}
+            >
+            <View style={styles.buttonRow}>
+            {/* Toolbar left: attachment button + agent controls */}
+            <View style={styles.leftButtonGroup}>
+              <AttachmentDropdown
+                visible={mode.showAttachments}
+                isConnected={isConnected}
+                disabled={disabled}
+                attachButtonStyle={attachButtonStyle}
+                renderAttachButtonIcon={renderAttachButtonIcon}
+                attachmentMenuItems={attachmentMenuItems}
+                addAttachmentLabel={t("composer.input.addAttachment")}
+              />
+              {leftContent}
+            </View>
+
+            {/* Right: voice button, contextual button (realtime/send/cancel) */}
+            <View style={styles.rightButtonGroup}>
+              {beforeVoiceContent}
+              <VoiceButtonTooltip
+                visible={mode.showVoice}
+                onVoicePress={handleVoicePress}
+                isDictationStartEnabled={isDictationStartEnabled}
+                voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
+                voiceButtonStyle={voiceButtonStyle}
+                renderVoiceButtonIcon={renderVoiceButtonIcon}
+                voiceTooltipText={voiceTooltipText}
+                isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
+                voiceMuteToggleKeys={voiceMuteToggleKeys}
+                dictationToggleKeys={dictationToggleKeys}
+              />
+              {rightContent}
+              <PrimaryAction
+                kind={primaryActionKind}
+                activeActionContent={activeActionContent}
+                shouldShow
+                canPressLoadingButton={canPressLoadingButton}
+                onSubmitLoadingPress={onSubmitLoadingPress}
+                onDefaultSendAction={handleDefaultSendAction}
+                isSendButtonDisabled={isSendButtonDisabled}
+                submitAccessibilityLabel={submitAccessibilityLabel}
+                sendButtonCombinedStyle={sendButtonCombinedStyle}
+                isSubmitLoading={isSubmitLoading}
+                submitIcon={submitIcon}
+                submitLabel={submitLabel}
+                submitButtonTestID={submitButtonTestID}
+                buttonIconSize={buttonIconSize}
+                sendKeys={DEFAULT_SEND_KEYS}
+                sendTooltipLabel={sendTooltipLabel}
+              />
+            </View>
+            </View>
+            </Pressable>
+          )}
         </View>
 
         <View
@@ -2015,14 +2061,10 @@ const styles = StyleSheet.create((theme: Theme) => ({
   textInputScrollWrapper: {
     position: "relative",
   },
-  // Collapsed composer: occupies the input's slot, single text line tall,
-  // reads as an invitation to tap rather than a disabled field.
-  idleInputSurface: {
-    position: "relative",
+  // Idle composer: the action row itself is the tap target; no input-shaped
+  // element is rendered until focus (UX spec: "1 line -> hide the text box").
+  idleComposerSurface: {
     width: "100%",
-    minHeight: MIN_INPUT_HEIGHT,
-    justifyContent: "center",
-    alignItems: "flex-start",
   },
   idleInputPlaceholderText: {
     color: theme.colors.foregroundMuted,
