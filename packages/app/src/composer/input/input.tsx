@@ -192,14 +192,16 @@ export interface MessageInputRef {
 
 const MIN_INPUT_HEIGHT_MOBILE = 30;
 const MIN_INPUT_HEIGHT_DESKTOP = 36;
-// Focused stays at single-pill height per UX spec: the rounded input box is
-// always one line tall (placeholder shows "Message, @files, /commands"); it
-// grows naturally with content via the max-height clamp, not via a pre-baked
-// two-line minimum.
+// Focused mode gets a bit of vertical room for the caret/placeholder even
+// when empty (about 1.5 lines). It still grows naturally with content up to
+// DEFAULT_MAX_INPUT_HEIGHT; the cap, not the minimum, is what controls the
+// scrolled-typing experience.
 const DEFAULT_MAX_INPUT_HEIGHT = 160;
 const MAX_INPUT_VIEWPORT_RATIO = 0.5;
 const MIN_INPUT_HEIGHT = isWeb ? MIN_INPUT_HEIGHT_DESKTOP : MIN_INPUT_HEIGHT_MOBILE;
-const MIN_INPUT_HEIGHT_FOCUSED = MIN_INPUT_HEIGHT;
+const MIN_INPUT_HEIGHT_FOCUSED = isWeb
+  ? MIN_INPUT_HEIGHT_DESKTOP + 16
+  : MIN_INPUT_HEIGHT_MOBILE + 14;
 type WebTextInputKeyPressEvent = NativeSyntheticEvent<
   TextInputKeyPressEventData & {
     metaKey?: boolean;
