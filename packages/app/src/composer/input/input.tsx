@@ -191,15 +191,10 @@ export interface MessageInputRef {
 }
 
 const MIN_INPUT_HEIGHT_MOBILE = 30;
-const MIN_INPUT_HEIGHT_DESKTOP = 36;
-// Focused mode is exactly 1 text line tall. The action row (model + indicator
-// icons + send) lives below the pill and is what carries the second visual
-// line, so the pill itself stays single-row when empty. Still grows naturally
-// with content up to DEFAULT_MAX_INPUT_HEIGHT.
+const MIN_INPUT_HEIGHT_DESKTOP = 46;
 const DEFAULT_MAX_INPUT_HEIGHT = 160;
 const MAX_INPUT_VIEWPORT_RATIO = 0.5;
 const MIN_INPUT_HEIGHT = isWeb ? MIN_INPUT_HEIGHT_DESKTOP : MIN_INPUT_HEIGHT_MOBILE;
-const MIN_INPUT_HEIGHT_FOCUSED = MIN_INPUT_HEIGHT;
 type WebTextInputKeyPressEvent = NativeSyntheticEvent<
   TextInputKeyPressEventData & {
     metaKey?: boolean;
@@ -1013,8 +1008,8 @@ function resolveMaxInputHeight(windowHeight: number): number {
   return Math.max(DEFAULT_MAX_INPUT_HEIGHT, Math.floor(windowHeight * MAX_INPUT_VIEWPORT_RATIO));
 }
 
-function resolveMinInputHeight(isInputExpanded: boolean): number {
-  return isInputExpanded ? MIN_INPUT_HEIGHT_FOCUSED : MIN_INPUT_HEIGHT;
+function resolveMinInputHeight(_isInputExpanded: boolean): number {
+  return MIN_INPUT_HEIGHT;
 }
 
 function isTextAreaLike(v: unknown): v is TextAreaHandle {
