@@ -2406,7 +2406,9 @@ const styles = StyleSheet.create((theme: Theme) => ({
     width: "100%",
     overflow: "visible",
     paddingHorizontal: theme.spacing[4],
-    paddingBottom: theme.spacing[1],
+    paddingTop: theme.spacing[1],
+    paddingBottom: 0,
+    justifyContent: "flex-end",
   },
   inputAreaLocked: {
     opacity: 0.6,
