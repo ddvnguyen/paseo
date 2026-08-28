@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ComponentType } from "react";
+import { useCallback, useEffect, useMemo, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import { View, Text, Pressable } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
@@ -7,6 +7,7 @@ import { FolderOpen, Inbox, Plug, Smartphone } from "lucide-react-native";
 import { PaseoLogo } from "@/components/icons/paseo-logo";
 import { CommunityLinks } from "@/components/community-links";
 import { MenuHeader } from "@/components/headers/menu-header";
+import { PwaInstallButton } from "@/components/pwa-install-button";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useHostChooser } from "@/hosts/host-chooser";
 import { usePanelStore } from "@/stores/panel-store";
@@ -86,9 +87,11 @@ export function OpenProjectScreen() {
     });
   }, [chooseHost, router]);
 
+  const headerRightContent = useMemo(() => <PwaInstallButton />, []);
+
   return (
     <View style={styles.container}>
-      <MenuHeader borderless />
+      <MenuHeader borderless rightContent={headerRightContent} />
       <View style={styles.content}>
         <TitlebarDragRegion />
         <View style={styles.logo}>
