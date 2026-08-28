@@ -10,7 +10,6 @@ import { MenuHeader } from "@/components/headers/menu-header";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { AgentList } from "@/components/agent-list";
-import { PwaInstallButton } from "@/components/pwa-install-button";
 import { SearchField } from "@/components/ui/search-field";
 import { HostFilter } from "@/components/hosts/host-filter";
 import { ALL_HOSTS_OPTION_ID } from "@/components/hosts/host-picker";
@@ -128,8 +127,6 @@ function SessionsScreenContent() {
 
   const handleClearSearch = useCallback(() => setSearchInput(""), []);
 
-  const headerRightContent = useMemo(() => <PwaInstallButton />, []);
-
   const listFooterComponent = useMemo(() => {
     // A ranked result set has no next page — reaching a weaker match means
     // narrowing the query, so the footer says that instead of offering a button.
@@ -154,7 +151,7 @@ function SessionsScreenContent() {
 
   return (
     <View style={styles.container}>
-      <MenuHeader title={t("sessions.title")} rightContent={headerRightContent} />
+      <MenuHeader title={t("sessions.title")} />
       {showFilterRow ? (
         <View style={styles.filterContainer}>
           {isSearchSupported ? (
