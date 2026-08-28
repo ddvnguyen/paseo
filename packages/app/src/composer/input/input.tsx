@@ -192,7 +192,13 @@ export interface MessageInputRef {
 
 const MIN_INPUT_HEIGHT_MOBILE = 30;
 const MIN_INPUT_HEIGHT_DESKTOP = 46;
-const DEFAULT_MAX_INPUT_HEIGHT = 160;
+// Floor for the textarea's max-height. The viewport-ratio cap below is the
+// primary control (textarea stops growing at half the window height so the
+// conversation above is never fully hidden). The floor is only used when
+// the window is so small that half-viewport is below the floor; in that
+// case we still allow a usable ~120px (~4 lines) before scrolling kicks in.
+const DEFAULT_MAX_INPUT_HEIGHT = 120;
+const MAX_INPUT_VIEWPORT_RATIO = 0.5;
 const MAX_INPUT_VIEWPORT_RATIO = 0.5;
 const MIN_INPUT_HEIGHT = isWeb ? MIN_INPUT_HEIGHT_DESKTOP : MIN_INPUT_HEIGHT_MOBILE;
 type WebTextInputKeyPressEvent = NativeSyntheticEvent<
@@ -2030,12 +2036,18 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   inputWrapper: {
     flexDirection: "column",
-    gap: theme.spacing[1],
+    gap: {
+      xs: theme.spacing[2],
+      md: theme.spacing[3],
+    },
     backgroundColor: theme.colors.surface1,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.borderAccent,
     borderRadius: theme.borderRadius["2xl"],
-    paddingVertical: 0,
+    paddingVertical: {
+      xs: theme.spacing[1],
+      md: theme.spacing[4],
+    },
     paddingHorizontal: {
       xs: theme.spacing[3],
       md: theme.spacing[4],

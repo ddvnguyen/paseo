@@ -1134,7 +1134,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       flexDirection: "column",
       minHeight: "100%",
       paddingTop: CONTENT_PADDING_TOP_PX,
-      paddingBottom: 16,
+      paddingBottom: 8,
       paddingLeft: isMobileBreakpoint ? 8 : 16,
       paddingRight: isMobileBreakpoint ? 8 : 16,
       boxSizing: "border-box",
