@@ -13,7 +13,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import { BottomSheetFlatList, BottomSheetScrollView } from "@gorhom/bottom-sheet";
+import { BottomSheetScrollView } from "@gorhom/bottom-sheet";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
@@ -1165,9 +1165,9 @@ function ModelRowList({
     return <IndependentModelList rows={rows} renderItem={renderItem} header={header} />;
   }
 
-  if (isCompact && isNative) {
+  if (isCompact) {
     return (
-      <BottomSheetFlatList
+      <FlatList
         data={rows}
         renderItem={renderItem}
         ListHeaderComponent={header}

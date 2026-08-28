@@ -1,15 +1,5 @@
-import {
-  cloneElement,
-  isValidElement,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactElement,
-  type ReactNode,
-} from "react";
-import { Animated, View, type ViewStyle } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Animated, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 
 const PULL_THRESHOLD = 80;
@@ -70,6 +60,7 @@ export function PullToRefresh({ refreshing, onRefresh, children }: PullToRefresh
   const translateY = useRef(new Animated.Value(0)).current;
   const refreshingRef = useRef(refreshing);
   const onRefreshRef = useRef(onRefresh);
+  const containerRef = useRef<View>(null);
 
   useEffect(() => {
     refreshingRef.current = refreshing;
@@ -97,23 +88,43 @@ export function PullToRefresh({ refreshing, onRefresh, children }: PullToRefresh
     }
   }, [refreshing, pullDistance, animateTo]);
 
-  const handlePointerDown = useCallback((event: React.PointerEvent) => {
-    if (refreshingRef.current) return;
-    if (event.pointerType === "mouse" && event.button !== 0) return;
-    const scrollable = resolveScrollable(event.target);
-    if (!scrollable || !scrollable.isAtTop()) {
-      scrollableRef.current = null;
-      startYRef.current = null;
-      return;
-    }
-    scrollableRef.current = scrollable;
-    startYRef.current = event.clientY;
-    setPullDistance(0);
+  const release = useCallback(() => {
+    const wasArmed = armed;
+    startYRef.current = null;
+    scrollableRef.current = null;
     setArmed(false);
-  }, []);
+    if (wasArmed && !refreshingRef.current) {
+      onRefreshRef.current();
+    } else {
+      setPullDistance(0);
+      animateTo(0);
+    }
+  }, [armed, animateTo]);
 
-  const handlePointerMove = useCallback(
-    (event: React.PointerEvent) => {
+  // Attach pointer event handlers directly to the DOM element via ref,
+  // bypassing React Native Web's View type constraints. This avoids
+  // overwriting child component pointer handlers (which would break
+  // FlatList scroll on Android).
+  useEffect(() => {
+    const el = containerRef.current as unknown as HTMLElement | null;
+    if (!el) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (refreshingRef.current) return;
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      const scrollable = resolveScrollable(event.target);
+      if (!scrollable || !scrollable.isAtTop()) {
+        scrollableRef.current = null;
+        startYRef.current = null;
+        return;
+      }
+      scrollableRef.current = scrollable;
+      startYRef.current = event.clientY;
+      setPullDistance(0);
+      setArmed(false);
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
       if (startYRef.current === null) return;
       const scrollable = scrollableRef.current;
       if (!scrollable) {
@@ -139,29 +150,23 @@ export function PullToRefresh({ refreshing, onRefresh, children }: PullToRefresh
       setPullDistance(damped);
       setArmed(damped >= PULL_THRESHOLD);
       translateY.setValue(damped);
-    },
-    [translateY],
-  );
+    };
 
-  const release = useCallback(() => {
-    const wasArmed = armed;
-    startYRef.current = null;
-    scrollableRef.current = null;
-    setArmed(false);
-    if (wasArmed && !refreshingRef.current) {
-      onRefreshRef.current();
-    } else {
-      setPullDistance(0);
-      animateTo(0);
-    }
-  }, [armed, animateTo]);
+    const handlePointerUp = () => release();
+    const handlePointerCancel = () => release();
 
-  const handlePointerUp = useCallback(() => {
-    release();
-  }, [release]);
-  const handlePointerCancel = useCallback(() => {
-    release();
-  }, [release]);
+    el.addEventListener("pointerdown", handlePointerDown);
+    el.addEventListener("pointermove", handlePointerMove);
+    el.addEventListener("pointerup", handlePointerUp);
+    el.addEventListener("pointercancel", handlePointerCancel);
+
+    return () => {
+      el.removeEventListener("pointerdown", handlePointerDown);
+      el.removeEventListener("pointermove", handlePointerMove);
+      el.removeEventListener("pointerup", handlePointerUp);
+      el.removeEventListener("pointercancel", handlePointerCancel);
+    };
+  }, [release, translateY]);
 
   const isRefreshing = refreshing || pullDistance > 0;
   const indicatorOpacity = refreshing ? 1 : Math.min(pullDistance / PULL_THRESHOLD, 1);
@@ -172,37 +177,15 @@ export function PullToRefresh({ refreshing, onRefresh, children }: PullToRefresh
   );
   const contentTransform = useMemo(() => [{ translateY }], [translateY]);
 
-  const childArray = Array.isArray(children) ? children : [children];
-  const content = childArray.map((child) => {
-    if (isValidElement(child)) {
-      return cloneElement(
-        child as ReactElement<{
-          onPointerDown?: React.PointerEventHandler;
-          onPointerMove?: React.PointerEventHandler;
-          onPointerUp?: React.PointerEventHandler;
-          onPointerCancel?: React.PointerEventHandler;
-          style?: ViewStyle;
-        }>,
-        {
-          onPointerDown: handlePointerDown,
-          onPointerMove: handlePointerMove,
-          onPointerUp: handlePointerUp,
-          onPointerCancel: handlePointerCancel,
-        },
-      );
-    }
-    return child;
-  });
-
   return (
-    <View style={styles.container}>
+    <View ref={containerRef} style={styles.container}>
       <Animated.View
         pointerEvents="none"
         style={[styles.indicator, { opacity: indicatorOpacity, transform: indicatorTransform }]}
       >
         <View style={[styles.spinner, refreshing || armed ? styles.spinnerActive : null]} />
       </Animated.View>
-      <Animated.View style={contentTransform}>{content}</Animated.View>
+      <Animated.View style={contentTransform}>{children}</Animated.View>
       {isRefreshing ? <View style={styles.placeholder} /> : null}
     </View>
   );
