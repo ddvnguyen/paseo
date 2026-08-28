@@ -2381,9 +2381,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
     width: "100%",
     overflow: "visible",
     paddingHorizontal: theme.spacing[4],
-    paddingTop: theme.spacing[1],
-    paddingBottom: theme.spacing[2],
-    justifyContent: "flex-end",
+    paddingBottom: theme.spacing[4],
   },
   inputAreaLocked: {
     opacity: 0.6,
@@ -2391,12 +2389,12 @@ const styles = StyleSheet.create((theme: Theme) => ({
   inputAreaContent: {
     width: "100%",
     maxWidth: MAX_CONTENT_WIDTH,
-    gap: theme.spacing[1],
+    gap: theme.spacing[3],
   },
   messageInputContainer: {
     position: "relative",
     width: "100%",
-    gap: theme.spacing[1],
+    gap: theme.spacing[3],
   },
   cancelButton: {
     width: 28,
