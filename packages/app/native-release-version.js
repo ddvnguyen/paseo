@@ -8,7 +8,16 @@ const FDROID_ABI_VERSION_CODE_SUFFIXES = {
 };
 
 function getNativeReleaseVersion(version) {
-  const normalizedVersion = version.replace(/-hydra.*$/, "");
+  // Strip any trailing build-metadata suffix the workspace stamp appends
+  // (e.g. -hydra-abcdef, -e19868364, -rc1) so the upstream semver core — the
+  // only thing the native release codes should be derived from — survives.
+  // The pattern keeps an optional "-beta.N" but drops anything that follows.
+  const coreVersionPattern = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.\d+)?/;
+  const coreMatch = coreVersionPattern.exec(version);
+  if (!coreMatch) {
+    throw new Error(`Cannot derive native release version from unsupported version: ${version}`);
+  }
+  const normalizedVersion = coreMatch[0];
   const match = versionPattern.exec(normalizedVersion);
   if (!match) {
     throw new Error(`Cannot derive native release version from unsupported version: ${version}`);
