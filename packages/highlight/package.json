@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/highlight",
-  "version": "0.6.1-hydra-bd7482cbe",
+  "version": "0.6.1-hydra-2cdfff038",
   "files": [
     "dist",
     "!dist/**/*.map"

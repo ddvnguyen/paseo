@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/relay",
-  "version": "0.6.1-hydra-bd7482cbe",
+  "version": "0.6.1-hydra-2cdfff038",
   "description": "Paseo relay for bridging daemon and client connections",
   "files": [
     "dist",
