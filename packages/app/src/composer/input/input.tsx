@@ -192,16 +192,14 @@ export interface MessageInputRef {
 
 const MIN_INPUT_HEIGHT_MOBILE = 30;
 const MIN_INPUT_HEIGHT_DESKTOP = 36;
-// Same formula as styles.textInput.lineHeight, so "two lines" tracks real text metrics.
-const COMPOSER_INPUT_LINE_HEIGHT = Math.round(FONT_SIZE.content * 1.4);
-const MIN_INPUT_HEIGHT_FOCUSED_MOBILE = MIN_INPUT_HEIGHT_MOBILE + COMPOSER_INPUT_LINE_HEIGHT;
-const MIN_INPUT_HEIGHT_FOCUSED_DESKTOP = MIN_INPUT_HEIGHT_DESKTOP + COMPOSER_INPUT_LINE_HEIGHT;
+// Focused stays at single-pill height per UX spec: the rounded input box is
+// always one line tall (placeholder shows "Message, @files, /commands"); it
+// grows naturally with content via the max-height clamp, not via a pre-baked
+// two-line minimum.
 const DEFAULT_MAX_INPUT_HEIGHT = 160;
 const MAX_INPUT_VIEWPORT_RATIO = 0.5;
 const MIN_INPUT_HEIGHT = isWeb ? MIN_INPUT_HEIGHT_DESKTOP : MIN_INPUT_HEIGHT_MOBILE;
-const MIN_INPUT_HEIGHT_FOCUSED = isWeb
-  ? MIN_INPUT_HEIGHT_FOCUSED_DESKTOP
-  : MIN_INPUT_HEIGHT_FOCUSED_MOBILE;
+const MIN_INPUT_HEIGHT_FOCUSED = MIN_INPUT_HEIGHT;
 type WebTextInputKeyPressEvent = NativeSyntheticEvent<
   TextInputKeyPressEventData & {
     metaKey?: boolean;
@@ -2037,10 +2035,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.borderAccent,
     borderRadius: theme.borderRadius["2xl"],
-    paddingVertical: {
-      xs: theme.spacing[1],
-      md: theme.spacing[2],
-    },
+    paddingVertical: 0,
     paddingHorizontal: {
       xs: theme.spacing[3],
       md: theme.spacing[4],
