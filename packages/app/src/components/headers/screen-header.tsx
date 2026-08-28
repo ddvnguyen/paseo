@@ -9,8 +9,19 @@ import {
   HEADER_TOP_PADDING_MOBILE,
   useIsCompactFormFactor,
 } from "@/constants/layout";
+import { isWeb } from "@/constants/platform";
 import { WindowChromeSafeArea } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
+
+// Web-only header positioning. Kept out of the Unistyles StyleSheet because
+// the library's value schema disallows `position: "sticky"`. Bumping zIndex
+// above 5 ensures the header stays on top of agent stream and panels while
+// the page scrolls to keep a focused input in view.
+const stickyHeaderStyle = {
+  position: "sticky" as const,
+  top: 0,
+  zIndex: 5,
+};
 
 interface ScreenHeaderProps {
   left?: ReactNode;
@@ -47,9 +58,21 @@ export function ScreenHeader({
   const rowStyle = useMemo(() => [styles.row, borderless && styles.borderless], [borderless]);
   const leftCombinedStyle = useMemo(() => [styles.left, leftStyle], [leftStyle]);
   const rightCombinedStyle = useMemo(() => [styles.right, rightStyle], [rightStyle]);
+  // On web, pin the header to the top of its scroll container so the browser's
+  // native "scroll focused control into view" behavior does not push the
+  // header out of the viewport when the user focuses an input. Native iOS
+  // already keeps the header visible (useKeyboardShiftStyle translates the
+  // composer, not the page), so this only needs to apply on web. The style
+  // is inlined because Unistyles' StyleSheet.create type rejects
+  // `position: "sticky"` (its value schema only includes absolute/relative/
+  // static) and we want to keep this one web-only behavior outside the
+  // stylesheet.
+  const headerStyle = (
+    isWeb ? [styles.header, stickyHeaderStyle] : [styles.header]
+  ) as StyleProp<ViewStyle>;
 
   return (
-    <View style={styles.header}>
+    <View style={headerStyle}>
       <View style={innerStyle}>
         <WindowChromeSafeArea
           placement="inline"
