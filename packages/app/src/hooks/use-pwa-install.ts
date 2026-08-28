@@ -39,6 +39,8 @@ function isIosSafari(): boolean {
 export interface PwaInstallState {
   /** True if the user is already running the installed app (no banner needed). */
   isStandalone: boolean;
+  /** True if the platform is iOS Safari (or iPadOS Safari), which has no `beforeinstallprompt` event. */
+  isIos: boolean;
   /** True if the browser has fired `beforeinstallprompt` and the user is not yet installed. */
   canInstall: boolean;
   /** True if the platform is iOS Safari, which has no `beforeinstallprompt` event. */
@@ -51,6 +53,7 @@ export interface PwaInstallState {
 
 const NOOP_STATE: PwaInstallState = {
   isStandalone: false,
+  isIos: false,
   canInstall: false,
   isIosUnsupported: false,
   showManual: false,
@@ -126,6 +129,7 @@ export function usePwaInstall(): PwaInstallState {
   if (isStandalone) {
     return {
       isStandalone: true,
+      isIos,
       canInstall: false,
       isIosUnsupported: false,
       showManual: false,
@@ -141,6 +145,7 @@ export function usePwaInstall(): PwaInstallState {
   const showManual = hasMounted && !canInstall && !isStandalone;
   return {
     isStandalone: false,
+    isIos,
     canInstall,
     isIosUnsupported,
     showManual,
