@@ -1,7 +1,7 @@
 import { useUnistyles } from "react-native-unistyles";
 import { isWeb } from "@/constants/platform";
 
-export const FOOTER_HEIGHT = 75;
+export const FOOTER_HEIGHT = 52;
 
 // Shared header inner height (excluding safe area insets and border)
 // Used by both agent header (ScreenHeader) and explorer sidebar header
