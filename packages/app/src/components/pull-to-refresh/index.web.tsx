@@ -207,7 +207,7 @@ export function PullToRefresh({ refreshing, onRefresh, children }: PullToRefresh
   );
 }
 
-const styles = StyleSheet.create(() => ({
+const styles = StyleSheet.create((theme) => ({
   container: {
     flex: 1,
   },
@@ -226,11 +226,11 @@ const styles = StyleSheet.create(() => ({
     height: 22,
     borderRadius: 11,
     borderWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.18)",
-    borderTopColor: "#20744a",
+    borderColor: theme.colors.border,
+    borderTopColor: theme.colors.primary,
   },
   spinnerActive: {
-    borderTopColor: "#34d399",
+    borderTopColor: theme.colors.success,
   },
   placeholder: {
     height: 0,
