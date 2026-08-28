@@ -2382,7 +2382,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
     overflow: "visible",
     paddingHorizontal: theme.spacing[4],
     paddingTop: theme.spacing[1],
-    paddingBottom: theme.spacing[1],
+    paddingBottom: theme.spacing[2],
     justifyContent: "flex-end",
   },
   inputAreaLocked: {
