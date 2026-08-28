@@ -65,6 +65,7 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
         disabled={disabled}
         onPress={onPress}
         style={triggerStyle}
+        block={isSheet}
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}
         testID={testID}
