@@ -2030,12 +2030,15 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   inputWrapper: {
     flexDirection: "column",
-    gap: theme.spacing[1],
+    gap: theme.spacing[3],
     backgroundColor: theme.colors.surface1,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.borderAccent,
     borderRadius: theme.borderRadius["2xl"],
-    paddingVertical: 0,
+    paddingVertical: {
+      xs: theme.spacing[2],
+      md: theme.spacing[4],
+    },
     paddingHorizontal: {
       xs: theme.spacing[3],
       md: theme.spacing[4],
