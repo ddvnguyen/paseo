@@ -13,7 +13,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import { BottomSheetScrollView } from "@gorhom/bottom-sheet";
+import { BottomSheetFlatList, BottomSheetScrollView } from "@gorhom/bottom-sheet";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
@@ -1134,7 +1134,6 @@ function ModelRowList({
   onEditProfile?: (profileId: string) => void;
   onEditProfiles?: () => void;
 }) {
-  const isCompact = useIsCompactFormFactor();
   const renderItem = useCallback(
     ({ item }: { item: ProviderSelectionModelRow }) => (
       <SelectableModelRow
@@ -1165,9 +1164,9 @@ function ModelRowList({
     return <IndependentModelList rows={rows} renderItem={renderItem} header={header} />;
   }
 
-  if (isCompact) {
+  if (scrolling === "sheet") {
     return (
-      <FlatList
+      <BottomSheetFlatList
         data={rows}
         renderItem={renderItem}
         ListHeaderComponent={header}

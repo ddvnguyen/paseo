@@ -185,7 +185,7 @@ export function PullToRefresh({ refreshing, onRefresh, children }: PullToRefresh
       >
         <View style={[styles.spinner, refreshing || armed ? styles.spinnerActive : null]} />
       </Animated.View>
-      <Animated.View style={contentTransform}>{children}</Animated.View>
+      <Animated.View style={[contentTransform, styles.content]}>{children}</Animated.View>
       {isRefreshing ? <View style={styles.placeholder} /> : null}
     </View>
   );
@@ -218,5 +218,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   placeholder: {
     height: 0,
+  },
+  content: {
+    flex: 1,
+    minHeight: 0,
   },
 }));
