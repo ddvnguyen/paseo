@@ -1877,7 +1877,12 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
                 focusInputKeys={focusInputKeys}
                 focusHintLabel={focusHintLabelText}
               />
-            ) : null}
+            ) : (
+              // Reserve the same vertical space the text input would occupy,
+              // so the action row below stays anchored at the same position in
+              // both idle and focused states.
+              <View style={styles.idleInputPlaceholder} pointerEvents="none" />
+            )}
           </RenderProfile>
 
           {/* Button row */}
@@ -2068,6 +2073,13 @@ const styles = StyleSheet.create((theme: Theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.content,
     fontWeight: theme.fontWeight.normal,
+  },
+  // Reserves the space the text input would occupy while idle+empty, so the
+  // action row below stays at the same vertical position in both states.
+  // Sized to a single line (matches MIN_INPUT_HEIGHT) so the pill height is
+  // identical whether the input is visible or hidden.
+  idleInputPlaceholder: {
+    minHeight: MIN_INPUT_HEIGHT,
   },
   focusHintText: {
     position: "absolute",
