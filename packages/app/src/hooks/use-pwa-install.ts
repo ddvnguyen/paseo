@@ -103,6 +103,25 @@ export function usePwaInstall(): PwaInstallState {
     }
   }, [deferredPrompt]);
 
+  // Surface the PWA install state in the browser console for debugging.
+  // Helps verify the install-button is wired up correctly on the device.
+  useEffect(() => {
+    if (!isWeb) return;
+    const canInstall = deferredPrompt !== null;
+    const isIosUnsupported = isIos && !canInstall;
+    // eslint-disable-next-line no-console
+    console.log(
+      "[pwa] state",
+      JSON.stringify({
+        isStandalone,
+        isIos,
+        canInstall,
+        isIosUnsupported,
+        showManual: hasMounted && !canInstall && !isStandalone,
+      }),
+    );
+  }, [isStandalone, isIos, deferredPrompt, hasMounted]);
+
   if (!isWeb) return NOOP_STATE;
   if (isStandalone) {
     return {

@@ -10,7 +10,7 @@
 //         shell boots offline and a single PWA cold start is instant).
 //   - message:  accept SKIP_WAITING so a future hot-update can short-circuit.
 
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const SHELL_CACHE = `paseo-shell-${CACHE_VERSION}`;
 const STATIC_CACHE = `paseo-static-${CACHE_VERSION}`;
 
