@@ -199,7 +199,6 @@ const MIN_INPUT_HEIGHT_DESKTOP = 46;
 // case we still allow a usable ~120px (~4 lines) before scrolling kicks in.
 const DEFAULT_MAX_INPUT_HEIGHT = 120;
 const MAX_INPUT_VIEWPORT_RATIO = 0.5;
-const MAX_INPUT_VIEWPORT_RATIO = 0.5;
 const MIN_INPUT_HEIGHT = isWeb ? MIN_INPUT_HEIGHT_DESKTOP : MIN_INPUT_HEIGHT_MOBILE;
 type WebTextInputKeyPressEvent = NativeSyntheticEvent<
   TextInputKeyPressEventData & {
