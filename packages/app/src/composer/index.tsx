@@ -36,6 +36,12 @@ import {
 import * as Clipboard from "expo-clipboard";
 import Animated from "react-native-reanimated";
 import { FOOTER_HEIGHT, MAX_CONTENT_WIDTH } from "@/constants/layout";
+
+// Composer's input area: sized to fit the idle pill (button row 28px +
+// wrapper vertical padding 16px max) plus its own paddingBottom, so the
+// footer doesn't reserve space it doesn't use. Voice overlays keep
+// FOOTER_HEIGHT (75) which their full-height layouts depend on.
+const COMPOSER_INPUT_AREA_MIN_HEIGHT = 52;
 import {
   AgentControls,
   DraftAgentControls,
@@ -2375,7 +2381,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   inputAreaContainer: {
     position: "relative",
-    minHeight: FOOTER_HEIGHT,
+    minHeight: COMPOSER_INPUT_AREA_MIN_HEIGHT,
     marginHorizontal: "auto",
     alignItems: "center",
     width: "100%",
