@@ -1008,8 +1008,13 @@ function resolveMaxInputHeight(windowHeight: number): number {
   return Math.max(DEFAULT_MAX_INPUT_HEIGHT, Math.floor(windowHeight * MAX_INPUT_VIEWPORT_RATIO));
 }
 
-function resolveMinInputHeight(_isInputExpanded: boolean): number {
-  return MIN_INPUT_HEIGHT;
+function resolveMinInputHeight(_isInputExpanded: boolean, isCompact: boolean): number {
+  // Desktop web (or any non-compact web layout) gets the 46px tall input; web
+  // at compact (mobile) viewport and native both get 30px so the pill stays
+  // tight on phones. isCompact is a JS boolean from useIsCompactFormFactor()
+  // at the call site, so this stays a pure function.
+  if (isWeb && !isCompact) return MIN_INPUT_HEIGHT_DESKTOP;
+  return MIN_INPUT_HEIGHT_MOBILE;
 }
 
 function isTextAreaLike(v: unknown): v is TextAreaHandle {
@@ -1248,7 +1253,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const showTextInput = readOnly || isInputExpanded || hasDraftContent;
     // Focused/receiving input sits two lines tall (COMPOSER_INPUT_LINE_HEIGHT
     // matches styles.textInput.lineHeight); idle one-liners stay compact.
-    const minInputHeight = resolveMinInputHeight(isInputExpanded);
+    const minInputHeight = resolveMinInputHeight(isInputExpanded, isCompact);
     const composerHeight = useComposerHeight({
       value,
       textareaRef: webTextareaRef,
