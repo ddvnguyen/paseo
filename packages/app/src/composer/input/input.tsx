@@ -192,16 +192,14 @@ export interface MessageInputRef {
 
 const MIN_INPUT_HEIGHT_MOBILE = 30;
 const MIN_INPUT_HEIGHT_DESKTOP = 36;
-// Focused mode gets a bit of vertical room for the caret/placeholder even
-// when empty (about 1.5 lines). It still grows naturally with content up to
-// DEFAULT_MAX_INPUT_HEIGHT; the cap, not the minimum, is what controls the
-// scrolled-typing experience.
+// Focused mode is exactly 1 text line tall. The action row (model + indicator
+// icons + send) lives below the pill and is what carries the second visual
+// line, so the pill itself stays single-row when empty. Still grows naturally
+// with content up to DEFAULT_MAX_INPUT_HEIGHT.
 const DEFAULT_MAX_INPUT_HEIGHT = 160;
 const MAX_INPUT_VIEWPORT_RATIO = 0.5;
 const MIN_INPUT_HEIGHT = isWeb ? MIN_INPUT_HEIGHT_DESKTOP : MIN_INPUT_HEIGHT_MOBILE;
-const MIN_INPUT_HEIGHT_FOCUSED = isWeb
-  ? MIN_INPUT_HEIGHT_DESKTOP + 16
-  : MIN_INPUT_HEIGHT_MOBILE + 14;
+const MIN_INPUT_HEIGHT_FOCUSED = MIN_INPUT_HEIGHT;
 type WebTextInputKeyPressEvent = NativeSyntheticEvent<
   TextInputKeyPressEventData & {
     metaKey?: boolean;
