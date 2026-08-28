@@ -133,6 +133,7 @@ export function PullToRefresh({ refreshing, onRefresh, children }: PullToRefresh
         return;
       }
       if (!event.cancelable) return;
+      if (delta < 10) return;
       event.preventDefault();
       const damped = Math.min(delta * 0.45, MAX_PULL);
       setPullDistance(damped);
