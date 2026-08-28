@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/protocol",
-  "version": "0.6.1-hydra-e69cfcc99",
+  "version": "0.6.1-hydra-c08de47a7",
   "description": "Paseo shared protocol schemas and wire types",
   "files": [
     "dist",
