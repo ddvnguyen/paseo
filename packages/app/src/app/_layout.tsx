@@ -17,7 +17,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { AppState, useWindowDimensions, View } from "react-native";
-import { GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
+import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
@@ -94,7 +94,7 @@ import { useCompactWebViewportZoomLock } from "@/hooks/use-compact-web-viewport-
 import { useOpenProject } from "@/hooks/use-open-project";
 import { useAppSettings } from "@/hooks/use-settings";
 import { useStableEvent } from "@/hooks/use-stable-event";
-import { useOpenAgentListGesture } from "@/mobile-panels/gestures";
+import { useOpenAgentListGesture, useBackSwipeGesture } from "@/mobile-panels/gestures";
 import { MobilePanelsProvider } from "@/mobile-panels/provider";
 import { I18nProvider } from "@/i18n/provider";
 import {
@@ -647,9 +647,13 @@ function MobileGestureWrapper({
   chromeEnabled: boolean;
 }) {
   const openGesture = useOpenAgentListGesture(chromeEnabled);
+  const backGesture = useBackSwipeGesture({ enabled: chromeEnabled });
 
   return (
-    <GestureDetector gesture={openGesture} touchAction={MOBILE_WEB_GESTURE_TOUCH_ACTION}>
+    <GestureDetector
+      gesture={Gesture.Race(backGesture, openGesture)}
+      touchAction={MOBILE_WEB_GESTURE_TOUCH_ACTION}
+    >
       <View collapsable={false} style={layoutStyles.surfaceFill}>
         {children}
       </View>
