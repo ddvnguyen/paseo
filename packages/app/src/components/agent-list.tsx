@@ -23,6 +23,8 @@ import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
 import { HighlightedText } from "@/components/ui/highlighted-text";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
+import { PullToRefresh } from "@/components/pull-to-refresh";
+import { isWeb } from "@/constants/platform";
 import type { AgentSearchMatch } from "@getpaseo/protocol/messages";
 import type { MatchRange } from "@getpaseo/protocol/search/text-match";
 
@@ -541,19 +543,29 @@ export function AgentList({
     [onRefresh, isRefreshing, theme.colors.foregroundMuted, refreshColors],
   );
 
+  const list = (
+    <FlatList
+      data={flatItems}
+      style={styles.list}
+      contentContainerStyle={styles.listContent}
+      keyExtractor={keyExtractor}
+      renderItem={renderItem}
+      showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+      ListFooterComponent={listFooterComponent}
+      refreshControl={refreshControl}
+    />
+  );
+
   return (
     <>
-      <FlatList
-        data={flatItems}
-        style={styles.list}
-        contentContainerStyle={styles.listContent}
-        keyExtractor={keyExtractor}
-        renderItem={renderItem}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        ListFooterComponent={listFooterComponent}
-        refreshControl={refreshControl}
-      />
+      {isWeb && onRefresh ? (
+        <PullToRefresh refreshing={!!isRefreshing} onRefresh={onRefresh}>
+          {list}
+        </PullToRefresh>
+      ) : (
+        list
+      )}
 
       <Modal
         visible={isActionSheetVisible}
