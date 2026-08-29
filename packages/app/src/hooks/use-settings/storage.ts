@@ -62,6 +62,18 @@ export const DEFAULT_CODE_FONT_SIZE = 12; // == FONT_SIZE.code
 export const MIN_CODE_FONT_SIZE = 9;
 export const MAX_CODE_FONT_SIZE = 22; // line-height 1.5×22=33 stays safe
 export const MAX_FONT_FAMILY_LENGTH = 200;
+// UI zoom: scales the whole interface (text, icons, controls, spacing, borders).
+// 1.0 is the authored design; <1.0 is denser, >1.0 is larger.
+export const DEFAULT_UI_SCALE = 1;
+export const MIN_UI_SCALE = 0.75;
+export const MAX_UI_SCALE = 1.5;
+export const UI_SCALE_STEP = 0.05;
+// Text line height: multiplier on the body content font size. Independent of zoom
+// so the user can tighten/loosen text without resizing the rest of the UI.
+export const DEFAULT_LINE_HEIGHT_SCALE = 1.3;
+export const MIN_LINE_HEIGHT_SCALE = 1.1;
+export const MAX_LINE_HEIGHT_SCALE = 2;
+export const LINE_HEIGHT_SCALE_STEP = 0.1;
 
 export interface AppSettings {
   theme: ThemePreference;
@@ -77,6 +89,10 @@ export interface AppSettings {
   uiBaseFontSize: number; // clamped px, platform default 14 or 15
   contentFontSize: number; // clamped px, default 15
   codeFontSize: number; // clamped px, default 12
+  /** Multiplier on the whole design token ramp (text, icons, spacing, borders). */
+  uiScale: number; // clamped, default 1
+  /** Multiplier on the body text font size to derive `lineHeight.content`. */
+  lineHeightScale: number; // clamped, default 1.3
   syntaxTheme: SyntaxThemeId; // default "one"
   workspaceTitleSource: WorkspaceTitleSource;
   sidebarWorkspaceTrailing: SidebarWorkspaceTrailing;
@@ -125,6 +141,8 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   uiBaseFontSize: DEFAULT_UI_BASE_FONT_SIZE,
   contentFontSize: DEFAULT_CONTENT_FONT_SIZE,
   codeFontSize: DEFAULT_CODE_FONT_SIZE,
+  uiScale: DEFAULT_UI_SCALE,
+  lineHeightScale: DEFAULT_LINE_HEIGHT_SCALE,
   syntaxTheme: "one",
   workspaceTitleSource: "title",
   sidebarWorkspaceTrailing: "diff",
@@ -148,6 +166,13 @@ function clampedNumber(min: number, max: number) {
   return z
     .unknown()
     .transform((value) => parseClampedFontSize(value, { min, max }))
+    .pipe(z.number());
+}
+
+function clampedScale(min: number, max: number) {
+  return z
+    .unknown()
+    .transform((value) => parseClampedScale(value, { min, max }))
     .pipe(z.number());
 }
 
@@ -210,6 +235,10 @@ const StoredAppSettingsSchema = z
     codeFontSize: clampedNumber(MIN_CODE_FONT_SIZE, MAX_CODE_FONT_SIZE).catch(
       DEFAULT_CODE_FONT_SIZE,
     ),
+    uiScale: clampedScale(MIN_UI_SCALE, MAX_UI_SCALE).optional().catch(undefined),
+    lineHeightScale: clampedScale(MIN_LINE_HEIGHT_SCALE, MAX_LINE_HEIGHT_SCALE)
+      .optional()
+      .catch(undefined),
     syntaxTheme: z.string().refine(isSyntaxThemeId).catch("one"),
     workspaceTitleSource: z.enum(["title", "branch"]).catch("title"),
     sidebarWorkspaceTrailing: z.enum(["diff", "timestamp", "none"]).catch("diff"),
@@ -281,6 +310,8 @@ const StoredAppSettingsSchema = z
         stored.pullRequestOpenLocation ?? (legacyPullRequestsInSidePane ? "side" : "explorer"),
       uiBaseFontSize,
       contentFontSize: stored.contentFontSize ?? uiBaseFontSize,
+      uiScale: stored.uiScale ?? DEFAULT_UI_SCALE,
+      lineHeightScale: stored.lineHeightScale ?? DEFAULT_LINE_HEIGHT_SCALE,
       sidebarChecksDisplay,
       sidebarRowItems: {
         ...stored.sidebarRowItems,
@@ -461,6 +492,19 @@ export function parseClampedFontSize(
     return null;
   }
   return Math.min(bounds.max, Math.max(bounds.min, Math.floor(numericValue)));
+}
+
+function parseClampedScale(value: unknown, bounds: { min: number; max: number }): number | null {
+  let numericValue = NaN;
+  if (typeof value === "number") {
+    numericValue = value;
+  } else if (typeof value === "string" && value.trim().length > 0) {
+    numericValue = Number(value);
+  }
+  if (!Number.isFinite(numericValue)) {
+    return null;
+  }
+  return Math.min(bounds.max, Math.max(bounds.min, Math.round(numericValue * 100) / 100));
 }
 
 export function sanitizeFontFamily(value: unknown): string | null {

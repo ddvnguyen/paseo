@@ -571,6 +571,11 @@ export const FONT_SIZE = {
 } as const;
 
 export const LINE_HEIGHT = {
+  // content: derived from `contentFontSize * lineHeightScale` at apply time.
+  // 20 is the authored default that matches the implicit RN body line height at
+  // contentFontSize 15 × 1.3.
+  content: 20,
+  // diff: coupled to codeFontSize at apply time (×1.5).
   diff: 22,
 } as const;
 
@@ -626,19 +631,20 @@ export const DEFAULT_MONO_FONT_STACK: string = Platform.select({
   web: "SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
 });
 
-// `fontSize`, `fontFamily`, and `lineHeight` are deliberately widened to plain
-// `number`/`string` (not narrowed by `as const`) so the appearance updater can patch
-// them at runtime via `UnistylesRuntime.updateTheme`. The remaining tokens keep their
-// literal types.
+// `fontSize`, `fontFamily`, `lineHeight`, `spacing`, `iconSize`, `borderRadius`,
+// and `borderWidth` are deliberately widened to plain `number`/`string` (not
+// narrowed by `as const`) so the appearance updater can patch them at runtime
+// via `UnistylesRuntime.updateTheme`. `fontWeight` and `opacity` keep their
+// literal types — the appearance feature does not scale weights or alphas.
 interface CommonTheme {
-  spacing: typeof SPACING;
+  spacing: Record<keyof typeof SPACING, number>;
   fontSize: Record<keyof typeof FONT_SIZE, number>;
   fontFamily: { ui: string; mono: string };
   lineHeight: Record<keyof typeof LINE_HEIGHT, number>;
-  iconSize: typeof ICON_SIZE;
+  iconSize: Record<keyof typeof ICON_SIZE, number>;
   fontWeight: typeof FONT_WEIGHT;
-  borderRadius: typeof BORDER_RADIUS;
-  borderWidth: typeof BORDER_WIDTH;
+  borderRadius: Record<keyof typeof BORDER_RADIUS, number>;
+  borderWidth: Record<keyof typeof BORDER_WIDTH, number>;
   opacity: typeof OPACITY;
 }
 
