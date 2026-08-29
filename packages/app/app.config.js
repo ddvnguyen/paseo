@@ -93,12 +93,16 @@ const variants = {
 
 const variant = variants[appVariant] ?? variants.production;
 const nativeReleaseVersion = getNativeReleaseVersion(pkg.version);
+// Strip the trailing git-hash suffix (e.g. -hydra-e31e7ccbd → -hydra) so the
+// Android versionName / iOS display version preserves the hydra branding while
+// keeping native versionCode derived from clean semver.
+const displayVersion = pkg.version.replace(/-[0-9a-f]{7,40}$/, "");
 
 export default {
   expo: {
     name: variant.name,
     slug: "voice-mobile",
-    version: nativeReleaseVersion.appVersion,
+    version: displayVersion,
     orientation: "portrait",
     icon: "./assets/images/icon.png",
     scheme: "paseo",
