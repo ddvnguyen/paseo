@@ -488,7 +488,9 @@ function StepperRow({
     if (next <= max + step * 0.5) onChange(next);
   }, [value, step, max, onChange]);
   const displayValue =
-    format === "percent" ? `${Math.round(value * 100)}%` : `${value.toFixed(1)}×`;
+    format === "percent"
+      ? `${Math.round(value * 100)}%`
+      : `${parseFloat(value.toFixed(2))}×`;
   return (
     <View style={settingsStyles.row}>
       <View style={settingsStyles.rowContent}>
