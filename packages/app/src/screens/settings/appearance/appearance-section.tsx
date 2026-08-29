@@ -25,11 +25,13 @@ import {
   MAX_CODE_FONT_SIZE,
   MAX_CONTENT_FONT_SIZE,
   MAX_LINE_HEIGHT_SCALE,
+  MAX_SPACING_SCALE,
   MAX_UI_BASE_FONT_SIZE,
   MAX_UI_SCALE,
   MIN_CODE_FONT_SIZE,
   MIN_CONTENT_FONT_SIZE,
   MIN_LINE_HEIGHT_SCALE,
+  MIN_SPACING_SCALE,
   MIN_UI_BASE_FONT_SIZE,
   MIN_UI_SCALE,
   parseClampedFontSize,
@@ -37,6 +39,7 @@ import {
   useAppSettings,
   type AppSettings,
   DEFAULT_THEME_PREFERENCE,
+  SPACING_SCALE_STEP,
   UI_SCALE_STEP,
 } from "@/hooks/use-settings";
 import {
@@ -488,7 +491,7 @@ function StepperRow({
     if (next <= max + step * 0.5) onChange(next);
   }, [value, step, max, onChange]);
   const displayValue =
-    format === "percent" ? `${Math.round(value * 100)}%` : `${value.toFixed(1)}×`;
+    format === "percent" ? `${Math.round(value * 100)}%` : `${parseFloat(value.toFixed(2))}×`;
   return (
     <View style={settingsStyles.row}>
       <View style={settingsStyles.rowContent}>
@@ -669,6 +672,13 @@ export function AppearanceSection() {
     [updateSettings],
   );
 
+  const handleSpacingScaleChange = useCallback(
+    (spacingScale: number) => {
+      void updateSettings({ spacingScale });
+    },
+    [updateSettings],
+  );
+
   const handleLineHeightScaleChange = useCallback(
     (lineHeightScale: number) => {
       void updateSettings({ lineHeightScale });
@@ -831,6 +841,17 @@ export function AppearanceSection() {
             step={UI_SCALE_STEP}
             format="percent"
             onChange={handleUiScaleChange}
+          />
+          <StepperRow
+            title={t("settings.appearance.fonts.spacingScale")}
+            hint={t("settings.appearance.fonts.spacingScaleHint")}
+            accessibilityLabel={t("settings.appearance.fonts.spacingScaleAccessibility")}
+            value={settings.spacingScale}
+            min={MIN_SPACING_SCALE}
+            max={MAX_SPACING_SCALE}
+            step={SPACING_SCALE_STEP}
+            format="multiplier"
+            onChange={handleSpacingScaleChange}
           />
           <StepperRow
             title={t("settings.appearance.fonts.lineHeightScale")}

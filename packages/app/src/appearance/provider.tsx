@@ -60,6 +60,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       contentFontSize: settings.contentFontSize,
       codeFontSize: settings.codeFontSize,
       uiScale: settings.uiScale,
+      spacingScale: settings.spacingScale,
       lineHeightScale: settings.lineHeightScale,
       syntaxTheme: settings.syntaxTheme,
     });
@@ -73,6 +74,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     settings.contentFontSize,
     settings.codeFontSize,
     settings.uiScale,
+    settings.spacingScale,
     settings.lineHeightScale,
     settings.syntaxTheme,
   ]);

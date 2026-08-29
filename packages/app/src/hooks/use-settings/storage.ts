@@ -74,6 +74,13 @@ export const DEFAULT_LINE_HEIGHT_SCALE = 1.3;
 export const MIN_LINE_HEIGHT_SCALE = 0.5;
 export const MAX_LINE_HEIGHT_SCALE = 2;
 export const LINE_HEIGHT_SCALE_STEP = 0.05;
+// Global spacing: multiplier for spacing tokens only (padding, margin, gap).
+// Independent from uiScale so the user can control spacing density without
+// affecting font sizes, icons, or borders.
+export const DEFAULT_SPACING_SCALE = 1;
+export const MIN_SPACING_SCALE = 0.5;
+export const MAX_SPACING_SCALE = 2;
+export const SPACING_SCALE_STEP = 0.05;
 
 export interface AppSettings {
   theme: ThemePreference;
@@ -89,8 +96,10 @@ export interface AppSettings {
   uiBaseFontSize: number; // clamped px, platform default 14 or 15
   contentFontSize: number; // clamped px, default 15
   codeFontSize: number; // clamped px, default 12
-  /** Multiplier on the whole design token ramp (text, icons, spacing, borders). */
+  /** Multiplier on the whole design token ramp (text, icons, borders). */
   uiScale: number; // clamped, default 1
+  /** Multiplier on spacing tokens only (padding, margin, gap). */
+  spacingScale: number; // clamped, default 1
   /** Multiplier on the body text font size to derive `lineHeight.content`. */
   lineHeightScale: number; // clamped, default 1.3
   syntaxTheme: SyntaxThemeId; // default "one"
@@ -142,6 +151,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   contentFontSize: DEFAULT_CONTENT_FONT_SIZE,
   codeFontSize: DEFAULT_CODE_FONT_SIZE,
   uiScale: DEFAULT_UI_SCALE,
+  spacingScale: DEFAULT_SPACING_SCALE,
   lineHeightScale: DEFAULT_LINE_HEIGHT_SCALE,
   syntaxTheme: "one",
   workspaceTitleSource: "title",
@@ -236,6 +246,7 @@ const StoredAppSettingsSchema = z
       DEFAULT_CODE_FONT_SIZE,
     ),
     uiScale: clampedScale(MIN_UI_SCALE, MAX_UI_SCALE).optional().catch(undefined),
+    spacingScale: clampedScale(MIN_SPACING_SCALE, MAX_SPACING_SCALE).optional().catch(undefined),
     lineHeightScale: clampedScale(MIN_LINE_HEIGHT_SCALE, MAX_LINE_HEIGHT_SCALE)
       .optional()
       .catch(undefined),
@@ -311,6 +322,7 @@ const StoredAppSettingsSchema = z
       uiBaseFontSize,
       contentFontSize: stored.contentFontSize ?? uiBaseFontSize,
       uiScale: stored.uiScale ?? DEFAULT_UI_SCALE,
+      spacingScale: stored.spacingScale ?? DEFAULT_SPACING_SCALE,
       lineHeightScale: stored.lineHeightScale ?? DEFAULT_LINE_HEIGHT_SCALE,
       sidebarChecksDisplay,
       sidebarRowItems: {
