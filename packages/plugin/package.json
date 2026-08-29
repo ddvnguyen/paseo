@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/plugin",
-  "version": "0.7.0-beta.1-cbd24304f",
+  "version": "0.7.0-beta.1-1c9eccaef",
   "description": "Paseo plugin SDK package",
   "files": [
     "dist",
@@ -39,8 +39,8 @@
     "use-sync-external-store": "^1.6.0"
   },
   "devDependencies": {
-    "@getpaseo/client": "0.7.0-beta.1-cbd24304f",
-    "@getpaseo/protocol": "0.7.0-beta.1-cbd24304f",
+    "@getpaseo/client": "0.7.0-beta.1-1c9eccaef",
+    "@getpaseo/protocol": "0.7.0-beta.1-1c9eccaef",
     "@types/node": "^20.9.0",
     "@types/react": "~19.2.0",
     "react": "19.1.0",
@@ -49,8 +49,8 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "@getpaseo/client": "0.7.0-beta.1-cbd24304f",
-    "@getpaseo/protocol": "0.7.0-beta.1-cbd24304f",
+    "@getpaseo/client": "0.7.0-beta.1-1c9eccaef",
+    "@getpaseo/protocol": "0.7.0-beta.1-1c9eccaef",
     "react": "19.1.0",
     "zod": "^4.4.3"
   }
