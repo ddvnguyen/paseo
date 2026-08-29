@@ -84,11 +84,32 @@ jobs:
       - name: Build Android APK on EAS
         id: eas_build
         shell: bash
+        env:
+          EAS_ANDROID_KEYSTORE_BASE64: ${{ secrets.EAS_ANDROID_KEYSTORE_BASE64 }}
+          EAS_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.EAS_ANDROID_KEYSTORE_PASSWORD }}
+          EAS_ANDROID_KEY_ALIAS: ${{ secrets.EAS_ANDROID_KEY_ALIAS }}
+          EAS_ANDROID_KEY_PASSWORD: ${{ secrets.EAS_ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           cd packages/app
 
+          # Write keystore from secret and create credentials.json for local source
+          echo "$EAS_ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/release.keystore
+          cat > credentials.json <<CREDS
+          {
+            "android": {
+              "keystore": {
+                "keystorePath": "/tmp/release.keystore",
+                "keystorePassword": "$EAS_ANDROID_KEYSTORE_PASSWORD",
+                "keyAlias": "$EAS_ANDROID_KEY_ALIAS",
+                "keyPassword": "$EAS_ANDROID_KEY_PASSWORD"
+              }
+            }
+          }
+          CREDS
+
           build_json="$(npx eas build --platform android --profile production-apk --non-interactive --wait --json)"
+          rm -f credentials.json
           echo "$build_json" > "$RUNNER_TEMP/eas-build.json"
 
           build_id="$(jq -r 'if type == "array" then .[0].id // empty else .id // empty end' "$RUNNER_TEMP/eas-build.json")"

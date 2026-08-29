@@ -22,34 +22,34 @@ export interface AppearanceInput {
   uiBaseFontSize: number; // already clamped
   contentFontSize: number; // already clamped
   codeFontSize: number; // already clamped
-  uiScale: number; // 0.75–1.50, default 1
+  uiScale: number; // 0.75–1.50, default 1 — scales UI elements (spacing, icons, borders, UI fonts)
   lineHeightScale: number; // 1.1–2.0, default 1.3
   syntaxTheme: SyntaxThemeId;
 }
 
 /**
  * Build the font-size ramp from the canonical `FONT_SIZE` ramp, scaled
- * proportionally from the requested base size so the type hierarchy is preserved
- * sizes. Deriving from the authored ramp — NOT the live (possibly already-scaled)
- * theme — makes `applyAppearance` idempotent: repeated applies never compound, and a
- * code-size change (base size unchanged) leaves the UI ramp at its authored values.
- * `code` is set absolutely to `codeSize`, never scaled by the UI factor — a separate
- * control on a separate semantic axis (mono/diff text).
+ * proportionally from the requested base size so the type hierarchy is preserved.
+ * `uiScale` multiplies the UI font ramp (sm–4xl) so UI zoom affects button
+ * labels, headers, and controls. `content` and `code` are absolute — unaffected
+ * by uiScale so body text and diffs stay at the user's chosen sizes.
  */
 function scaleFontSize(
   uiBaseSize: number,
   contentSize: number,
   codeSize: number,
+  uiScale: number,
 ): Theme["fontSize"] {
   const r = uiBaseSize / FONT_SIZE.base;
+  const s = uiScale;
   return {
-    sm: Math.round(FONT_SIZE.sm * r),
-    base: Math.round(FONT_SIZE.base * r),
-    lg: Math.round(FONT_SIZE.lg * r),
-    xl: Math.round(FONT_SIZE.xl * r),
-    "2xl": Math.round(FONT_SIZE["2xl"] * r),
-    "3xl": Math.round(FONT_SIZE["3xl"] * r),
-    "4xl": Math.round(FONT_SIZE["4xl"] * r),
+    sm: Math.round(FONT_SIZE.sm * r * s),
+    base: Math.round(FONT_SIZE.base * r * s),
+    lg: Math.round(FONT_SIZE.lg * r * s),
+    xl: Math.round(FONT_SIZE.xl * r * s),
+    "2xl": Math.round(FONT_SIZE["2xl"] * r * s),
+    "3xl": Math.round(FONT_SIZE["3xl"] * r * s),
+    "4xl": Math.round(FONT_SIZE["4xl"] * r * s),
     content: contentSize, // absolute, NOT scaled
     code: codeSize, // absolute, NOT scaled
   };
@@ -142,6 +142,7 @@ export function applyAppearance(input: AppearanceInput): void {
         input.uiBaseFontSize,
         input.contentFontSize,
         input.codeFontSize,
+        input.uiScale,
       );
       const lineHeight = { ...t.lineHeight, content: contentLineHeight, diff: diffLineHeight };
       if (t.colorScheme === "light") {
