@@ -2121,6 +2121,9 @@ export const ar: TranslationResources = {
         lineHeightScale: "Text line height",
         lineHeightScaleHint: "Spacing between text lines, independent of zoom",
         lineHeightScaleAccessibility: "Text line height",
+        spacingScale: "Spacing",
+        spacingScaleHint: "Padding, margins, and gaps between elements",
+        spacingScaleAccessibility: "Global spacing",
       },
       syntax: {
         title: "بناء الجملة",

@@ -22,8 +22,9 @@ export interface AppearanceInput {
   uiBaseFontSize: number; // already clamped
   contentFontSize: number; // already clamped
   codeFontSize: number; // already clamped
-  uiScale: number; // 0.75–1.50, default 1 — scales UI elements (spacing, icons, borders, UI fonts)
-  lineHeightScale: number; // 1.1–2.0, default 1.3
+  uiScale: number; // 0.75–1.50, default 1 — scales fonts, icons, borders (NOT spacing)
+  spacingScale: number; // 0.5–2.0, default 1 — scales spacing tokens only
+  lineHeightScale: number; // 0.5–2.0, default 1.3
   syntaxTheme: SyntaxThemeId;
 }
 
@@ -56,36 +57,43 @@ function scaleFontSize(
 }
 
 /**
- * Scale the non-font design tokens (spacing, icons, borders) from their canonical
- * constants by `uiScale`. Mirrors `scaleFontSize` in spirit: derive from the
- * authored ramp so repeated applies are idempotent and never compound.
+ * Scale spacing tokens from their canonical constants by `spacingScale`.
+ * Idempotent: derives from the authored ramp, never compounds.
+ */
+function scaleSpacingTokens(scale: number): Theme["spacing"] {
+  const round = (v: number) => Math.round(v * scale);
+  return {
+    0: 0,
+    0.5: round(SPACING[0.5]),
+    1: round(SPACING[1]),
+    1.5: round(SPACING[1.5]),
+    2: round(SPACING[2]),
+    3: round(SPACING[3]),
+    4: round(SPACING[4]),
+    6: round(SPACING[6]),
+    8: round(SPACING[8]),
+    12: round(SPACING[12]),
+    16: round(SPACING[16]),
+    20: round(SPACING[20]),
+    24: round(SPACING[24]),
+    32: round(SPACING[32]),
+  };
+}
+
+/**
+ * Scale non-font, non-spacing design tokens (icons, borders) from their
+ * canonical constants by `uiScale`. Idempotent: derives from the authored
+ * ramp, never compounds.
  *
  * `borderRadius.full` is left at its authored 9999 (pill shape), not scaled.
  */
 function scaleUiTokens(scale: number): {
-  spacing: Theme["spacing"];
   iconSize: Theme["iconSize"];
   borderRadius: Theme["borderRadius"];
   borderWidth: Theme["borderWidth"];
 } {
   const round = (v: number) => Math.round(v * scale);
   return {
-    spacing: {
-      0: 0,
-      0.5: round(SPACING[0.5]),
-      1: round(SPACING[1]),
-      1.5: round(SPACING[1.5]),
-      2: round(SPACING[2]),
-      3: round(SPACING[3]),
-      4: round(SPACING[4]),
-      6: round(SPACING[6]),
-      8: round(SPACING[8]),
-      12: round(SPACING[12]),
-      16: round(SPACING[16]),
-      20: round(SPACING[20]),
-      24: round(SPACING[24]),
-      32: round(SPACING[32]),
-    },
     iconSize: {
       xs: round(ICON_SIZE.xs),
       sm: round(ICON_SIZE.sm),
@@ -127,6 +135,7 @@ export function applyAppearance(input: AppearanceInput): void {
   const diffLineHeight = Math.round(input.codeFontSize * 1.5); // couple to code size
   const contentLineHeight = Math.round(input.contentFontSize * input.lineHeightScale);
   const uiTokens = scaleUiTokens(input.uiScale);
+  const spacing = scaleSpacingTokens(input.spacingScale);
   const activeTheme = UnistylesRuntime.themeName;
   // Unistyles web emits after each registry patch. Updating the mounted theme
   // first ensures subscribers receive its new numeric tokens in this render;
@@ -151,6 +160,7 @@ export function applyAppearance(input: AppearanceInput): void {
           fontFamily,
           fontSize,
           lineHeight,
+          spacing,
           ...uiTokens,
           colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
         };
@@ -160,6 +170,7 @@ export function applyAppearance(input: AppearanceInput): void {
         fontFamily,
         fontSize,
         lineHeight,
+        spacing,
         ...uiTokens,
         colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
       };
@@ -169,6 +180,6 @@ export function applyAppearance(input: AppearanceInput): void {
   // Web: apply the UI font app-wide (RN-web stamps a default font on every text
   // element, so it can't be done through the theme alone). No-op on native.
   applyRootUiFont(ui);
-  // Web-only: set the CSS zoom variable so non-Unistyles DOM follows the scale.
-  applyRootUiScale(input.uiScale);
+  // Web-only: set CSS variables so non-Unistyles DOM follows the scales.
+  applyRootUiScale(input.uiScale, input.spacingScale);
 }

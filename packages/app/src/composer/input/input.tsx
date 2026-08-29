@@ -2,7 +2,6 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import {
   View,
   Text,
-  Pressable,
   useWindowDimensions,
   NativeSyntheticEvent,
   TextInputKeyPressEventData,
@@ -21,7 +20,7 @@ import {
 } from "react";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { FONT_SIZE, ICON_SIZE, type Theme } from "@/styles/theme";
+import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { ArrowUp, Mic, MicOff, CornerDownLeft, Plus, Square } from "lucide-react-native";
 import { useDictation } from "@/hooks/use-dictation";
 import { DictationOverlay } from "@/components/dictation-controls";
@@ -192,12 +191,7 @@ export interface MessageInputRef {
 
 const MIN_INPUT_HEIGHT_MOBILE = 30;
 const MIN_INPUT_HEIGHT_DESKTOP = 46;
-// Floor for the textarea's max-height. The viewport-ratio cap below is the
-// primary control (textarea stops growing at half the window height so the
-// conversation above is never fully hidden). The floor is only used when
-// the window is so small that half-viewport is below the floor; in that
-// case we still allow a usable ~120px (~4 lines) before scrolling kicks in.
-const DEFAULT_MAX_INPUT_HEIGHT = 120;
+const DEFAULT_MAX_INPUT_HEIGHT = 160;
 const MAX_INPUT_VIEWPORT_RATIO = 0.5;
 const MIN_INPUT_HEIGHT = isWeb ? MIN_INPUT_HEIGHT_DESKTOP : MIN_INPUT_HEIGHT_MOBILE;
 type WebTextInputKeyPressEvent = NativeSyntheticEvent<
@@ -509,26 +503,15 @@ function usePasteImagesEffect(args: PasteImagesEffectArgs): void {
   ]);
 }
 
-/**
- * Reveal-then-focus: the idle composer keeps no TextInput mounted, so a
- * focus request first expands the surface, then transfers keyboard focus
- * to the freshly-mounted input on the following commit. Web retries because
- * focus() aimed at a mid-commit element can be swallowed; native is direct.
- */
-function useRevealInputFocusEffect(
-  wantsInputFocus: boolean,
+function useAutoFocusOnWebEffect(
   textInputRef: React.MutableRefObject<ComposerTextInputHandle | null>,
+  autoFocus: boolean,
+  autoFocusKey: string | undefined,
 ): void {
   useEffect(() => {
-    if (!wantsInputFocus) return undefined;
-    const handle = textInputRef.current;
-    if (!handle) return undefined;
-    if (!isWeb) {
-      handle.focus();
-      return undefined;
-    }
+    if (!isWeb || !autoFocus) return;
     return focusWithRetries({
-      focus: () => handle.focus(),
+      focus: () => textInputRef.current?.focus(),
       isFocused: () => {
         const element = getTextInputNativeElement(textInputRef.current);
         const active = typeof document !== "undefined" ? document.activeElement : null;
@@ -536,29 +519,21 @@ function useRevealInputFocusEffect(
       },
       deferInitialAttempt: true,
     });
-    // Focus transfer only depends on the reveal pulse; refs are stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wantsInputFocus]);
+  }, [autoFocus, autoFocusKey]);
 }
 
 function MessageInputAutoFocus({
   enabled,
   autoFocusKey,
-  onRequestFocus,
+  textInputRef,
 }: {
   enabled: boolean;
   autoFocusKey: string | undefined;
-  onRequestFocus: () => void;
+  textInputRef: React.MutableRefObject<ComposerTextInputHandle | null>;
 }) {
   const { isActiveComposer } = useComposerKeyboardScope();
-  useEffect(() => {
-    if (!isWeb || !enabled || !isActiveComposer) return;
-    // Auto-focus goes through the shared focus request so the input is
-    // revealed first if it collapsed back to the idle surface.
-    onRequestFocus();
-    // Keyed as a focus pulse: callers bump autoFocusKey to re-request focus.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoFocusKey]);
+  useAutoFocusOnWebEffect(textInputRef, enabled && isActiveComposer, autoFocusKey);
   return null;
 }
 
@@ -1013,15 +988,6 @@ function resolveMaxInputHeight(windowHeight: number): number {
   return Math.max(DEFAULT_MAX_INPUT_HEIGHT, Math.floor(windowHeight * MAX_INPUT_VIEWPORT_RATIO));
 }
 
-function resolveMinInputHeight(_isInputExpanded: boolean, isCompact: boolean): number {
-  // Desktop web (or any non-compact web layout) gets the 46px tall input; web
-  // at compact (mobile) viewport and native both get 30px so the pill stays
-  // tight on phones. isCompact is a JS boolean from useIsCompactFormFactor()
-  // at the call site, so this stays a pure function.
-  if (isWeb && !isCompact) return MIN_INPUT_HEIGHT_DESKTOP;
-  return MIN_INPUT_HEIGHT_MOBILE;
-}
-
 function isTextAreaLike(v: unknown): v is TextAreaHandle {
   return typeof v === "object" && v !== null && "scrollHeight" in v;
 }
@@ -1232,9 +1198,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const dictationToggleKeys = useShortcutKeys("dictation-toggle");
     const focusInputKeys = useShortcutKeys("focus-message-input");
     const [isInputFocused, setIsInputFocused] = useState(false);
-    // Set when something asks the composer to gain focus while its TextInput
-    // may not be mounted (the idle surface hides it). Cleared on real blur.
-    const [wantsInputFocus, setWantsInputFocus] = useState(false);
     // Web text is DOM-owned between deferred draft publications. The action button only needs
     // this boundary, so publish empty/non-empty transitions without rerendering for every key.
     const initialHasLiveText = value.trim().length > 0;
@@ -1248,36 +1211,16 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const selectionRef = useRef({ start: value.length, end: value.length });
     const appliedTextReplacementKeyRef = useRef(textReplacement.key);
     const webTextareaRef = useRef<HTMLElement | null>(null);
-    // Focus-aware collapse: an idle composer with no draft hides its text
-    // input entirely and shows a tappable placeholder surface instead. A
-    // focus request reveals the two-line-tall input and moves keyboard focus
-    // onto it (requestComposerFocus + reveal effect below). Blur collapses
-    // again, unless a draft is present — visible drafts are never hidden.
-    const hasDraftContent = hasLiveText || value.trim().length > 0;
-    const isInputExpanded = isInputFocused || wantsInputFocus;
-    const showTextInput = readOnly || isInputExpanded || hasDraftContent;
-    // Focused/receiving input sits two lines tall (COMPOSER_INPUT_LINE_HEIGHT
-    // matches styles.textInput.lineHeight); idle one-liners stay compact.
-    const minInputHeight = resolveMinInputHeight(isInputExpanded, isCompact);
     const composerHeight = useComposerHeight({
       value,
       textareaRef: webTextareaRef,
-      minHeight: minInputHeight,
+      minHeight: MIN_INPUT_HEIGHT,
       maxHeight: maxInputHeight,
     });
     const { style: composerHeightStyle, scrollEnabled: isComposerScrollEnabled } = composerHeight;
     const measuredComposerHeight = composerHeight.mode === "measured" ? composerHeight : undefined;
     const updateComposerHeightForText = measuredComposerHeight?.onTextChange;
     const resetComposerHeight = measuredComposerHeight?.reset;
-
-    // Single funnel for every focus entry point (idle-surface tap, imperative
-    // ref.focus(), keyboard action, auto-focus). Safe to call while the text
-    // input is hidden: useRevealInputFocusEffect focuses it once mounted.
-    const requestComposerFocus = useCallback(() => {
-      setWantsInputFocus(true);
-    }, []);
-
-    useRevealInputFocusEffect(wantsInputFocus, textInputRef);
 
     const handleComposerLayout = useCallback(
       (event: LayoutChangeEvent) => onHeightChange?.(event.nativeEvent.layout.height),
@@ -1305,9 +1248,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     useImperativeHandle(ref, () => ({
       focus: () => {
-        // The input may be hidden (idle collapse): this reveals it first,
-        // then focuses it via the reveal effect.
-        requestComposerFocus();
+        textInputRef.current?.focus();
       },
       blur: () => {
         textInputRef.current?.blur();
@@ -1318,7 +1259,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       replaceText,
       runKeyboardAction: (action) =>
         runMessageInputKeyboardAction(action, {
-          focusInput: requestComposerFocus,
+          focusInput: () => textInputRef.current?.focus(),
           isDictationRecording: isDictationActive,
           markTranscriptForSend: () => {
             sendAfterTranscriptRef.current = true;
@@ -1736,7 +1677,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const handleInputBlur = useCallback(() => {
       isInputFocusedRef.current = false;
       setIsInputFocused(false);
-      setWantsInputFocus(false);
       onFocusChange?.(false);
     }, [onFocusChange]);
 
@@ -1831,11 +1771,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       [isDictating, isRealtimeVoiceForCurrentAgent, voice?.isMuted, buttonIconSize],
     );
 
-    const focusHintLabelText = t("composer.input.focusHint", {
-      shortcut: focusInputKeys ? formatShortcut(focusInputKeys[0], getShortcutOs()) : "",
-    });
-    const focusHintVisible = isWeb && !isInputFocused && !value;
-
     return (
       <View
         ref={rootRef}
@@ -1846,7 +1781,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         <MessageInputAutoFocus
           enabled={autoFocus}
           autoFocusKey={autoFocusKey}
-          onRequestFocus={requestComposerFocus}
+          textInputRef={textInputRef}
         />
         {/* Regular input */}
         <View
@@ -1855,151 +1790,86 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           pointerEvents={surfacePresentation.input.pointerEvents}
         >
           {attachmentSlot}
-          {/* Text input — hidden entirely while idle+empty; the action row
-              below becomes the tap target that expands it (no input-shaped
-              element is rendered until focus). */}
+          {/* Text input */}
           <RenderProfile id="ComposerTextSurface">
-            {showTextInput ? (
-              <ComposerTextSurface
-                readOnly={readOnly}
-                value={value}
-                textInputRef={textInputRef}
-                textInputStyle={textInputStyle}
-                readOnlyTextStyle={readOnlyTextStyle}
-                placeholder={placeholder ?? t("composer.placeholders.fallback")}
-                accessibilityLabel={t(mode.accessibilityLabelKey)}
-                onChangeText={handleInputChange}
-                onFocus={handleInputFocus}
-                onBlur={handleInputBlur}
-                editable={!isDictating && !isRealtimeVoiceForCurrentAgent && !disabled}
-                scrollEnabled={isComposerScrollEnabled}
-                autoFocus={false}
-                onKeyPress={shouldHandleWebKeyPress ? handleDesktopKeyPress : undefined}
-                onSelectionChange={handleSelectionChange}
-                onPasteImages={onPasteImages}
-                onPasteError={handlePasteError}
-                focusHintVisible={focusHintVisible}
-                focusInputKeys={focusInputKeys}
-                focusHintLabel={focusHintLabelText}
-              />
-            ) : null}
+            <ComposerTextSurface
+              readOnly={readOnly}
+              value={value}
+              textInputRef={textInputRef}
+              textInputStyle={textInputStyle}
+              readOnlyTextStyle={readOnlyTextStyle}
+              placeholder={placeholder ?? t("composer.placeholders.fallback")}
+              accessibilityLabel={t(mode.accessibilityLabelKey)}
+              onChangeText={handleInputChange}
+              onFocus={handleInputFocus}
+              onBlur={handleInputBlur}
+              editable={!isDictating && !isRealtimeVoiceForCurrentAgent && !disabled}
+              scrollEnabled={isComposerScrollEnabled}
+              autoFocus={false}
+              onKeyPress={shouldHandleWebKeyPress ? handleDesktopKeyPress : undefined}
+              onSelectionChange={handleSelectionChange}
+              onPasteImages={onPasteImages}
+              onPasteError={handlePasteError}
+              focusHintVisible={isWeb && !isInputFocused && !value}
+              focusInputKeys={focusInputKeys}
+              focusHintLabel={t("composer.input.focusHint", {
+                shortcut: focusInputKeys ? formatShortcut(focusInputKeys[0], getShortcutOs()) : "",
+              })}
+            />
           </RenderProfile>
 
           {/* Button row */}
-          {showTextInput ? (
-            <View style={styles.buttonRow}>
-              {/* Toolbar left: attachment button + agent controls */}
-              <View style={styles.leftButtonGroup}>
-                <AttachmentDropdown
-                  visible={mode.showAttachments}
-                  isConnected={isConnected}
-                  disabled={disabled}
-                  attachButtonStyle={attachButtonStyle}
-                  renderAttachButtonIcon={renderAttachButtonIcon}
-                  attachmentMenuItems={attachmentMenuItems}
-                  addAttachmentLabel={t("composer.input.addAttachment")}
-                />
-                {leftContent}
-              </View>
-
-              {/* Right: voice button, contextual button (realtime/send/cancel) */}
-              <View style={styles.rightButtonGroup}>
-                {beforeVoiceContent}
-                <VoiceButtonTooltip
-                  visible={mode.showVoice}
-                  onVoicePress={handleVoicePress}
-                  isDictationStartEnabled={isDictationStartEnabled}
-                  voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
-                  voiceButtonStyle={voiceButtonStyle}
-                  renderVoiceButtonIcon={renderVoiceButtonIcon}
-                  voiceTooltipText={voiceTooltipText}
-                  isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
-                  voiceMuteToggleKeys={voiceMuteToggleKeys}
-                  dictationToggleKeys={dictationToggleKeys}
-                />
-                {rightContent}
-                <PrimaryAction
-                  kind={primaryActionKind}
-                  activeActionContent={activeActionContent}
-                  shouldShow
-                  canPressLoadingButton={canPressLoadingButton}
-                  onSubmitLoadingPress={onSubmitLoadingPress}
-                  onDefaultSendAction={handleDefaultSendAction}
-                  isSendButtonDisabled={isSendButtonDisabled}
-                  submitAccessibilityLabel={submitAccessibilityLabel}
-                  sendButtonCombinedStyle={sendButtonCombinedStyle}
-                  isSubmitLoading={isSubmitLoading}
-                  submitIcon={submitIcon}
-                  submitLabel={submitLabel}
-                  submitButtonTestID={submitButtonTestID}
-                  buttonIconSize={buttonIconSize}
-                  sendKeys={DEFAULT_SEND_KEYS}
-                  sendTooltipLabel={sendTooltipLabel}
-                />
-              </View>
+          <View style={styles.buttonRow}>
+            {/* Toolbar left: attachment button + agent controls */}
+            <View style={styles.leftButtonGroup}>
+              <AttachmentDropdown
+                visible={mode.showAttachments}
+                isConnected={isConnected}
+                disabled={disabled}
+                attachButtonStyle={attachButtonStyle}
+                renderAttachButtonIcon={renderAttachButtonIcon}
+                attachmentMenuItems={attachmentMenuItems}
+                addAttachmentLabel={t("composer.input.addAttachment")}
+              />
+              {leftContent}
             </View>
-          ) : (
-            <Pressable
-              testID="composer-idle-input"
-              accessibilityRole="button"
-              accessibilityLabel={t(mode.accessibilityLabelKey)}
-              style={styles.idleComposerSurface}
-              onPress={requestComposerFocus}
-              disabled={disabled}
-            >
-              <View style={styles.buttonRow}>
-                {/* Toolbar left: attachment button + agent controls */}
-                <View style={styles.leftButtonGroup}>
-                  <AttachmentDropdown
-                    visible={mode.showAttachments}
-                    isConnected={isConnected}
-                    disabled={disabled}
-                    attachButtonStyle={attachButtonStyle}
-                    renderAttachButtonIcon={renderAttachButtonIcon}
-                    attachmentMenuItems={attachmentMenuItems}
-                    addAttachmentLabel={t("composer.input.addAttachment")}
-                  />
-                  {leftContent}
-                </View>
 
-                {/* Right: voice button, contextual button (realtime/send/cancel) */}
-                <View style={styles.rightButtonGroup}>
-                  {beforeVoiceContent}
-                  <VoiceButtonTooltip
-                    visible={mode.showVoice}
-                    onVoicePress={handleVoicePress}
-                    isDictationStartEnabled={isDictationStartEnabled}
-                    voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
-                    voiceButtonStyle={voiceButtonStyle}
-                    renderVoiceButtonIcon={renderVoiceButtonIcon}
-                    voiceTooltipText={voiceTooltipText}
-                    isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
-                    voiceMuteToggleKeys={voiceMuteToggleKeys}
-                    dictationToggleKeys={dictationToggleKeys}
-                  />
-                  {rightContent}
-                  <PrimaryAction
-                    kind={primaryActionKind}
-                    activeActionContent={activeActionContent}
-                    shouldShow
-                    canPressLoadingButton={canPressLoadingButton}
-                    onSubmitLoadingPress={onSubmitLoadingPress}
-                    onDefaultSendAction={handleDefaultSendAction}
-                    isSendButtonDisabled={isSendButtonDisabled}
-                    submitAccessibilityLabel={submitAccessibilityLabel}
-                    sendButtonCombinedStyle={sendButtonCombinedStyle}
-                    isSubmitLoading={isSubmitLoading}
-                    submitIcon={submitIcon}
-                    submitLabel={submitLabel}
-                    submitButtonTestID={submitButtonTestID}
-                    buttonIconSize={buttonIconSize}
-                    sendKeys={DEFAULT_SEND_KEYS}
-                    sendTooltipLabel={sendTooltipLabel}
-                  />
-                </View>
-              </View>
-            </Pressable>
-          )}
+            {/* Right: voice button, contextual button (realtime/send/cancel) */}
+            <View style={styles.rightButtonGroup}>
+              {beforeVoiceContent}
+              <VoiceButtonTooltip
+                visible={mode.showVoice}
+                onVoicePress={handleVoicePress}
+                isDictationStartEnabled={isDictationStartEnabled}
+                voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
+                voiceButtonStyle={voiceButtonStyle}
+                renderVoiceButtonIcon={renderVoiceButtonIcon}
+                voiceTooltipText={voiceTooltipText}
+                isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
+                voiceMuteToggleKeys={voiceMuteToggleKeys}
+                dictationToggleKeys={dictationToggleKeys}
+              />
+              {rightContent}
+              <PrimaryAction
+                kind={primaryActionKind}
+                activeActionContent={activeActionContent}
+                shouldShow
+                canPressLoadingButton={canPressLoadingButton}
+                onSubmitLoadingPress={onSubmitLoadingPress}
+                onDefaultSendAction={handleDefaultSendAction}
+                isSendButtonDisabled={isSendButtonDisabled}
+                submitAccessibilityLabel={submitAccessibilityLabel}
+                sendButtonCombinedStyle={sendButtonCombinedStyle}
+                isSubmitLoading={isSubmitLoading}
+                submitIcon={submitIcon}
+                submitLabel={submitLabel}
+                submitButtonTestID={submitButtonTestID}
+                buttonIconSize={buttonIconSize}
+                sendKeys={DEFAULT_SEND_KEYS}
+                sendTooltipLabel={sendTooltipLabel}
+              />
+            </View>
+          </View>
         </View>
 
         <View
@@ -2035,16 +1905,13 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   inputWrapper: {
     flexDirection: "column",
-    gap: {
-      xs: theme.spacing[2],
-      md: theme.spacing[3],
-    },
+    gap: theme.spacing[3],
     backgroundColor: theme.colors.surface1,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.borderAccent,
     borderRadius: theme.borderRadius["2xl"],
     paddingVertical: {
-      xs: theme.spacing[1],
+      xs: theme.spacing[2],
       md: theme.spacing[4],
     },
     paddingHorizontal: {
@@ -2066,16 +1933,6 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   textInputScrollWrapper: {
     position: "relative",
-  },
-  // Idle composer: the action row itself is the tap target; no input-shaped
-  // element is rendered until focus (UX spec: "1 line -> hide the text box").
-  idleComposerSurface: {
-    width: "100%",
-  },
-  idleInputPlaceholderText: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.content,
-    fontWeight: theme.fontWeight.normal,
   },
   focusHintText: {
     position: "absolute",
