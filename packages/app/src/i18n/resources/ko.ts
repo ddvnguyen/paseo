@@ -2135,6 +2135,8 @@ export const ko: TranslationResources = {
         spacingScale: "Spacing",
         spacingScaleHint: "Padding, margins, and gaps between elements",
         spacingScaleAccessibility: "Global spacing",
+        resetDefaults: "Reset all to defaults",
+        resetDefaultsHint: "Restore all font and spacing settings",
       },
       syntax: {
         title: "구문",
