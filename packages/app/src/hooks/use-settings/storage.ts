@@ -71,9 +71,9 @@ export const UI_SCALE_STEP = 0.05;
 // Text line height: multiplier on the body content font size. Independent of zoom
 // so the user can tighten/loosen text without resizing the rest of the UI.
 export const DEFAULT_LINE_HEIGHT_SCALE = 1.3;
-export const MIN_LINE_HEIGHT_SCALE = 1.1;
+export const MIN_LINE_HEIGHT_SCALE = 0.5;
 export const MAX_LINE_HEIGHT_SCALE = 2;
-export const LINE_HEIGHT_SCALE_STEP = 0.1;
+export const LINE_HEIGHT_SCALE_STEP = 0.05;
 
 export interface AppSettings {
   theme: ThemePreference;

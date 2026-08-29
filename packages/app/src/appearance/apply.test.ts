@@ -246,6 +246,18 @@ describe("applyAppearance", () => {
     expect(result.borderWidth[1]).toBe(BORDER_WIDTH[1]);
   });
 
+  it("uiScale multiplies UI font ramp but leaves content and code untouched", () => {
+    applyAppearance(makeInput({ uiBaseFontSize: 14, uiScale: 1.2 }));
+
+    const result = runCapturedUpdater();
+    expect(result.fontSize.base).toBe(Math.round(14 * 1.2)); // 17
+    expect(result.fontSize.sm).toBe(Math.round(12 * 1.2)); // 14
+    expect(result.fontSize.lg).toBe(Math.round(16 * 1.2)); // 19
+    expect(result.fontSize["4xl"]).toBe(Math.round(26 * 1.2)); // 31
+    expect(result.fontSize.content).toBe(15); // unchanged
+    expect(result.fontSize.code).toBe(12); // unchanged
+  });
+
   it("derives lineHeight.content from contentFontSize * lineHeightScale", () => {
     applyAppearance(makeInput({ contentFontSize: 15, lineHeightScale: 1.4 }));
 
