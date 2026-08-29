@@ -99,7 +99,7 @@ jobs:
           {
             "android": {
               "keystore": {
-                "keystorePath": "packages/app/.release.keystore",
+                "keystorePath": ".release.keystore",
                 "keystorePassword": "$EAS_ANDROID_KEYSTORE_PASSWORD",
                 "keyAlias": "$EAS_ANDROID_KEY_ALIAS",
                 "keyPassword": "$EAS_ANDROID_KEY_PASSWORD"
