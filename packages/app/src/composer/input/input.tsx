@@ -1887,57 +1887,57 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
           {/* Button row */}
           {showTextInput ? (
-          <View style={styles.buttonRow}>
-            {/* Toolbar left: attachment button + agent controls */}
-            <View style={styles.leftButtonGroup}>
-              <AttachmentDropdown
-                visible={mode.showAttachments}
-                isConnected={isConnected}
-                disabled={disabled}
-                attachButtonStyle={attachButtonStyle}
-                renderAttachButtonIcon={renderAttachButtonIcon}
-                attachmentMenuItems={attachmentMenuItems}
-                addAttachmentLabel={t("composer.input.addAttachment")}
-              />
-              {leftContent}
-            </View>
+            <View style={styles.buttonRow}>
+              {/* Toolbar left: attachment button + agent controls */}
+              <View style={styles.leftButtonGroup}>
+                <AttachmentDropdown
+                  visible={mode.showAttachments}
+                  isConnected={isConnected}
+                  disabled={disabled}
+                  attachButtonStyle={attachButtonStyle}
+                  renderAttachButtonIcon={renderAttachButtonIcon}
+                  attachmentMenuItems={attachmentMenuItems}
+                  addAttachmentLabel={t("composer.input.addAttachment")}
+                />
+                {leftContent}
+              </View>
 
-            {/* Right: voice button, contextual button (realtime/send/cancel) */}
-            <View style={styles.rightButtonGroup}>
-              {beforeVoiceContent}
-              <VoiceButtonTooltip
-                visible={mode.showVoice}
-                onVoicePress={handleVoicePress}
-                isDictationStartEnabled={isDictationStartEnabled}
-                voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
-                voiceButtonStyle={voiceButtonStyle}
-                renderVoiceButtonIcon={renderVoiceButtonIcon}
-                voiceTooltipText={voiceTooltipText}
-                isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
-                voiceMuteToggleKeys={voiceMuteToggleKeys}
-                dictationToggleKeys={dictationToggleKeys}
-              />
-              {rightContent}
-              <PrimaryAction
-                kind={primaryActionKind}
-                activeActionContent={activeActionContent}
-                shouldShow
-                canPressLoadingButton={canPressLoadingButton}
-                onSubmitLoadingPress={onSubmitLoadingPress}
-                onDefaultSendAction={handleDefaultSendAction}
-                isSendButtonDisabled={isSendButtonDisabled}
-                submitAccessibilityLabel={submitAccessibilityLabel}
-                sendButtonCombinedStyle={sendButtonCombinedStyle}
-                isSubmitLoading={isSubmitLoading}
-                submitIcon={submitIcon}
-                submitLabel={submitLabel}
-                submitButtonTestID={submitButtonTestID}
-                buttonIconSize={buttonIconSize}
-                sendKeys={DEFAULT_SEND_KEYS}
-                sendTooltipLabel={sendTooltipLabel}
-              />
+              {/* Right: voice button, contextual button (realtime/send/cancel) */}
+              <View style={styles.rightButtonGroup}>
+                {beforeVoiceContent}
+                <VoiceButtonTooltip
+                  visible={mode.showVoice}
+                  onVoicePress={handleVoicePress}
+                  isDictationStartEnabled={isDictationStartEnabled}
+                  voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
+                  voiceButtonStyle={voiceButtonStyle}
+                  renderVoiceButtonIcon={renderVoiceButtonIcon}
+                  voiceTooltipText={voiceTooltipText}
+                  isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
+                  voiceMuteToggleKeys={voiceMuteToggleKeys}
+                  dictationToggleKeys={dictationToggleKeys}
+                />
+                {rightContent}
+                <PrimaryAction
+                  kind={primaryActionKind}
+                  activeActionContent={activeActionContent}
+                  shouldShow
+                  canPressLoadingButton={canPressLoadingButton}
+                  onSubmitLoadingPress={onSubmitLoadingPress}
+                  onDefaultSendAction={handleDefaultSendAction}
+                  isSendButtonDisabled={isSendButtonDisabled}
+                  submitAccessibilityLabel={submitAccessibilityLabel}
+                  sendButtonCombinedStyle={sendButtonCombinedStyle}
+                  isSubmitLoading={isSubmitLoading}
+                  submitIcon={submitIcon}
+                  submitLabel={submitLabel}
+                  submitButtonTestID={submitButtonTestID}
+                  buttonIconSize={buttonIconSize}
+                  sendKeys={DEFAULT_SEND_KEYS}
+                  sendTooltipLabel={sendTooltipLabel}
+                />
+              </View>
             </View>
-          </View>
           ) : (
             <Pressable
               testID="composer-idle-input"
@@ -1947,57 +1947,57 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
               onPress={requestComposerFocus}
               disabled={disabled}
             >
-            <View style={styles.buttonRow}>
-            {/* Toolbar left: attachment button + agent controls */}
-            <View style={styles.leftButtonGroup}>
-              <AttachmentDropdown
-                visible={mode.showAttachments}
-                isConnected={isConnected}
-                disabled={disabled}
-                attachButtonStyle={attachButtonStyle}
-                renderAttachButtonIcon={renderAttachButtonIcon}
-                attachmentMenuItems={attachmentMenuItems}
-                addAttachmentLabel={t("composer.input.addAttachment")}
-              />
-              {leftContent}
-            </View>
+              <View style={styles.buttonRow}>
+                {/* Toolbar left: attachment button + agent controls */}
+                <View style={styles.leftButtonGroup}>
+                  <AttachmentDropdown
+                    visible={mode.showAttachments}
+                    isConnected={isConnected}
+                    disabled={disabled}
+                    attachButtonStyle={attachButtonStyle}
+                    renderAttachButtonIcon={renderAttachButtonIcon}
+                    attachmentMenuItems={attachmentMenuItems}
+                    addAttachmentLabel={t("composer.input.addAttachment")}
+                  />
+                  {leftContent}
+                </View>
 
-            {/* Right: voice button, contextual button (realtime/send/cancel) */}
-            <View style={styles.rightButtonGroup}>
-              {beforeVoiceContent}
-              <VoiceButtonTooltip
-                visible={mode.showVoice}
-                onVoicePress={handleVoicePress}
-                isDictationStartEnabled={isDictationStartEnabled}
-                voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
-                voiceButtonStyle={voiceButtonStyle}
-                renderVoiceButtonIcon={renderVoiceButtonIcon}
-                voiceTooltipText={voiceTooltipText}
-                isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
-                voiceMuteToggleKeys={voiceMuteToggleKeys}
-                dictationToggleKeys={dictationToggleKeys}
-              />
-              {rightContent}
-              <PrimaryAction
-                kind={primaryActionKind}
-                activeActionContent={activeActionContent}
-                shouldShow
-                canPressLoadingButton={canPressLoadingButton}
-                onSubmitLoadingPress={onSubmitLoadingPress}
-                onDefaultSendAction={handleDefaultSendAction}
-                isSendButtonDisabled={isSendButtonDisabled}
-                submitAccessibilityLabel={submitAccessibilityLabel}
-                sendButtonCombinedStyle={sendButtonCombinedStyle}
-                isSubmitLoading={isSubmitLoading}
-                submitIcon={submitIcon}
-                submitLabel={submitLabel}
-                submitButtonTestID={submitButtonTestID}
-                buttonIconSize={buttonIconSize}
-                sendKeys={DEFAULT_SEND_KEYS}
-                sendTooltipLabel={sendTooltipLabel}
-              />
-            </View>
-            </View>
+                {/* Right: voice button, contextual button (realtime/send/cancel) */}
+                <View style={styles.rightButtonGroup}>
+                  {beforeVoiceContent}
+                  <VoiceButtonTooltip
+                    visible={mode.showVoice}
+                    onVoicePress={handleVoicePress}
+                    isDictationStartEnabled={isDictationStartEnabled}
+                    voiceButtonAccessibilityLabel={voiceButtonAccessibilityLabel}
+                    voiceButtonStyle={voiceButtonStyle}
+                    renderVoiceButtonIcon={renderVoiceButtonIcon}
+                    voiceTooltipText={voiceTooltipText}
+                    isRealtimeVoiceForCurrentAgent={isRealtimeVoiceForCurrentAgent}
+                    voiceMuteToggleKeys={voiceMuteToggleKeys}
+                    dictationToggleKeys={dictationToggleKeys}
+                  />
+                  {rightContent}
+                  <PrimaryAction
+                    kind={primaryActionKind}
+                    activeActionContent={activeActionContent}
+                    shouldShow
+                    canPressLoadingButton={canPressLoadingButton}
+                    onSubmitLoadingPress={onSubmitLoadingPress}
+                    onDefaultSendAction={handleDefaultSendAction}
+                    isSendButtonDisabled={isSendButtonDisabled}
+                    submitAccessibilityLabel={submitAccessibilityLabel}
+                    sendButtonCombinedStyle={sendButtonCombinedStyle}
+                    isSubmitLoading={isSubmitLoading}
+                    submitIcon={submitIcon}
+                    submitLabel={submitLabel}
+                    submitButtonTestID={submitButtonTestID}
+                    buttonIconSize={buttonIconSize}
+                    sendKeys={DEFAULT_SEND_KEYS}
+                    sendTooltipLabel={sendTooltipLabel}
+                  />
+                </View>
+              </View>
             </Pressable>
           )}
         </View>
