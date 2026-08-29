@@ -2174,6 +2174,12 @@ export const fr: TranslationResources = {
         codeSize: "Taille du code",
         codeSizeHint: "Utilisée pour le code, les diffs et la sortie du terminal",
         codeSizeAccessibility: "Taille de la police du code",
+        uiScale: "UI zoom",
+        uiScaleHint: "Scales the whole interface: text, icons, controls, spacing",
+        uiScaleAccessibility: "UI zoom",
+        lineHeightScale: "Text line height",
+        lineHeightScaleHint: "Spacing between text lines, independent of zoom",
+        lineHeightScaleAccessibility: "Text line height",
       },
       syntax: {
         title: "Syntaxe",

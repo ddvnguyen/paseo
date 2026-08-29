@@ -2156,6 +2156,12 @@ export const ru: TranslationResources = {
         codeSize: "Размер кода",
         codeSizeHint: "Используется для кода, диффов и вывода терминала",
         codeSizeAccessibility: "Размер шрифта кода",
+        uiScale: "UI zoom",
+        uiScaleHint: "Scales the whole interface: text, icons, controls, spacing",
+        uiScaleAccessibility: "UI zoom",
+        lineHeightScale: "Text line height",
+        lineHeightScaleHint: "Spacing between text lines, independent of zoom",
+        lineHeightScaleAccessibility: "Text line height",
       },
       syntax: {
         title: "Синтаксис",

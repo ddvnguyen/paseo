@@ -2218,6 +2218,12 @@ export const en = {
         codeSize: "Code size",
         codeSizeHint: "Used for code, diffs, and terminal output",
         codeSizeAccessibility: "Code font size",
+        uiScale: "UI zoom",
+        uiScaleHint: "Scales the whole interface: text, icons, controls, spacing",
+        uiScaleAccessibility: "UI zoom",
+        lineHeightScale: "Text line height",
+        lineHeightScaleHint: "Spacing between text lines, independent of zoom",
+        lineHeightScaleAccessibility: "Text line height",
       },
       syntax: {
         title: "Syntax",

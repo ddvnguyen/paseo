@@ -2137,6 +2137,12 @@ export const ja: TranslationResources = {
         codeSize: "コードサイズ",
         codeSizeHint: "コード、差分、ターミナル出力に使用されます",
         codeSizeAccessibility: "コードフォントサイズ",
+        uiScale: "UI zoom",
+        uiScaleHint: "Scales the whole interface: text, icons, controls, spacing",
+        uiScaleAccessibility: "UI zoom",
+        lineHeightScale: "Text line height",
+        lineHeightScaleHint: "Spacing between text lines, independent of zoom",
+        lineHeightScaleAccessibility: "Text line height",
       },
       syntax: {
         title: "構文ハイライト",

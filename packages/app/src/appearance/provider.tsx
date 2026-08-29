@@ -59,6 +59,8 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       uiBaseFontSize: settings.uiBaseFontSize,
       contentFontSize: settings.contentFontSize,
       codeFontSize: settings.codeFontSize,
+      uiScale: settings.uiScale,
+      lineHeightScale: settings.lineHeightScale,
       syntaxTheme: settings.syntaxTheme,
     });
   }, [
@@ -70,6 +72,8 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     settings.uiBaseFontSize,
     settings.contentFontSize,
     settings.codeFontSize,
+    settings.uiScale,
+    settings.lineHeightScale,
     settings.syntaxTheme,
   ]);
 

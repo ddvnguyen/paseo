@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { darkHighlightColors, resolveSyntaxColors } from "@getpaseo/highlight";
-import { DEFAULT_UI_FONT_STACK, REGISTERED_THEMES } from "@/styles/theme";
+import {
+  BORDER_RADIUS,
+  BORDER_WIDTH,
+  DEFAULT_UI_FONT_STACK,
+  ICON_SIZE,
+  REGISTERED_THEMES,
+  SPACING,
+} from "@/styles/theme";
 import { applyAppearance, type AppearanceInput } from "./apply";
 
 // Override the global react-native-unistyles mock (vitest.setup.ts) so that
@@ -36,7 +43,11 @@ interface FakeTheme {
     "3xl": number;
     "4xl": number;
   };
-  lineHeight: { diff: number };
+  lineHeight: { content: number; diff: number };
+  spacing: Record<keyof typeof SPACING, number>;
+  iconSize: Record<keyof typeof ICON_SIZE, number>;
+  borderRadius: Record<keyof typeof BORDER_RADIUS, number>;
+  borderWidth: Record<keyof typeof BORDER_WIDTH, number>;
   colors: { foreground: string; syntax: Record<string, string> };
 }
 
@@ -55,7 +66,11 @@ function makeFakeTheme(): FakeTheme {
       "3xl": 22,
       "4xl": 26,
     },
-    lineHeight: { diff: 22 },
+    lineHeight: { content: 20, diff: 22 },
+    spacing: { ...SPACING },
+    iconSize: { ...ICON_SIZE },
+    borderRadius: { ...BORDER_RADIUS },
+    borderWidth: { ...BORDER_WIDTH },
     colors: { foreground: "#fff", syntax: {} },
   };
 }
@@ -67,6 +82,8 @@ function makeInput(overrides: Partial<AppearanceInput> = {}): AppearanceInput {
     uiBaseFontSize: 14,
     contentFontSize: 15,
     codeFontSize: 12,
+    uiScale: 1,
+    lineHeightScale: 1.3,
     syntaxTheme: "one",
     ...overrides,
   };
@@ -193,5 +210,61 @@ describe("applyAppearance", () => {
     // makeFakeTheme().colorScheme === "dark" -> github resolves to the dark palette.
     expect(runCapturedUpdater().colors.syntax).toEqual(darkHighlightColors);
     expect(runCapturedUpdater().colors.syntax).toEqual(resolveSyntaxColors("github", "dark"));
+  });
+
+  it("scales spacing, icons, and borders by uiScale", () => {
+    applyAppearance(makeInput({ uiScale: 1.2 }));
+
+    const result = runCapturedUpdater();
+    expect(result.spacing[4]).toBe(Math.round(SPACING[4] * 1.2)); // 19
+    expect(result.iconSize.md).toBe(Math.round(ICON_SIZE.md * 1.2)); // 19
+    expect(result.borderRadius.lg).toBe(Math.round(BORDER_RADIUS.lg * 1.2)); // 10
+    expect(result.borderWidth[1]).toBe(Math.round(BORDER_WIDTH[1] * 1.2)); // 1
+  });
+
+  it("leaves borderRadius.full at 9999 regardless of uiScale", () => {
+    applyAppearance(makeInput({ uiScale: 0.5 }));
+
+    expect(runCapturedUpdater().borderRadius.full).toBe(9999);
+  });
+
+  it("leaves spacing[0] and borderWidth[0] at 0 regardless of uiScale", () => {
+    applyAppearance(makeInput({ uiScale: 1.5 }));
+
+    const result = runCapturedUpdater();
+    expect(result.spacing[0]).toBe(0);
+    expect(result.borderWidth[0]).toBe(0);
+  });
+
+  it("uiScale 1.0 leaves all tokens at authored values", () => {
+    applyAppearance(makeInput({ uiScale: 1.0 }));
+
+    const result = runCapturedUpdater();
+    expect(result.spacing[4]).toBe(SPACING[4]);
+    expect(result.iconSize.md).toBe(ICON_SIZE.md);
+    expect(result.borderRadius.lg).toBe(BORDER_RADIUS.lg);
+    expect(result.borderWidth[1]).toBe(BORDER_WIDTH[1]);
+  });
+
+  it("derives lineHeight.content from contentFontSize * lineHeightScale", () => {
+    applyAppearance(makeInput({ contentFontSize: 15, lineHeightScale: 1.4 }));
+
+    expect(runCapturedUpdater().lineHeight.content).toBe(Math.round(15 * 1.4)); // 21
+  });
+
+  it("lineHeight.diff is unchanged by lineHeightScale (still codeFontSize * 1.5)", () => {
+    applyAppearance(makeInput({ codeFontSize: 18, lineHeightScale: 1.1 }));
+
+    expect(runCapturedUpdater().lineHeight.diff).toBe(Math.round(18 * 1.5)); // 27
+  });
+
+  it("applyAppearance is idempotent for uiScale (no compounding)", () => {
+    applyAppearance(makeInput({ uiScale: 1.2 }));
+    const first = runCapturedUpdater(0);
+    applyAppearance(makeInput({ uiScale: 1.2 }));
+    const second = runCapturedUpdater(ALL_THEME_KEYS.length);
+
+    expect(second.spacing[4]).toBe(first.spacing[4]);
+    expect(second.iconSize.md).toBe(first.iconSize.md);
   });
 });

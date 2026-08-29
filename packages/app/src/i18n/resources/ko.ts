@@ -2130,6 +2130,12 @@ export const ko: TranslationResources = {
         codeSize: "코드 크기",
         codeSizeHint: "코드, diff 및 터미널 출력에 사용됩니다",
         codeSizeAccessibility: "코드 글꼴 크기",
+        uiScale: "UI zoom",
+        uiScaleHint: "Scales the whole interface: text, icons, controls, spacing",
+        uiScaleAccessibility: "UI zoom",
+        lineHeightScale: "Text line height",
+        lineHeightScaleHint: "Spacing between text lines, independent of zoom",
+        lineHeightScaleAccessibility: "Text line height",
       },
       syntax: {
         title: "구문",

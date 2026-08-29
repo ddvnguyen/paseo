@@ -21,17 +21,23 @@ import { SettingsSection } from "@/screens/settings/settings-section";
 import { useContributedThemes } from "@/appearance/provider";
 import { EditingTextInput as TextInput } from "@/components/ui/text-input";
 import {
+  LINE_HEIGHT_SCALE_STEP,
   MAX_CODE_FONT_SIZE,
   MAX_CONTENT_FONT_SIZE,
+  MAX_LINE_HEIGHT_SCALE,
   MAX_UI_BASE_FONT_SIZE,
+  MAX_UI_SCALE,
   MIN_CODE_FONT_SIZE,
   MIN_CONTENT_FONT_SIZE,
+  MIN_LINE_HEIGHT_SCALE,
   MIN_UI_BASE_FONT_SIZE,
+  MIN_UI_SCALE,
   parseClampedFontSize,
   sanitizeFontFamily,
   useAppSettings,
   type AppSettings,
   DEFAULT_THEME_PREFERENCE,
+  UI_SCALE_STEP,
 } from "@/hooks/use-settings";
 import {
   DEFAULT_MONO_FONT_STACK,
@@ -445,6 +451,74 @@ function FontSizeRow({
 }
 
 // ---------------------------------------------------------------------------
+// Stepper rows (UI zoom, line-height scale)
+// ---------------------------------------------------------------------------
+
+interface StepperRowProps {
+  title: string;
+  hint: string;
+  accessibilityLabel: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  format: "percent" | "multiplier";
+  onChange: (value: number) => void;
+}
+
+function StepperRow({
+  title,
+  hint,
+  accessibilityLabel,
+  value,
+  min,
+  max,
+  step,
+  format,
+  onChange,
+}: StepperRowProps) {
+  const canDecrement = value - step >= min - step * 0.5;
+  const canIncrement = value + step <= max + step * 0.5;
+  const handleDecrement = useCallback(() => {
+    const next = Math.round((value - step) * 100) / 100;
+    if (next >= min - step * 0.5) onChange(next);
+  }, [value, step, min, onChange]);
+  const handleIncrement = useCallback(() => {
+    const next = Math.round((value + step) * 100) / 100;
+    if (next <= max + step * 0.5) onChange(next);
+  }, [value, step, max, onChange]);
+  const displayValue =
+    format === "percent" ? `${Math.round(value * 100)}%` : `${value.toFixed(1)}×`;
+  return (
+    <View style={settingsStyles.row}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{title}</Text>
+        <Text style={settingsStyles.rowHint}>{hint}</Text>
+      </View>
+      <View style={styles.stepper}>
+        <Text
+          style={[styles.stepperButton, !canDecrement && styles.stepperButtonDisabled]}
+          accessibilityLabel={`${accessibilityLabel} decrease`}
+          accessibilityRole="button"
+          onPress={canDecrement ? handleDecrement : undefined}
+        >
+          −
+        </Text>
+        <Text style={styles.stepperValue}>{displayValue}</Text>
+        <Text
+          style={[styles.stepperButton, !canIncrement && styles.stepperButtonDisabled]}
+          accessibilityLabel={`${accessibilityLabel} increase`}
+          accessibilityRole="button"
+          onPress={canIncrement ? handleIncrement : undefined}
+        >
+          +
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Syntax highlight theme picker (commits immediately)
 // ---------------------------------------------------------------------------
 
@@ -584,6 +658,20 @@ export function AppearanceSection() {
   const handleChatOutlineChange = useCallback(
     (chatOutlineEnabled: boolean) => {
       void updateSettings({ chatOutlineEnabled });
+    },
+    [updateSettings],
+  );
+
+  const handleUiScaleChange = useCallback(
+    (uiScale: number) => {
+      void updateSettings({ uiScale });
+    },
+    [updateSettings],
+  );
+
+  const handleLineHeightScaleChange = useCallback(
+    (lineHeightScale: number) => {
+      void updateSettings({ lineHeightScale });
     },
     [updateSettings],
   );
@@ -733,6 +821,28 @@ export function AppearanceSection() {
             onChangeDraft={handleUiBaseSizeChange}
             onCommit={commitUiBaseSize}
           />
+          <StepperRow
+            title={t("settings.appearance.fonts.uiScale")}
+            hint={t("settings.appearance.fonts.uiScaleHint")}
+            accessibilityLabel={t("settings.appearance.fonts.uiScaleAccessibility")}
+            value={settings.uiScale}
+            min={MIN_UI_SCALE}
+            max={MAX_UI_SCALE}
+            step={UI_SCALE_STEP}
+            format="percent"
+            onChange={handleUiScaleChange}
+          />
+          <StepperRow
+            title={t("settings.appearance.fonts.lineHeightScale")}
+            hint={t("settings.appearance.fonts.lineHeightScaleHint")}
+            accessibilityLabel={t("settings.appearance.fonts.lineHeightScaleAccessibility")}
+            value={settings.lineHeightScale}
+            min={MIN_LINE_HEIGHT_SCALE}
+            max={MAX_LINE_HEIGHT_SCALE}
+            step={LINE_HEIGHT_SCALE_STEP}
+            format="multiplier"
+            onChange={handleLineHeightScaleChange}
+          />
           <FontSizeRow
             title={t("settings.appearance.fonts.contentSize")}
             hint={t("settings.appearance.fonts.contentSizeHint")}
@@ -850,5 +960,32 @@ const styles = StyleSheet.create((theme) => ({
   },
   placeholderColor: {
     color: theme.colors.foregroundMuted,
+  },
+  stepper: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  stepperButton: {
+    width: 32,
+    height: 32,
+    textAlign: "center",
+    lineHeight: 32,
+    fontSize: theme.fontSize.lg,
+    color: theme.colors.foreground,
+    backgroundColor: theme.colors.surface2,
+    borderRadius: theme.borderRadius.md,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    overflow: "hidden",
+  },
+  stepperButtonDisabled: {
+    opacity: 0.4,
+  },
+  stepperValue: {
+    minWidth: 48,
+    textAlign: "center",
+    fontSize: theme.fontSize.base,
+    color: theme.colors.foreground,
   },
 }));
