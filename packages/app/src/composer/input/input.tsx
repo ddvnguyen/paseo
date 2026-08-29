@@ -189,8 +189,8 @@ export interface MessageInputRef {
   getNativeElement?: () => HTMLElement | null;
 }
 
-const MIN_INPUT_HEIGHT_MOBILE = 30;
-const MIN_INPUT_HEIGHT_DESKTOP = 46;
+const MIN_INPUT_HEIGHT_MOBILE = 26;
+const MIN_INPUT_HEIGHT_DESKTOP = 26;
 const DEFAULT_MAX_INPUT_HEIGHT = 160;
 const MAX_INPUT_VIEWPORT_RATIO = 0.5;
 const MAX_INPUT_VIEWPORT_RATIO = 0.5;
