@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { Text, View, type PressableStateCallbackType } from "react-native";
+import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ChevronDown, Monitor, Moon, Sun } from "lucide-react-native";
 import {
@@ -34,6 +34,12 @@ import {
   MIN_SPACING_SCALE,
   MIN_UI_BASE_FONT_SIZE,
   MIN_UI_SCALE,
+  DEFAULT_UI_BASE_FONT_SIZE,
+  DEFAULT_CONTENT_FONT_SIZE,
+  DEFAULT_CODE_FONT_SIZE,
+  DEFAULT_UI_SCALE,
+  DEFAULT_SPACING_SCALE,
+  DEFAULT_LINE_HEIGHT_SCALE,
   parseClampedFontSize,
   sanitizeFontFamily,
   useAppSettings,
@@ -686,6 +692,20 @@ export function AppearanceSection() {
     [updateSettings],
   );
 
+  const handleResetDefaults = useCallback(() => {
+    setUiBaseSizeDraft(String(DEFAULT_UI_BASE_FONT_SIZE));
+    setContentSizeDraft(String(DEFAULT_CONTENT_FONT_SIZE));
+    setCodeSizeDraft(String(DEFAULT_CODE_FONT_SIZE));
+    void updateSettings({
+      uiBaseFontSize: DEFAULT_UI_BASE_FONT_SIZE,
+      contentFontSize: DEFAULT_CONTENT_FONT_SIZE,
+      codeFontSize: DEFAULT_CODE_FONT_SIZE,
+      uiScale: DEFAULT_UI_SCALE,
+      spacingScale: DEFAULT_SPACING_SCALE,
+      lineHeightScale: DEFAULT_LINE_HEIGHT_SCALE,
+    });
+  }, [updateSettings]);
+
   const commitUiFontFamily = useCallback(
     (value: string) => {
       const sanitized = sanitizeFontFamily(value);
@@ -891,6 +911,19 @@ export function AppearanceSection() {
             onChangeDraft={handleCodeSizeChange}
             onCommit={commitCodeSize}
           />
+          <Pressable
+            onPress={handleResetDefaults}
+            style={({ pressed }) => [settingsStyles.row, { opacity: pressed ? 0.6 : 1 }]}
+          >
+            <View style={settingsStyles.rowContent}>
+              <Text style={settingsStyles.rowTitle}>
+                {t("settings.appearance.fonts.resetDefaults")}
+              </Text>
+              <Text style={settingsStyles.rowHint}>
+                {t("settings.appearance.fonts.resetDefaultsHint")}
+              </Text>
+            </View>
+          </Pressable>
         </View>
       </SettingsSection>
       <SettingsSection title={t("settings.appearance.syntax.title")}>
