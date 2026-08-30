@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/app",
-  "version": "0.7.0-beta.1",
+  "version": "0.7.0-beta.1-hydra-bf397476a",
   "private": true,
   "main": "index.ts",
   "scripts": {
