@@ -26,6 +26,7 @@
       "extends": "production",
       "distribution": "internal",
       "credentialsSource": "local",
+      "install": "npm install --legacy-peer-deps",
       "android": {
         "resourceClass": "large",
         "buildType": "apk",
