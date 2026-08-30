@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/website",
-  "version": "0.2.0-beta.4-hydra-01b888d06",
+  "version": "0.7.0-beta.2-hydra-6d2f11cb9",
   "private": true,
   "type": "module",
   "scripts": {
@@ -24,6 +24,7 @@
     "rehype-autolink-headings": "^7.1.0",
     "rehype-pretty-code": "^0.14.3",
     "rehype-slug": "^6.0.0",
+    "remark-directive": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "shiki": "^4.0.2",
     "wrangler": "^4.75.0"

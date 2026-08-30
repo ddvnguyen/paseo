@@ -1,0 +1,21 @@
+# Exclude non-app packages and docs from EAS upload
+packages/cli/
+packages/desktop/
+packages/relay/
+packages/website/
+packages/protocol/
+packages/plugin/
+packages/highlight/
+packages/expo-two-way-audio/
+scripts/
+docs/
+.github/
+.dev/
+*.md
+.gitignore
+.easignore
+
+# EAS cloud runner has bun 1.2 which can't read lockfileVersion 2 (bun 1.4+).
+# Exclude bun.lock so EAS falls back to npm with package-lock.json.
+bun.lock
+bun.lockb

@@ -77,15 +77,10 @@ When resolving version conflicts in `package.json` files:
 
 **Before (conflict):**
 
-```json
+````json
 {
   "name": "@getpaseo/cli",
-<<<<<<< HEAD
-  "version": "0.1.109",
-=======
-  "version": "0.1.107-hydra",
->>>>>>> b66dadb99 (chore: rebase on v0.1.107, keep hydra patches)
-```
+  "version": "0.1.109-hydra",```
 
 **After (resolved):**
 
@@ -93,7 +88,7 @@ When resolving version conflicts in `package.json` files:
 {
   "name": "@getpaseo/cli",
   "version": "0.1.109-hydra",
-```
+````
 
 For internal dependencies, update them to match:
 
@@ -343,3 +338,21 @@ If versions don't have the hash suffix:
 - Upstream repository: https://github.com/getpaseo/paseo
 - Fork repository: https://github.com/ddvnguyen/paseo
 - Version sync script: `scripts/sync-workspace-versions.mjs`
+
+## TEST deploy runbook (each deploy MUST advance the version suffix)
+
+The user verifies a TEST deployment by reading `daemonVersion`. Therefore every
+deploy must re-stamp versions from current HEAD so the suffix changes:
+
+1. `node scripts/sync-workspace-versions.mjs` → workspaces become `0.6.1-hydra-<shorthash>`
+2. If app code changed: `CI=1 npm run build:daemon-web-ui` (purge /tmp/metro-cache first)
+3. Deploy to `~/.paseo-test/node_modules/@getpaseo/`:
+   - overlay fresh `packages/server/dist/server/web-ui`
+   - PRESERVE TEST branding: save & restore pwa-icon-512/192.png, favicon.ico,
+     apple-touch-icon.png, assets/assets/images/\*.png; then patch manifest.json
+     (name "Paseo TEST", theme_color #2563eb) and DELETE manifest.json.br siblings
+   - copy stamped `packages/server/package.json` (version string source of truth)
+   - if server code changed: replace server dist too
+4. `systemctl --user restart paseo-test.service`
+5. Verify: `journalctl --user -u paseo-test.service | grep -oE 'daemonVersion":"[^"]*"' | tail -1`
+   must show the NEW hash. Health: `curl :6868/api/health`.

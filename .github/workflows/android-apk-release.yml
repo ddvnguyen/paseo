@@ -84,11 +84,37 @@ jobs:
       - name: Build Android APK on EAS
         id: eas_build
         shell: bash
+        env:
+          EAS_ANDROID_KEYSTORE_BASE64: ${{ secrets.EAS_ANDROID_KEYSTORE_BASE64 }}
+          EAS_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.EAS_ANDROID_KEYSTORE_PASSWORD }}
+          EAS_ANDROID_KEY_ALIAS: ${{ secrets.EAS_ANDROID_KEY_ALIAS }}
+          EAS_ANDROID_KEY_PASSWORD: ${{ secrets.EAS_ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+
+          # Strip bun.lock from the repo so EAS doesn't try bun install.
+          # EAS detects bun workspace from bun.lock before .easignore applies.
+          rm -f bun.lock bun.lockb
+
           cd packages/app
 
+          # Write keystore INSIDE the project so EAS uploads it to cloud
+          echo "$EAS_ANDROID_KEYSTORE_BASE64" | base64 -d > .release.keystore
+          cat > credentials.json <<CREDS
+          {
+            "android": {
+              "keystore": {
+                "keystorePath": ".release.keystore",
+                "keystorePassword": "$EAS_ANDROID_KEYSTORE_PASSWORD",
+                "keyAlias": "$EAS_ANDROID_KEY_ALIAS",
+                "keyPassword": "$EAS_ANDROID_KEY_PASSWORD"
+              }
+            }
+          }
+          CREDS
+
           build_json="$(npx eas build --platform android --profile production-apk --non-interactive --wait --json)"
+          rm -f credentials.json .release.keystore
           echo "$build_json" > "$RUNNER_TEMP/eas-build.json"
 
           build_id="$(jq -r 'if type == "array" then .[0].id // empty else .id // empty end' "$RUNNER_TEMP/eas-build.json")"
@@ -117,7 +143,7 @@ jobs:
             exit 1
           fi
 
-          asset_name="paseo-${RELEASE_TAG}-android.apk"
+          asset_name="hydra-paseo-${RELEASE_TAG}-android.apk"
           asset_path="$RUNNER_TEMP/$asset_name"
 
           curl --fail --location --output "$asset_path" "$artifact_url"

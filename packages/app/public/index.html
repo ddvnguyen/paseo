@@ -8,11 +8,16 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Paseo" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="application-name" content="Paseo" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="format-detection" content="telephone=no" />
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1, shrink-to-fit=no, viewport-fit=cover"
     />
-    <link rel="manifest" href="/manifest.json" />
+    <link rel="manifest" href="/manifest.json" crossorigin="use-credentials" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/pwa-icon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/pwa-icon-512.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>%WEB_TITLE%</title>
     <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
@@ -25,7 +30,10 @@
         margin: 0;
         padding: 0;
         overflow: hidden;
-        overscroll-behavior: none;
+        /* Allow vertical pull-to-refresh (browser-native) on the shell while
+           suppressing horizontal rubber-band, which can interfere with RNW
+           gesture handlers. */
+        overscroll-behavior-y: contain;
       }
       /* These styles smooth text rendering in the app shell. */
       body {
@@ -81,6 +89,15 @@
         outline-offset: 2px;
       }
     </style>
+    <script>
+      // Service worker registration. Runs on every page load (including
+      // cold standalone launches) so an installed PWA keeps its SW alive.
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
+        });
+      }
+    </script>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>

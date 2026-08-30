@@ -9,7 +9,7 @@ order: 54
 
 Codex App is OpenAI's desktop app for working with Codex threads in parallel. It runs on macOS and Windows, with local, worktree, and cloud modes.
 
-Paseo is an app for orchestrating coding agents, with native clients on desktop, mobile, web, and the CLI. Open source (AGPL-3.0).
+Paseo is an app for orchestrating coding agents, with native clients on desktop, mobile, web, and the CLI. Open source (Apache-2.0).
 
 ![Paseo desktop and mobile app](/hero-mockup.png)
 
@@ -79,7 +79,7 @@ paseo send <agent-id> "add tests"
 paseo schedule create --cron "0 9 * * 1" "audit the codebase"
 ```
 
-`paseo run --host` connects to a remote daemon. `paseo schedule` runs an agent on a cron. `paseo loop` retries an agent until a verification command passes. The MCP server lets other agents create worktrees, launch agents, open terminals, and send prompts.
+`paseo run --host` connects to a remote daemon. `paseo schedule` runs an agent on a cron. The MCP server lets other agents create worktrees, launch agents, open terminals, and send prompts.
 
 ## Voice
 
@@ -91,7 +91,7 @@ Paseo supports dictation and realtime voice mode. Speech-to-text and text-to-spe
 
 |                              | Paseo                                                           | Codex App                    |
 | ---------------------------- | --------------------------------------------------------------- | ---------------------------- |
-| License                      | Open source (AGPL-3.0)                                          | Not published as open source |
+| License                      | Open source (Apache-2.0)                                        | Not published as open source |
 | Desktop platforms            | macOS, Linux, Windows                                           | macOS, Windows               |
 | Native mobile                | iOS, Android                                                    | No                           |
 | Providers                    | Codex, Claude Code, OpenCode, Pi + 30+ via ACP catalog + custom | Codex                        |

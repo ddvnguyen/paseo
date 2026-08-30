@@ -2,14 +2,17 @@ import { z } from "zod";
 import { ensureValidJson } from "../../json-utils.js";
 import type { Logger } from "pino";
 
-import type { AgentMode, AgentProvider } from "../agent-sdk-types.js";
+import type { AgentMode, AgentProvider, AgentSessionConfig } from "../agent-sdk-types.js";
 import type { AgentManager } from "../agent-manager.js";
+import { AgentProfileSchema } from "@getpaseo/protocol/messages";
+import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import {
   AgentFeatureSchema,
   AgentPermissionRequestPayloadSchema,
   AgentListItemPayloadSchema,
   AgentPermissionResponseSchema,
   AgentSnapshotPayloadSchema,
+  WorkspaceScriptPayloadSchema,
 } from "../../messages.js";
 import type { AgentListItemPayload } from "../../messages.js";
 import {
@@ -74,6 +77,7 @@ import type {
   WorkspaceRegistry,
 } from "../../workspace-registry.js";
 import { resolveWorktreeSourceCwd } from "../../workspace-source.js";
+import type { WorkspaceScriptsService } from "../../session/workspace-scripts/workspace-scripts-service.js";
 import {
   type ArchiveCommandDependencies,
   type CreatePaseoWorktreeCommandInput,
@@ -96,6 +100,7 @@ export interface PaseoToolHostDependencies {
   getDaemonTcpPort?: () => number | null;
   scheduleService?: ScheduleService | null;
   providerSnapshotManager: ProviderSnapshotManager;
+  daemonConfigStore?: Pick<DaemonConfigStore, "get">;
   github?: ForgeService;
   workspaceGitService?: Pick<
     WorkspaceGitService,
@@ -106,12 +111,13 @@ export interface PaseoToolHostDependencies {
   archiveWorkspaceRecord?: ArchiveDependencies["archiveWorkspaceRecord"];
   emitWorkspaceUpdatesForWorkspaceIds?: ArchiveDependencies["emitWorkspaceUpdatesForWorkspaceIds"];
   workspaceRegistry?: Pick<WorkspaceRegistry, "get" | "list" | "upsert">;
-  projectRegistry?: Pick<ProjectRegistry, "get">;
+  projectRegistry?: Pick<ProjectRegistry, "get" | "list">;
   createDirectoryWorkspace?: (
     cwd: string,
     title?: string | null,
     projectId?: string,
   ) => Promise<PersistedWorkspaceRecord>;
+  workspaceScripts?: Pick<WorkspaceScriptsService, "list" | "launch" | "stop">;
   markWorkspaceArchiving?: ArchiveDependencies["markWorkspaceArchiving"];
   clearWorkspaceArchiving?: ArchiveDependencies["clearWorkspaceArchiving"];
   createPaseoWorktree?: CreatePaseoWorktreeWorkflowFn;
@@ -537,8 +543,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     agentManager,
     agentStorage,
     terminalManager,
+    workspaceScripts,
     scheduleService,
     providerSnapshotManager,
+    daemonConfigStore,
     callerAgentId,
     resolveSpeakHandler,
     resolveCallerContext,
@@ -657,6 +665,16 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     return parentAgent;
   };
 
+  const resolveInheritedProviderConfig = (
+    selectedProvider: string,
+  ): Pick<AgentSessionConfig, "providerOptions"> | undefined => {
+    const callerAgent = resolveCallerAgent();
+    if (callerAgent?.provider !== selectedProvider || !callerAgent.config?.providerOptions) {
+      return undefined;
+    }
+    return { providerOptions: callerAgent.config.providerOptions };
+  };
+
   const resolveScopedCwd = (requestedCwd?: string, opts?: { required?: boolean }): string => {
     const callerAgent = resolveCallerAgent();
     if (callerAgent) {
@@ -716,22 +734,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
 
   const buildCallerAgentScheduleConfigExtras = (
     callerAgent: NonNullable<ReturnType<typeof resolveCallerAgent>>,
+    resolvedProvider: string,
   ): Record<string, unknown> => {
     return {
       ...(callerAgent.config.thinkingOptionId
         ? { thinkingOptionId: callerAgent.config.thinkingOptionId }
         : {}),
-      ...(callerAgent.config.approvalPolicy
-        ? { approvalPolicy: callerAgent.config.approvalPolicy }
+      ...(callerAgent.provider === resolvedProvider && callerAgent.config.providerOptions
+        ? { providerOptions: callerAgent.config.providerOptions }
         : {}),
-      ...(callerAgent.config.sandboxMode ? { sandboxMode: callerAgent.config.sandboxMode } : {}),
-      ...(typeof callerAgent.config.networkAccess === "boolean"
-        ? { networkAccess: callerAgent.config.networkAccess }
-        : {}),
-      ...(typeof callerAgent.config.webSearch === "boolean"
-        ? { webSearch: callerAgent.config.webSearch }
-        : {}),
-      ...(callerAgent.config.extra ? { extra: callerAgent.config.extra } : {}),
       ...(callerAgent.config.featureValues
         ? { featureValues: callerAgent.config.featureValues }
         : {}),
@@ -767,7 +778,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           }
         : {}),
       ...(resolvedModel ? { model: resolvedModel } : {}),
-      ...buildCallerAgentScheduleConfigExtras(callerAgent),
+      ...buildCallerAgentScheduleConfigExtras(callerAgent, resolvedProvider),
     };
   };
 
@@ -1447,6 +1458,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         requestedBackground = resolvedArgs.parsedArgs.background;
         notifyOnFinish = resolvedArgs.parsedArgs.notifyOnFinish ?? false;
       }
+      const selectedProvider = resolveRequiredProviderModel(parsedArgs.provider).provider;
+      const inheritedConfig = resolveInheritedProviderConfig(selectedProvider);
       const {
         snapshot,
         background: createdInBackground,
@@ -1470,6 +1483,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           provider: parsedArgs.provider,
           title: parsedArgs.title,
           initialPrompt: parsedArgs.initialPrompt,
+          config: inheritedConfig,
           cwd: resolvedArgs.cwd,
           workspaceId: resolvedArgs.workspaceId,
           thinking: parsedArgs.settings?.thinkingOptionId,
@@ -2250,6 +2264,83 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   );
 
   registerTool(
+    "list_workspace_scripts",
+    {
+      title: "List workspace scripts",
+      description:
+        "List configured workspace scripts and their lifecycle, service port, proxy URL, health, and terminal ID.",
+      inputSchema: {
+        workspaceId: z.string().describe("Workspace ID whose configured scripts to list."),
+      },
+      outputSchema: {
+        scripts: z.array(WorkspaceScriptPayloadSchema),
+      },
+    },
+    async ({ workspaceId }) => {
+      if (!workspaceScripts) {
+        throw new Error("Workspace script management is not configured");
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ scripts: await workspaceScripts.list(workspaceId) }),
+      };
+    },
+  );
+
+  registerTool(
+    "start_workspace_script",
+    {
+      title: "Start workspace script",
+      description:
+        "Start one configured workspace script through Paseo's managed workspace-script launcher.",
+      inputSchema: {
+        workspaceId: z.string().describe("Workspace ID containing the configured script."),
+        scriptName: z.string().min(1).describe("Configured paseo.json script name to start."),
+      },
+      outputSchema: {
+        script: WorkspaceScriptPayloadSchema,
+      },
+    },
+    async ({ workspaceId, scriptName }) => {
+      if (!workspaceScripts) {
+        throw new Error("Workspace script management is not configured");
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          script: await workspaceScripts.launch({ workspaceId, scriptName }),
+        }),
+      };
+    },
+  );
+
+  registerTool(
+    "stop_workspace_script",
+    {
+      title: "Stop workspace script",
+      description: "Stop a running workspace script through its supervised terminal lifecycle.",
+      inputSchema: {
+        workspaceId: z.string().describe("Workspace ID containing the running script."),
+        scriptName: z.string().min(1).describe("Configured paseo.json script name to stop."),
+      },
+      outputSchema: {
+        script: WorkspaceScriptPayloadSchema,
+      },
+    },
+    async ({ workspaceId, scriptName }) => {
+      if (!workspaceScripts) {
+        throw new Error("Workspace script management is not configured");
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          script: await workspaceScripts.stop({ workspaceId, scriptName }),
+        }),
+      };
+    },
+  );
+
+  registerTool(
     "list_terminals",
     {
       title: "List terminals",
@@ -2857,6 +2948,30 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           provider,
           models,
         }),
+      };
+    },
+  );
+
+  registerTool(
+    "list_profiles",
+    {
+      title: "List agent profiles",
+      description:
+        "List agent profiles: named provider/model/mode bundles a human configured for specific " +
+        "kinds of work. Read each profile's `notes` to pick the one that fits the task you're " +
+        "delegating, then copy its `provider`, `model`, `modeId`, `thinkingOptionId`, and " +
+        "`featureValues` into create_agent (there is no `profile` parameter). Returns an empty " +
+        "list if none are configured.",
+      inputSchema: {},
+      outputSchema: {
+        profiles: z.array(AgentProfileSchema),
+      },
+    },
+    async () => {
+      const profiles = daemonConfigStore?.get().agentProfiles ?? [];
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ profiles }),
       };
     },
   );

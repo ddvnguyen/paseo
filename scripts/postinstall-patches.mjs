@@ -21,9 +21,24 @@ const patchedPackages = [
     patchPrefix: "react-native-gesture-handler+",
   },
   {
+    nodeModulesPath: "node_modules/react-native-svg",
+    patchPrefix: "react-native-svg+",
+  },
+  {
+    nodeModulesPath: "node_modules/@mattermost/react-native-paste-input",
+    patchPrefix: "@mattermost+react-native-paste-input+",
+  },
+  {
     nodeModulesPath: "packages/server/node_modules/@opencode-ai/sdk",
     patchPrefix: "@opencode-ai+sdk+",
     cwd: "packages/server",
+  },
+  {
+    // Bun hoists workspace deps to the root node_modules; without this entry
+    // the OpenCode SDK SSE crash patch silently never applies on bun installs.
+    nodeModulesPath: "node_modules/@opencode-ai/sdk",
+    patchPrefix: "@opencode-ai+sdk+",
+    cwd: ".",
   },
 ];
 
@@ -68,11 +83,16 @@ for (const [cwd, files] of patchFilesByCwd) {
 
   let result;
   try {
+    // Resolve node_modules/.bin explicitly: npm run adds it to PATH, but bun
+    // lifecycle hooks do not, which made every bun install skip the patches.
+    const binDir = join(process.cwd(), "node_modules", ".bin");
+    const pathSep = isWindows ? ";" : ":";
     result = spawnSync(cmd, ["--patch-dir", relative(cwd, tempPatchDir)], {
       cwd,
       shell: isWindows,
       stdio: "inherit",
       windowsHide: true,
+      env: { ...process.env, PATH: `${binDir}${pathSep}${process.env.PATH ?? ""}` },
     });
   } finally {
     rmSync(tempPatchDir, { recursive: true, force: true });

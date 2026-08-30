@@ -52,8 +52,10 @@ paseo workspace create \
   --mode branch-off \
   --new-branch feature/auth \
   --worktree-slug feature-auth \
-  --base main
+  --base origin/main
 ```
+
+Use `origin/main` rather than `main`. Paseo fetches remote refs in the background, so the remote-tracking branch is current, while your local `main` is whatever you last pulled. An unqualified `main` resolves to that local branch first, and the worktree starts from stale history. Prefixing the remote names the fetched ref explicitly.
 
 Check out an existing branch:
 
@@ -113,6 +115,8 @@ Commands run with the worktree as `cwd`. Use `$PASEO_SOURCE_CHECKOUT_PATH` to re
 ## Scripts and services
 
 `scripts` are named commands you can run inside a worktree on demand. Mark one as a _service_ and Paseo supervises it as a long-running process, assigns it a port, and routes HTTP traffic to it through the daemon's reverse proxy.
+
+Run them from the app, or manage them from automation with [`paseo script`](/docs/cli#workspace-scripts) and the [workspace-script MCP tools](/docs/mcp#workspace-scripts).
 
 ### Plain scripts
 
@@ -253,7 +257,8 @@ Services additionally get:
 ```bash
 paseo workspace ls
 paseo run --workspace <workspace-id> "implement auth"
+paseo workspace rename <workspace-id> "Auth rework"
 paseo workspace archive <workspace-id>
 ```
 
-For the common case, `paseo run --new-workspace worktree --worktree-mode branch-off --new-branch feature/auth --base main "implement auth"` creates both the workspace and its first agent.
+For the common case, `paseo run --new-workspace worktree --worktree-mode branch-off --new-branch feature/auth --base origin/main "implement auth"` creates both the workspace and its first agent.
