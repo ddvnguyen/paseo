@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/client",
-  "version": "0.7.0-beta.1-hydra-dde9d017c",
+  "version": "0.7.0-beta.1-hydra-62d359344",
   "description": "Paseo client SDK package",
   "files": [
     "dist",
@@ -39,8 +39,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@getpaseo/protocol": "0.7.0-beta.1-hydra-dde9d017c",
-    "@getpaseo/relay": "0.7.0-beta.1-hydra-dde9d017c",
+    "@getpaseo/protocol": "0.7.0-beta.1-hydra-62d359344",
+    "@getpaseo/relay": "0.7.0-beta.1-hydra-62d359344",
     "zod": "^4.4.3"
   },
   "devDependencies": {

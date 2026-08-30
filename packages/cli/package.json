@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/cli",
-  "version": "0.7.0-beta.1-hydra-dde9d017c",
+  "version": "0.7.0-beta.1-hydra-62d359344",
   "description": "Paseo CLI - control your AI coding agents from the command line",
   "bin": {
     "paseo": "bin/paseo"
@@ -28,9 +28,9 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.0.0",
-    "@getpaseo/client": "0.7.0-beta.1-hydra-dde9d017c",
-    "@getpaseo/protocol": "0.7.0-beta.1-hydra-dde9d017c",
-    "@getpaseo/server": "0.7.0-beta.1-hydra-dde9d017c",
+    "@getpaseo/client": "0.7.0-beta.1-hydra-62d359344",
+    "@getpaseo/protocol": "0.7.0-beta.1-hydra-62d359344",
+    "@getpaseo/server": "0.7.0-beta.1-hydra-62d359344",
     "chalk": "^5.3.0",
     "commander": "^12.0.0",
     "mime-types": "^2.1.35",
