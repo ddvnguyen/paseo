@@ -23,6 +23,7 @@
       "extends": "production",
       "distribution": "internal",
       "credentialsSource": "local",
+      "install": "npm install --legacy-peer-deps",
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleRelease -x lint -x lintVitalAnalyzeRelease -x lintVitalRelease -x generateReleaseLintModel -x generateReleaseLintVitalModel"
