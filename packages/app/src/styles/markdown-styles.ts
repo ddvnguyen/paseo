@@ -12,6 +12,15 @@ function contentHeadingLineHeight(contentSize: number, tier: keyof typeof FONT_S
 }
 
 /**
+ * Compact spacing helper: multiplies spacing values by a factor smaller than 1
+ * so markdown elements sit tighter than the global spacing scale.
+ * spacing[2]=8px → 6px, spacing[3]=12px → 9px, spacing[4]=16px → 12px, etc.
+ */
+function cs(theme: Theme, token: number): number {
+  return Math.round(token * 0.75);
+}
+
+/**
  * Creates comprehensive markdown styles for react-native-markdown-display.
  *
  * Usage:
@@ -49,7 +58,7 @@ export function createMarkdownStyles(theme: Theme) {
 
     paragraph: {
       marginTop: 0,
-      marginBottom: theme.spacing[3],
+      marginBottom: cs(theme, theme.spacing[3]),
       flexWrap: "wrap" as const,
       flexDirection: "row" as const,
       alignItems: "flex-start" as const,
@@ -68,12 +77,12 @@ export function createMarkdownStyles(theme: Theme) {
       fontSize: contentHeadingSize(theme.fontSize.content, "4xl"),
       fontWeight: theme.fontWeight.bold,
       color: theme.colors.foreground,
-      marginTop: theme.spacing[6],
-      marginBottom: theme.spacing[3],
+      marginTop: cs(theme, theme.spacing[6]),
+      marginBottom: cs(theme, theme.spacing[3]),
       lineHeight: contentHeadingLineHeight(theme.fontSize.content, "4xl"),
       borderBottomWidth: 1,
       borderBottomColor: theme.colors.border,
-      paddingBottom: theme.spacing[2],
+      paddingBottom: cs(theme, theme.spacing[2]),
     },
 
     heading2: {
@@ -81,12 +90,12 @@ export function createMarkdownStyles(theme: Theme) {
       fontSize: contentHeadingSize(theme.fontSize.content, "3xl"),
       fontWeight: theme.fontWeight.bold,
       color: theme.colors.foreground,
-      marginTop: theme.spacing[6],
-      marginBottom: theme.spacing[3],
+      marginTop: cs(theme, theme.spacing[6]),
+      marginBottom: cs(theme, theme.spacing[3]),
       lineHeight: contentHeadingLineHeight(theme.fontSize.content, "3xl"),
       borderBottomWidth: 1,
       borderBottomColor: theme.colors.border,
-      paddingBottom: theme.spacing[2],
+      paddingBottom: cs(theme, theme.spacing[2]),
     },
 
     heading3: {
@@ -94,8 +103,8 @@ export function createMarkdownStyles(theme: Theme) {
       fontSize: contentHeadingSize(theme.fontSize.content, "2xl"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
-      marginTop: theme.spacing[4],
-      marginBottom: theme.spacing[2],
+      marginTop: cs(theme, theme.spacing[4]),
+      marginBottom: cs(theme, theme.spacing[2]),
       lineHeight: contentHeadingLineHeight(theme.fontSize.content, "2xl"),
     },
 
@@ -104,8 +113,8 @@ export function createMarkdownStyles(theme: Theme) {
       fontSize: contentHeadingSize(theme.fontSize.content, "xl"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
-      marginTop: theme.spacing[4],
-      marginBottom: theme.spacing[2],
+      marginTop: cs(theme, theme.spacing[4]),
+      marginBottom: cs(theme, theme.spacing[2]),
       lineHeight: contentHeadingLineHeight(theme.fontSize.content, "xl"),
     },
 
@@ -114,8 +123,8 @@ export function createMarkdownStyles(theme: Theme) {
       fontSize: contentHeadingSize(theme.fontSize.content, "lg"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
-      marginTop: theme.spacing[3],
-      marginBottom: theme.spacing[1],
+      marginTop: cs(theme, theme.spacing[3]),
+      marginBottom: cs(theme, theme.spacing[1]),
       lineHeight: contentHeadingLineHeight(theme.fontSize.content, "lg"),
     },
 
@@ -124,8 +133,8 @@ export function createMarkdownStyles(theme: Theme) {
       fontSize: contentHeadingSize(theme.fontSize.content, "lg"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foregroundMuted,
-      marginTop: theme.spacing[3],
-      marginBottom: theme.spacing[1],
+      marginTop: cs(theme, theme.spacing[3]),
+      marginBottom: cs(theme, theme.spacing[1]),
       lineHeight: contentHeadingLineHeight(theme.fontSize.content, "lg"),
       textTransform: "uppercase" as const,
       letterSpacing: 0.5,
@@ -189,28 +198,28 @@ export function createMarkdownStyles(theme: Theme) {
       ...webSelectableTextStyle,
       backgroundColor: theme.colors.surface2,
       color: theme.colors.foreground,
-      padding: theme.spacing[3],
+      padding: cs(theme, theme.spacing[3]),
       borderRadius: theme.borderRadius.md,
       fontFamily: theme.fontFamily.mono,
       fontSize: theme.fontSize.code,
-      marginVertical: theme.spacing[2],
+      marginVertical: cs(theme, theme.spacing[2]),
     },
 
     fence: {
       ...webSelectableTextStyle,
       backgroundColor: theme.colors.surface2,
       color: theme.colors.foreground,
-      padding: theme.spacing[3],
+      padding: cs(theme, theme.spacing[3]),
       borderRadius: theme.borderRadius.md,
       borderWidth: 1,
       borderColor: theme.colors.border,
       fontFamily: theme.fontFamily.mono,
       fontSize: theme.fontSize.code,
-      marginVertical: theme.spacing[3],
+      marginVertical: cs(theme, theme.spacing[3]),
     },
 
     pre: {
-      marginVertical: theme.spacing[2],
+      marginVertical: cs(theme, theme.spacing[2]),
     },
 
     // =========================================================================
@@ -221,7 +230,7 @@ export function createMarkdownStyles(theme: Theme) {
       borderWidth: 1,
       borderColor: theme.colors.border,
       borderRadius: theme.borderRadius.md,
-      marginVertical: theme.spacing[3],
+      marginVertical: cs(theme, theme.spacing[3]),
     },
 
     thead: {
@@ -232,7 +241,7 @@ export function createMarkdownStyles(theme: Theme) {
 
     th: {
       ...webSelectableTextStyle,
-      padding: theme.spacing[2],
+      padding: cs(theme, theme.spacing[2]),
       borderBottomWidth: 1,
       borderRightWidth: 1,
       borderColor: theme.colors.border,
@@ -251,7 +260,7 @@ export function createMarkdownStyles(theme: Theme) {
 
     td: {
       ...webSelectableTextStyle,
-      padding: theme.spacing[2],
+      padding: cs(theme, theme.spacing[2]),
       borderRightWidth: 1,
       borderColor: theme.colors.border,
       color: theme.colors.foreground,
@@ -274,7 +283,7 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     list_item: {
-      marginBottom: theme.spacing[1],
+      marginBottom: cs(theme, theme.spacing[1]),
       flexDirection: "row" as const,
       alignItems: "flex-start" as const,
       flexShrink: 1,
@@ -317,10 +326,10 @@ export function createMarkdownStyles(theme: Theme) {
       color: `${theme.colors.foreground}cc`,
       borderLeftWidth: 4,
       borderLeftColor: theme.colors.surface2,
-      paddingHorizontal: theme.spacing[4],
-      paddingTop: theme.spacing[3],
+      paddingHorizontal: cs(theme, theme.spacing[4]),
+      paddingTop: cs(theme, theme.spacing[3]),
       paddingBottom: 0,
-      marginVertical: theme.spacing[3],
+      marginVertical: cs(theme, theme.spacing[3]),
       borderRadius: theme.borderRadius.md,
       borderTopLeftRadius: 0,
       borderBottomLeftRadius: 0,
@@ -333,7 +342,7 @@ export function createMarkdownStyles(theme: Theme) {
     hr: {
       backgroundColor: theme.colors.border,
       height: 1,
-      marginVertical: theme.spacing[2],
+      marginVertical: cs(theme, theme.spacing[2]),
     },
 
     // =========================================================================
@@ -342,7 +351,7 @@ export function createMarkdownStyles(theme: Theme) {
 
     image: {
       borderRadius: theme.borderRadius.md,
-      marginVertical: theme.spacing[2],
+      marginVertical: cs(theme, theme.spacing[2]),
     },
 
     // =========================================================================
@@ -350,7 +359,7 @@ export function createMarkdownStyles(theme: Theme) {
     // =========================================================================
 
     hardbreak: {
-      height: theme.spacing[2],
+      height: cs(theme, theme.spacing[2]),
     },
 
     softbreak: {},
@@ -376,30 +385,30 @@ export function createCompactMarkdownStyles(theme: Theme) {
     heading1: {
       ...baseStyles.heading1,
       fontSize: contentHeadingSize(theme.fontSize.content, "2xl"),
-      marginTop: theme.spacing[4],
-      marginBottom: theme.spacing[2],
+      marginTop: cs(theme, theme.spacing[4]),
+      marginBottom: cs(theme, theme.spacing[2]),
       lineHeight: contentHeadingLineHeight(theme.fontSize.content, "2xl"),
     },
 
     heading2: {
       ...baseStyles.heading2,
       fontSize: contentHeadingSize(theme.fontSize.content, "xl"),
-      marginTop: theme.spacing[3],
-      marginBottom: theme.spacing[2],
+      marginTop: cs(theme, theme.spacing[3]),
+      marginBottom: cs(theme, theme.spacing[2]),
       lineHeight: contentHeadingLineHeight(theme.fontSize.content, "xl"),
     },
 
     heading3: {
       ...baseStyles.heading3,
       fontSize: contentHeadingSize(theme.fontSize.content, "lg"),
-      marginTop: theme.spacing[3],
-      marginBottom: theme.spacing[1],
+      marginTop: cs(theme, theme.spacing[3]),
+      marginBottom: cs(theme, theme.spacing[1]),
       lineHeight: contentHeadingLineHeight(theme.fontSize.content, "lg"),
     },
 
     paragraph: {
       ...baseStyles.paragraph,
-      marginBottom: theme.spacing[2],
+      marginBottom: cs(theme, theme.spacing[2]),
     },
 
     code_inline: {
@@ -410,13 +419,13 @@ export function createCompactMarkdownStyles(theme: Theme) {
     code_block: {
       ...baseStyles.code_block,
       fontSize: theme.fontSize.code,
-      padding: theme.spacing[2],
+      padding: cs(theme, theme.spacing[2]),
     },
 
     fence: {
       ...baseStyles.fence,
       fontSize: theme.fontSize.code,
-      padding: theme.spacing[2],
+      padding: cs(theme, theme.spacing[2]),
     },
   };
 }
