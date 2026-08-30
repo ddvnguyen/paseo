@@ -293,7 +293,7 @@ export function createMarkdownStyles(theme: Theme) {
     bullet_list_icon: {
       ...webSelectableTextStyle,
       color: theme.colors.foregroundMuted,
-      marginRight: 4,
+      marginRight: theme.spacing[1],
       fontSize: theme.fontSize.content,
       lineHeight: Math.round(theme.fontSize.content * 1.4),
     },
@@ -301,7 +301,7 @@ export function createMarkdownStyles(theme: Theme) {
     ordered_list_icon: {
       ...webSelectableTextStyle,
       color: theme.colors.foregroundMuted,
-      marginRight: 4,
+      marginRight: theme.spacing[1],
       fontSize: theme.fontSize.content,
       fontWeight: theme.fontWeight.normal,
       lineHeight: Math.round(theme.fontSize.content * 1.4),
