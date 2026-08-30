@@ -192,9 +192,9 @@ export default {
       profileBuild: isProfileBuild,
       router: {},
       eas: {
-        projectId: "0e7f65ce-0367-46c8-a238-2b65963d235a",
+        projectId: "511556a6-8eab-4fc4-bdae-cf9ce5167f7f",
       },
     },
-    owner: "getpaseo",
+    owner: "ddv0623",
   },
 };
