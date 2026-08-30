@@ -1,0 +1,16 @@
+# Exclude non-app packages and docs from EAS upload
+packages/cli/
+packages/desktop/
+packages/relay/
+packages/website/
+packages/protocol/
+packages/plugin/
+packages/highlight/
+packages/expo-two-way-audio/
+scripts/
+docs/
+.github/
+.dev/
+*.md
+.gitignore
+.easignore
