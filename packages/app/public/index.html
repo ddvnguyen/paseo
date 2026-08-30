@@ -11,9 +11,19 @@
     <meta name="application-name" content="Paseo" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="format-detection" content="telephone=no" />
+    <!--
+      interactive-widget=resizes-content (Chrome 108+, ignored elsewhere) makes the
+      on-screen keyboard genuinely shrink the layout viewport instead of the default
+      resizes-visual behavior, which leaves layout fixed and pans the visual viewport
+      over it. Without this, html/body/#root (pinned to overflow: hidden, height: 100%
+      below) never resize, so anything anchored to the top via `position: sticky` —
+      like the screen header — can't track the keyboard opening: sticky only reacts to
+      an ancestor's actual scrollTop, and a visual-viewport pan isn't one. With real
+      layout resize, sticky tracks it like any other resize/scroll, no JS needed.
+    -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, shrink-to-fit=no, viewport-fit=cover"
+      content="width=device-width, initial-scale=1, shrink-to-fit=no, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <link rel="manifest" href="/manifest.json" crossorigin="use-credentials" />
     <link rel="icon" type="image/png" sizes="192x192" href="/pwa-icon-192.png" />

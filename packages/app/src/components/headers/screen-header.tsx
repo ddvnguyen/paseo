@@ -3,7 +3,6 @@ import type { LayoutChangeEvent } from "react-native";
 import { View, type StyleProp, type ViewStyle } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import {
   HEADER_INNER_HEIGHT,
   HEADER_INNER_HEIGHT_MOBILE,
@@ -11,14 +10,16 @@ import {
   useIsCompactFormFactor,
 } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
-import { useVisualViewportOffsetTop } from "@/hooks/use-visual-viewport-offset-top";
 import { WindowChromeSafeArea } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 
 // Web-only header positioning. Kept out of the Unistyles StyleSheet because
 // the library's value schema disallows `position: "sticky"`. Bumping zIndex
 // above 5 ensures the header stays on top of agent stream and panels while
-// the page scrolls to keep a focused input in view.
+// the page scrolls to keep a focused input in view. Relies on
+// interactive-widget=resizes-content (see public/index.html) so the on-screen
+// keyboard actually resizes the layout viewport instead of panning the
+// visual one — otherwise sticky has no real scroll/resize to track.
 const stickyHeaderStyle = {
   position: "sticky" as const,
   top: 0,
@@ -73,19 +74,8 @@ export function ScreenHeader({
     isWeb ? [styles.header, stickyHeaderStyle] : [styles.header]
   ) as StyleProp<ViewStyle>;
 
-  // `position: sticky` only tracks an ancestor's real `scrollTop`. This app's
-  // layout viewport never scrolls (`overflow: hidden` on html/body/#root), so
-  // when the on-screen keyboard opens, the browser pans the visual viewport
-  // instead — sticky doesn't see that and the header scrolls out of view
-  // above it. Counter-translate by the pan amount to keep it on screen.
-  const visualViewportOffsetTop = useVisualViewportOffsetTop();
-  const keyboardPanStyle = useAnimatedStyle(() => {
-    if (!isWeb) return {};
-    return { transform: [{ translateY: visualViewportOffsetTop.value }] };
-  });
-
   return (
-    <Animated.View style={[headerStyle, keyboardPanStyle]}>
+    <View style={headerStyle}>
       <View style={innerStyle}>
         <WindowChromeSafeArea
           placement="inline"
@@ -98,7 +88,7 @@ export function ScreenHeader({
           <View style={rightCombinedStyle}>{right}</View>
         </WindowChromeSafeArea>
       </View>
-    </Animated.View>
+    </View>
   );
 }
 
