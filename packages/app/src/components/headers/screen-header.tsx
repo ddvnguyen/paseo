@@ -3,6 +3,7 @@ import type { LayoutChangeEvent } from "react-native";
 import { View, type StyleProp, type ViewStyle } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import {
   HEADER_INNER_HEIGHT,
   HEADER_INNER_HEIGHT_MOBILE,
@@ -10,6 +11,7 @@ import {
   useIsCompactFormFactor,
 } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
+import { useVisualViewportOffsetTop } from "@/hooks/use-visual-viewport-offset-top";
 import { WindowChromeSafeArea } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 
@@ -71,8 +73,19 @@ export function ScreenHeader({
     isWeb ? [styles.header, stickyHeaderStyle] : [styles.header]
   ) as StyleProp<ViewStyle>;
 
+  // `position: sticky` only tracks an ancestor's real `scrollTop`. This app's
+  // layout viewport never scrolls (`overflow: hidden` on html/body/#root), so
+  // when the on-screen keyboard opens, the browser pans the visual viewport
+  // instead — sticky doesn't see that and the header scrolls out of view
+  // above it. Counter-translate by the pan amount to keep it on screen.
+  const visualViewportOffsetTop = useVisualViewportOffsetTop();
+  const keyboardPanStyle = useAnimatedStyle(() => {
+    if (!isWeb) return {};
+    return { transform: [{ translateY: visualViewportOffsetTop.value }] };
+  });
+
   return (
-    <View style={headerStyle}>
+    <Animated.View style={[headerStyle, keyboardPanStyle]}>
       <View style={innerStyle}>
         <WindowChromeSafeArea
           placement="inline"
@@ -85,7 +98,7 @@ export function ScreenHeader({
           <View style={rightCombinedStyle}>{right}</View>
         </WindowChromeSafeArea>
       </View>
-    </View>
+    </Animated.View>
   );
 }
 

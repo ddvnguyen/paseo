@@ -15,7 +15,21 @@ export function applyRootUiScale(uiScale: number, spacingScale: number): void {
   document.documentElement.style.setProperty("--paseo-ui-scale", String(uiScale));
   document.documentElement.style.setProperty("--paseo-spacing-scale", String(spacingScale));
 
-  const RULE = `:is(#root,#overlay-root){zoom:${uiScale};}`;
+  // `zoom` shrinks an element's own rendered box, not just the size of its
+  // content. That shrink is invisible on #root (the leftover space just
+  // exposes body's matching background), but #overlay-root is
+  // `position: fixed; inset: 0` and is where every modal/sheet portals to
+  // (see lib/overlay-root.ts) — its shrink leaves a visible gap at the
+  // trailing/bottom edge instead of a themed background, so full-screen
+  // mobile sheets (e.g. the side menu) stop reaching the screen edges below
+  // 100% scale. Inflate its logical width/height by 1/uiScale so the
+  // post-zoom rendered box is back to exactly 100% of the viewport; the
+  // explicit width/height here win over the inline `inset: 0` per the CSS
+  // over-constrained box resolution (left/top from inset stay, right/bottom
+  // are recomputed and ignored).
+  const overlayCompensation =
+    uiScale === 1 ? "" : `#overlay-root{width:${100 / uiScale}%;height:${100 / uiScale}%;}`;
+  const RULE = `:is(#root,#overlay-root){zoom:${uiScale};}${overlayCompensation}`;
 
   let style = document.getElementById(STYLE_ID);
   if (!style) {
