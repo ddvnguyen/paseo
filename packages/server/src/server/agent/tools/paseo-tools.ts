@@ -555,18 +555,47 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
   const callerContext = callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
 
+  // HYDRA PATCH: LLMs sometimes send discriminated union args as JSON strings
+  // (e.g. target="{\"kind\":\"checkout-branch\"}" instead of target={kind:"checkout-branch"}).
+  // This pre-parses any string values that look like JSON objects/arrays.
+  const preprocessStringifiedArgs = (input: unknown): unknown => {
+    if (typeof input !== "object" || input === null) {
+      return input;
+    }
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+      if (typeof value === "string" && value.length > 1) {
+        const trimmed = value.trim();
+        if (
+          (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+          (trimmed.startsWith("[") && trimmed.endsWith("]"))
+        ) {
+          try {
+            result[key] = JSON.parse(trimmed);
+            continue;
+          } catch {
+            // Not valid JSON, keep as-is
+          }
+        }
+      }
+      result[key] = value;
+    }
+    return result;
+  };
+
   const parseToolInput = async (tool: PaseoToolDefinition, input: unknown): Promise<unknown> => {
     const inputSchema = tool.inputSchema;
     if (!inputSchema) {
       return input;
     }
+    const preprocessed = preprocessStringifiedArgs(input);
     const schema =
       typeof inputSchema === "object" &&
       inputSchema !== null &&
       typeof (inputSchema as { safeParseAsync?: unknown }).safeParseAsync === "function"
         ? (inputSchema as z.ZodType)
         : z.object(inputSchema as z.ZodRawShape).passthrough();
-    return schema.parseAsync(input);
+    return schema.parseAsync(preprocessed);
   };
 
   const tools = new Map<string, PaseoToolDefinition>();
