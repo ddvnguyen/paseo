@@ -347,13 +347,39 @@ deploy must re-stamp versions from current HEAD so the suffix changes:
 
 1. `node scripts/sync-workspace-versions.mjs` → workspaces become `{upstream-version}-hydra-<shorthash>-<yyMMDDhhmm>`
 2. If app code changed: `CI=1 npm run build:daemon-web-ui` (purge /tmp/metro-cache first)
-3. Deploy to `~/.paseo-test/node_modules/@getpaseo/`:
+3. Deploy to `~/.paseo-test/node_modules/@getpaseo/`, **in this order** (web-ui
+   branding must be the LAST thing touched under `dist/server/web-ui/`, or a
+   later blanket dist rsync will silently overwrite it — see below):
+   - if server code changed: replace server dist first —
+     `rsync -a --delete packages/server/dist/ ~/.paseo-test/node_modules/@getpaseo/server/dist/`
+     (this also wipes `dist/server/web-ui`, which is expected; branding is
+     restored in the next step)
    - overlay fresh `packages/server/dist/server/web-ui`
-   - PRESERVE TEST branding: save & restore pwa-icon-512/192.png, favicon.ico,
-     apple-touch-icon.png, assets/assets/images/\*.png; then patch manifest.json
-     (name "Paseo TEST", theme_color #2563eb) and DELETE manifest.json.br siblings
-   - copy stamped `packages/server/package.json` (version string source of truth)
-   - if server code changed: replace server dist too
+   - PRESERVE TEST branding — favicon.ico, apple-touch-icon.png,
+     pwa-icon-192/512.png are grayscale versions of the production icons
+     (distinguishes TEST from prod at a glance) and live durably at
+     `~/.paseo-test-branding/` (independent of `~/.paseo-test/`, survives a
+     full service rebuild). Copy those four files over the fresh build's
+     colored ones; then patch manifest.json (name "Paseo TEST", theme_color
+     #2563eb) and DELETE manifest.json.br/.gz siblings (stale pre-compressed
+     copies of the unbranded manifest). Do NOT grayscale
+     `assets/assets/images/favicon-{dark,light}-{running,attention}.png` —
+     those are functional agent-status color signals
+     (`use-favicon-status.ts`), not branding.
+   - copy stamped `packages/server/package.json` (version string source of
+     truth) — this can happen any time, it doesn't touch web-ui
+   - **Past bug**: an earlier version of this runbook replaced server dist
+     via `rsync --exclude 'dist/server/web-ui/' packages/server/dist/ …` run
+     AFTER the branding step, intending to skip web-ui. The exclude path was
+     wrong (rsync excludes are relative to the source root, which already had
+     `packages/server/dist/` stripped by the trailing slash, so the real
+     subpath is `server/web-ui/`, not `dist/server/web-ui/`) — the exclude
+     silently matched nothing, the "excluded" rsync re-copied the fresh
+     unbranded web-ui over the just-patched one, and TEST quietly served
+     "Paseo" instead of "Paseo TEST" with production-colored icons for one
+     full deploy cycle before anyone noticed. Doing the full-dist rsync
+     _before_ the branding step (as above) sidesteps needing a correct
+     exclude pattern at all.
 4. `systemctl --user restart paseo-test.service`
 5. Verify: `journalctl --user -u paseo-test.service | grep -oE 'daemonVersion":"[^"]*"' | tail -1`
    must show the NEW hash. Health: `curl :6868/api/health`.
