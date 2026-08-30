@@ -67,7 +67,7 @@ export const MAX_FONT_FAMILY_LENGTH = 200;
 export const DEFAULT_UI_SCALE = 1;
 export const MIN_UI_SCALE = 0.75;
 export const MAX_UI_SCALE = 1.5;
-export const UI_SCALE_STEP = 0.05;
+export const UI_SCALE_STEP = 0.01;
 // Text line height: multiplier on the body content font size. Independent of zoom
 // so the user can tighten/loosen text without resizing the rest of the UI.
 export const DEFAULT_LINE_HEIGHT_SCALE = 1.3;
