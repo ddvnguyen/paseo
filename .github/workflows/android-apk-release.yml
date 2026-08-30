@@ -91,6 +91,11 @@ jobs:
           EAS_ANDROID_KEY_PASSWORD: ${{ secrets.EAS_ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+
+          # Strip bun.lock from the repo so EAS doesn't try bun install.
+          # EAS detects bun workspace from bun.lock before .easignore applies.
+          rm -f bun.lock bun.lockb
+
           cd packages/app
 
           # Write keystore from secret and create credentials.json for local source
