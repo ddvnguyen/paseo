@@ -6,6 +6,7 @@ type OutboundOperation = SessionOutboundMessage["type"];
 
 const INBOUND_PERMISSION = {
   abort_request: "workspace.write",
+  "agent.background_tasks.list.request": "workspace.read",
   "agent.config.apply.request": "workspace.write",
   "agent.detach.request": "workspace.write",
   "agent.fork_context.request": "workspace.read",
@@ -201,6 +202,8 @@ const INBOUND_PERMISSION = {
 
 const OUTBOUND_PERMISSION = {
   activity_log: "workspace.read",
+  "agent.background_tasks.list.response": "workspace.read",
+  "agent.background_tasks.update": "workspace.read",
   "agent.config.apply.response": "workspace.write",
   "agent.detach.response": "workspace.write",
   "agent.fork_context.response": "workspace.read",

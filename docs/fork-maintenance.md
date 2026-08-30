@@ -7,16 +7,16 @@ This document covers maintaining the `hydra-paseo` fork, including rebasing on u
 All workspace packages in this fork include a git commit hash suffix in their version string:
 
 ```
-{upstream-version}-hydra-h-{commit-short-hash}
+{upstream-version}-hydra-{commit-short-hash}-{yyMMDDhhmm}
 ```
 
-**Example:** `0.1.109-hydra-h-ae5fc2d23`
+**Example:** `0.7.0-beta.2-hydra-6d2f11cb9-2608302234`
 
 ### How It Works
 
-1. Root `package.json` has version: `0.1.109-hydra`
-2. `scripts/sync-workspace-versions.mjs` appends `-h-{commit-short-hash}`
-3. All workspace packages get the full version with hash suffix
+1. Root `package.json` has version: `0.7.0-beta.2-hydra`
+2. `scripts/sync-workspace-versions.mjs` appends `-{commit-short-hash}-{yyMMDDhhmm}`
+3. All workspace packages get the full version with hash and timestamp suffix
 4. Internal `@getpaseo/*` dependencies are updated to match
 
 ### Version Resolution
@@ -162,22 +162,23 @@ git commit -m "chore: sync workspace versions with git hash suffix"
 
 ### Components
 
-| Part         | Example        | Description           |
-| ------------ | -------------- | --------------------- |
-| Base version | `0.1.109`      | Upstream semver       |
-| Fork suffix  | `-hydra`       | Fork identifier       |
-| Hash suffix  | `-h-ae5fc2d23` | Git commit short hash |
+| Part         | Example        | Description              |
+| ------------ | -------------- | ------------------------ |
+| Base version | `0.7.0-beta.2` | Upstream semver          |
+| Fork suffix  | `-hydra`       | Fork identifier          |
+| Hash suffix  | `-6d2f11cb9`   | Git commit short hash    |
+| Timestamp    | `-2608302234`  | Build time, `yyMMDDhhmm` |
 
 ### Full Format
 
 ```
-{major}.{minor}.{patch}-hydra-h-{commit-short-hash}
+{major}.{minor}.{patch}(-beta.N)-hydra-{commit-short-hash}-{yyMMDDhhmm}
 ```
 
 **Examples:**
 
-- `0.1.109-hydra-h-ae5fc2d23`
-- `0.2.0-hydra-h-b66dadb99`
+- `0.7.0-beta.2-hydra-6d2f11cb9-2608302234`
+- `0.7.0-hydra-b66dadb99-2609011530`
 
 ## Deployment
 
@@ -282,7 +283,7 @@ After deployment, verify:
    - Should return: `{"status":"ok","timestamp":"..."}`
 
 2. **Version check:** `paseo --version`
-   - Should show: `0.2.0-beta.1-hydra-h-{commit-hash}`
+   - Should show: `{upstream-version}-hydra-{commit-hash}-{yyMMDDhhmm}`
 
 3. **Service status:** `systemctl --user status paseo`
    - Should show: `Active: active (running)`
@@ -344,7 +345,7 @@ If versions don't have the hash suffix:
 The user verifies a TEST deployment by reading `daemonVersion`. Therefore every
 deploy must re-stamp versions from current HEAD so the suffix changes:
 
-1. `node scripts/sync-workspace-versions.mjs` → workspaces become `0.6.1-hydra-<shorthash>`
+1. `node scripts/sync-workspace-versions.mjs` → workspaces become `{upstream-version}-hydra-<shorthash>-<yyMMDDhhmm>`
 2. If app code changed: `CI=1 npm run build:daemon-web-ui` (purge /tmp/metro-cache first)
 3. Deploy to `~/.paseo-test/node_modules/@getpaseo/`:
    - overlay fresh `packages/server/dist/server/web-ui`

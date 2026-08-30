@@ -602,11 +602,6 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       useBackgroundTaskStore.getState().applyUpdate(serverId, message.payload);
     });
 
-    const unsubScriptStatusUpdate = client.on("script_status_update", (message) => {
-      if (message.type !== "script_status_update") return;
-      setWorkspaces(serverId, (prev) => patchWorkspaceScripts(prev, message.payload));
-    });
-
     const unsubCheckoutStatusUpdate = client.on("checkout_status_update", (message) => {
       if (message.type !== "checkout_status_update") return;
       applyCheckoutStatusUpdateFromEvent({ queryClient, serverId, message });

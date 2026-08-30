@@ -19,10 +19,19 @@ function getGitCommitShortHash() {
   }
 }
 
+function getHydraTimestamp() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const yy = String(now.getFullYear()).slice(-2);
+  return `${yy}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}`;
+}
+
 const rootPackage = JSON.parse(readFileSync(rootPackagePath, "utf8"));
 const rootVersion = rootPackage.version;
 const gitHash = getGitCommitShortHash();
-const versionWithHash = gitHash ? `${rootVersion}-${gitHash}` : rootVersion;
+const versionWithHash = gitHash
+  ? `${rootVersion}-${gitHash}-${getHydraTimestamp()}`
+  : rootVersion;
 const workspacePaths = Array.isArray(rootPackage.workspaces) ? rootPackage.workspaces : [];
 const sharedMetadata = {
   homepage: rootPackage.homepage,
