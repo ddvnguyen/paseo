@@ -30,7 +30,7 @@ export interface WorkspaceDirectorySnapshot {
   >;
 }
 
-function patchWorkspaceScripts(
+export function patchWorkspaceScripts(
   workspaces: Map<string, WorkspaceDescriptor>,
   update: ScriptStatusUpdateMessage["payload"],
 ): Map<string, WorkspaceDescriptor> {

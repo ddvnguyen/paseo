@@ -162,7 +162,7 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomColor: theme.colors.border,
   },
   dropdownTitle: {
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     fontWeight: "600",
     color: theme.colors.foreground,
   },
@@ -172,7 +172,7 @@ const styles = StyleSheet.create((theme) => ({
   emptyText: {
     paddingHorizontal: theme.spacing[3],
     paddingVertical: theme.spacing[3],
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
   },
   dropdownRow: {
@@ -193,7 +193,7 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
   },
   dropdownRowCommand: {
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     fontFamily: "monospace",
     color: theme.colors.foreground,
   },

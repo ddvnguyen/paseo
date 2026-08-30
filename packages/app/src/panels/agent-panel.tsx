@@ -99,7 +99,6 @@ import { openWorkspaceChanges } from "@/workspace-tabs/open-supporting-view";
 import { useSettings } from "@/hooks/use-settings";
 import type { Theme } from "@/styles/theme";
 import {
-  useHideFinishedProviderSubagents,
   useArchiveSubagent,
   useDetachSubagent,
   useSubagentsForParent,
@@ -119,6 +118,7 @@ import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { buildDraftAgentSetup, type ClientSlashCommand } from "@/client-slash-commands";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
+import { AgentModeControl, useLiveAgentModeControl } from "@/composer/agent-controls/mode-control";
 
 interface ChatAgentStateShape {
   serverId: string | null;
@@ -1718,17 +1718,14 @@ function ActiveAgentComposer({
     [insets.bottom],
   );
 
+  const modeControl = useLiveAgentModeControl(serverId, agentId);
+
   const composerFooter = useMemo(
     () =>
-      isCompactComposerLayout ? (
-        <AgentModeControl
-          serverId={serverId}
-          agentId={agentId}
-          placement="footer"
-          isCompactLayout={isCompactComposerLayout}
-        />
+      isCompactComposerLayout && modeControl ? (
+        <AgentModeControl {...modeControl} />
       ) : undefined,
-    [isCompactComposerLayout, serverId, agentId],
+    [isCompactComposerLayout, modeControl],
   );
 
   const backgroundTasks = useBackgroundTasksForAgent(serverId, agentId);
@@ -1744,7 +1741,6 @@ function ActiveAgentComposer({
   );
   const archiveSubagent = useArchiveSubagent({ serverId });
   const detachSubagent = useDetachSubagent({ serverId });
-  const hideFinishedProviderSubagents = useHideFinishedProviderSubagents();
 
   const handleOpenSubagent = useCallback(
     (subagentId: string) => {
@@ -1773,9 +1769,8 @@ function ActiveAgentComposer({
         rows={subagentRows}
         onOpenSubagent={handleOpenSubagent}
         onOpenProviderSubagent={handleOpenProviderSubagent}
-        onArchiveSubagent={handleArchiveSubagent}
-        onArchiveFinished={handleHideFinishedProviderSubagents}
-        onDetachSubagent={canDetachSubagents ? handleDetachSubagent : undefined}
+        onArchiveSubagent={archiveSubagent}
+        onDetachSubagent={canDetachSubagents ? detachSubagent : undefined}
       />
       <Composer
         agentId={agentId}

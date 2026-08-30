@@ -2,6 +2,7 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import {
   View,
   Text,
+  Pressable,
   useWindowDimensions,
   NativeSyntheticEvent,
   TextInputKeyPressEventData,
@@ -192,7 +193,6 @@ export interface MessageInputRef {
 const MIN_INPUT_HEIGHT_MOBILE = 26;
 const MIN_INPUT_HEIGHT_DESKTOP = 26;
 const DEFAULT_MAX_INPUT_HEIGHT = 160;
-const MAX_INPUT_VIEWPORT_RATIO = 0.5;
 const MAX_INPUT_VIEWPORT_RATIO = 0.5;
 const MIN_INPUT_HEIGHT = isWeb ? MIN_INPUT_HEIGHT_DESKTOP : MIN_INPUT_HEIGHT_MOBILE;
 type WebTextInputKeyPressEvent = NativeSyntheticEvent<
@@ -1199,6 +1199,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const dictationToggleKeys = useShortcutKeys("dictation-toggle");
     const focusInputKeys = useShortcutKeys("focus-message-input");
     const [isInputFocused, setIsInputFocused] = useState(false);
+    const [wantsInputFocus, setWantsInputFocus] = useState(false);
     // Web text is DOM-owned between deferred draft publications. The action button only needs
     // this boundary, so publish empty/non-empty transitions without rerendering for every key.
     const initialHasLiveText = value.trim().length > 0;
@@ -1212,6 +1213,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const selectionRef = useRef({ start: value.length, end: value.length });
     const appliedTextReplacementKeyRef = useRef(textReplacement.key);
     const webTextareaRef = useRef<HTMLElement | null>(null);
+    const hasDraftContent = hasLiveText || value.trim().length > 0;
+    const isInputExpanded = isInputFocused || wantsInputFocus;
+    const showTextInput = readOnly || isInputExpanded || hasDraftContent;
+    const minInputHeight = MIN_INPUT_HEIGHT;
     const composerHeight = useComposerHeight({
       value,
       textareaRef: webTextareaRef,
@@ -1222,6 +1227,10 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const measuredComposerHeight = composerHeight.mode === "measured" ? composerHeight : undefined;
     const updateComposerHeightForText = measuredComposerHeight?.onTextChange;
     const resetComposerHeight = measuredComposerHeight?.reset;
+
+    const requestComposerFocus = useCallback(() => {
+      setWantsInputFocus(true);
+    }, []);
 
     const handleComposerLayout = useCallback(
       (event: LayoutChangeEvent) => onHeightChange?.(event.nativeEvent.layout.height),
@@ -1249,7 +1258,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
 
     useImperativeHandle(ref, () => ({
       focus: () => {
-        textInputRef.current?.focus();
+        requestComposerFocus();
       },
       blur: () => {
         textInputRef.current?.blur();
@@ -1260,7 +1269,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       replaceText,
       runKeyboardAction: (action) =>
         runMessageInputKeyboardAction(action, {
-          focusInput: () => textInputRef.current?.focus(),
+          focusInput: requestComposerFocus,
           isDictationRecording: isDictationActive,
           markTranscriptForSend: () => {
             sendAfterTranscriptRef.current = true;
@@ -1678,6 +1687,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const handleInputBlur = useCallback(() => {
       isInputFocusedRef.current = false;
       setIsInputFocused(false);
+      setWantsInputFocus(false);
       onFocusChange?.(false);
     }, [onFocusChange]);
 
@@ -1997,6 +2007,13 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   textInputScrollWrapper: {
     position: "relative",
+  },
+  idleComposerSurface: {
+    position: "relative",
+    width: "100%",
+    minHeight: MIN_INPUT_HEIGHT,
+    justifyContent: "center",
+    alignItems: "flex-start",
   },
   focusHintText: {
     position: "absolute",
