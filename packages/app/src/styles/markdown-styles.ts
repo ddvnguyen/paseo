@@ -333,7 +333,7 @@ export function createMarkdownStyles(theme: Theme) {
     hr: {
       backgroundColor: theme.colors.border,
       height: 1,
-      marginVertical: 10,
+      marginVertical: theme.spacing[2],
     },
 
     // =========================================================================
