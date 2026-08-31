@@ -4,9 +4,11 @@ const pkg = require("./package.json");
 const withAndroidAsyncStorageSize = require("./plugins/with-android-async-storage-size");
 const withAndroidProfileable = require("./plugins/with-android-profileable");
 const withFdroidAutolinking = require("./plugins/with-fdroid-autolinking");
+const withHermesLowMemory = require("./plugins/with-hermes-low-memory");
 const withPasteInput = require("./plugins/with-paste-input");
 const { getNativeReleaseVersion } = require("./native-release-version");
 const appVariant = process.env.APP_VARIANT ?? "production";
+const isHydraBuild = appVariant === "hydra";
 const isFdroidBuild = process.env.PASEO_FDROID_BUILD === "1";
 const isProfileBuild = process.env.PASEO_PROFILE_BUILD === "1";
 
@@ -196,6 +198,7 @@ export default {
       ],
       ...buildProfile.fdroidPlugins,
       ...(isProfileBuild ? [withAndroidProfileable] : []),
+      ...(isHydraBuild ? [withHermesLowMemory] : []),
     ],
     experiments: {
       typedRoutes: true,
