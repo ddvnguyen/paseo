@@ -362,10 +362,23 @@ deploy must re-stamp versions from current HEAD so the suffix changes:
      full service rebuild). Copy those four files over the fresh build's
      colored ones; then patch manifest.json (name "Paseo TEST", theme_color
      #2563eb) and DELETE manifest.json.br/.gz siblings (stale pre-compressed
-     copies of the unbranded manifest). Do NOT grayscale
-     `assets/assets/images/favicon-{dark,light}-{running,attention}.png` —
-     those are functional agent-status color signals
-     (`use-favicon-status.ts`), not branding.
+     copies of the unbranded manifest).
+   - Also overlay the grayscale status-favicon set from
+     `~/.paseo-test-branding/status-icons/{none,running,attention}.png` onto
+     the hashed `dist/server/web-ui/assets/assets/images/favicon-{dark,light}[-{running,attention}].png`
+     files (glob-match by the `dark`/`light` + status infix, since the hash
+     suffix is content-derived and stable but not hardcoded). **Past bug**:
+     an earlier version of this runbook deliberately excluded these from
+     grayscaling, reasoning they're "functional agent-status color signals"
+     (`use-favicon-status.ts`) rather than branding. That was wrong —
+     `useFaviconStatus()` unconditionally overwrites the `<link rel="icon">`
+     href with one of these three images on every mount, so they are the
+     _only_ thing ever shown as the browser tab favicon; the static
+     `favicon.ico`/`pwa-icon-*` grayscale work above never had any visible
+     effect on the tab icon at all (it only affects the PWA/home-screen
+     install icon). Skipping this step means TEST silently shows the
+     colored PROD favicon in every browser tab regardless of the four files
+     above.
    - copy stamped `packages/server/package.json` (version string source of
      truth) — this can happen any time, it doesn't touch web-ui
    - **Past bug**: an earlier version of this runbook replaced server dist
