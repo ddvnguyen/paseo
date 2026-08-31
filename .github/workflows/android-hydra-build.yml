@@ -41,16 +41,16 @@ jobs:
 
       # Stamp only packages/app's own version (for display/artifact naming).
       # Do NOT run scripts/sync-workspace-versions.mjs here: it stamps every
-      # workspace package's version, including the sibling libraries
-      # (@getpaseo/protocol, highlight, relay, cli, ...) that .easignore
-      # excludes from the EAS upload. Those siblings are real, upstream-
-      # published npm packages; packages/app depends on them via a "*"
-      # range and EAS's own `npm ci` resolves them straight from the npm
-      # registry when the local workspace source isn't present. Stamping
-      # them to a never-published hydra version (as the daemon/server
-      # deploy flow does) makes that registry lookup 404 with ETARGET.
-      # Leaving their committed versions alone keeps EAS's install working
-      # exactly like the existing production-apk build.
+      # workspace package's version but never regenerates package-lock.json.
+      # `npm ci` on EAS's remote builder enforces that package-lock.json
+      # exactly matches on-disk package.json versions for every workspace
+      # member; this repo's lockfile is already stale relative to sibling
+      # packages (@getpaseo/protocol etc. were re-stamped by earlier commits
+      # without a lockfile regen), which is what broke prior attempts with
+      # `npm error ETARGET ... No matching version found for
+      # @getpaseo/protocol@<stale-stamped-version>`. Re-syncing the lockfile
+      # below (after stamping app's version) fixes that for every package,
+      # not just app.
       - name: Stamp hydra version on packages/app only
         run: |
           node -e '
@@ -67,6 +67,9 @@ jobs:
             fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
             console.log("Stamped packages/app version:", pkg.version);
           '
+
+      - name: Re-sync package-lock.json to match stamped versions
+        run: npm install --package-lock-only --ignore-scripts
 
       - name: Resolve build metadata
         id: meta
