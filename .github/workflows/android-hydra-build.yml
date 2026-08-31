@@ -39,8 +39,34 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.inputs.branch || 'Paseo-Mobile-UI' }}
 
-      - name: Stamp hydra version from current commit
-        run: node scripts/sync-workspace-versions.mjs
+      # Stamp only packages/app's own version (for display/artifact naming).
+      # Do NOT run scripts/sync-workspace-versions.mjs here: it stamps every
+      # workspace package's version, including the sibling libraries
+      # (@getpaseo/protocol, highlight, relay, cli, ...) that .easignore
+      # excludes from the EAS upload. Those siblings are real, upstream-
+      # published npm packages; packages/app depends on them via a "*"
+      # range and EAS's own `npm ci` resolves them straight from the npm
+      # registry when the local workspace source isn't present. Stamping
+      # them to a never-published hydra version (as the daemon/server
+      # deploy flow does) makes that registry lookup 404 with ETARGET.
+      # Leaving their committed versions alone keeps EAS's install working
+      # exactly like the existing production-apk build.
+      - name: Stamp hydra version on packages/app only
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const { execFileSync } = require("node:child_process");
+            const path = "packages/app/package.json";
+            const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
+            const shortHash = execFileSync("git", ["rev-parse", "--short", "HEAD"]).toString().trim();
+            const now = new Date();
+            const pad = (n) => String(n).padStart(2, "0");
+            const stamp = `${String(now.getFullYear()).slice(-2)}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}`;
+            const base = pkg.version.replace(/-hydra-.*$/, "");
+            pkg.version = `${base}-hydra-${shortHash}-${stamp}`;
+            fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
+            console.log("Stamped packages/app version:", pkg.version);
+          '
 
       - name: Resolve build metadata
         id: meta
