@@ -1,0 +1,24 @@
+# Paseo systemd --user unit: paseo-app-test.service
+#
+# Static file server for the Paseo TEST web UI via Caddy.
+# The daemon (paseo-test.service) runs separately on port 6969 with --no-web-ui.
+# Clients connect to the daemon via the "Add host" flow in the web UI.
+#
+# Install:
+#   cp deploy/systemd/paseo-app-test.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now paseo-app-test.service
+
+[Unit]
+Description=Paseo TEST — Static web UI server (Caddy)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/caddy run --config /home/ddv/paseo-test/Caddyfile --adapter caddyfile
+ExecReload=/usr/bin/caddy reload --config /home/ddv/paseo-test/Caddyfile --adapter caddyfile
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
