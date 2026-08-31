@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/desktop",
-  "version": "0.7.0-beta.2-hydra-6b5971b2e-2608310750",
+  "version": "0.7.0-beta.2-hydra-474c7b8bb-2608311449",
   "private": true,
   "description": "Paseo desktop app (Electron wrapper)",
   "homepage": "https://paseo.sh",
