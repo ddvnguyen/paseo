@@ -29,7 +29,21 @@ export function applyRootUiScale(uiScale: number, spacingScale: number): void {
   // are recomputed and ignored).
   const overlayCompensation =
     uiScale === 1 ? "" : `#overlay-root{width:${100 / uiScale}%;height:${100 / uiScale}%;}`;
-  const RULE = `:is(#root,#overlay-root){zoom:${uiScale};}${overlayCompensation}`;
+
+  // The mobile slide-in panels (Changes/Files, agent list — see
+  // mobile-panels/presentation.tsx) render inside #root's own tree rather
+  // than portaling to #overlay-root, so they inherit #root's zoom instead of
+  // needing their own #overlay-root-style percentage fix. Percentages inside
+  // an already-zoomed subtree are scale-invariant ratios (they cancel the
+  // zoom factor out on their own), so compensating them the #overlay-root
+  // way over-corrects — makes the panel wider than the true viewport. The
+  // fix here instead is to cancel #root's zoom outright for this subtree by
+  // setting an explicit counter-zoom on it (CSS zoom compounds multiplicatively
+  // per element, unlike percentages): uiScale * (1/uiScale) = 1, so raw pixel
+  // values (like windowWidth from useWindowDimensions()) are correct again
+  // with no JS-side compensation needed.
+  const gestureHostCounterZoom = uiScale === 1 ? "" : `[id$="-gesture-host"]{zoom:${1 / uiScale};}`;
+  const RULE = `:is(#root,#overlay-root){zoom:${uiScale};}${overlayCompensation}${gestureHostCounterZoom}`;
 
   let style = document.getElementById(STYLE_ID);
   if (!style) {
