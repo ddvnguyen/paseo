@@ -1,12 +1,12 @@
-# Exclude non-app packages and docs from EAS upload
+# Exclude non-app packages and docs from EAS upload.
+# NOTE: protocol/plugin/highlight/expo-two-way-audio must stay included —
+# eas-build-post-install's build:app-deps step builds them from source
+# (npm run build --workspace=@getpaseo/<pkg>), which fails with "No
+# workspaces found" if the workspace directory isn't in the upload.
 packages/cli/
 packages/desktop/
 packages/relay/
 packages/website/
-packages/protocol/
-packages/plugin/
-packages/highlight/
-packages/expo-two-way-audio/
 docs/
 .github/
 .dev/
