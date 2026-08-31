@@ -31,6 +31,9 @@
     "hydra-apk": {
       "extends": "production-apk",
       "environment": "production",
+      "android": {
+        "resourceClass": "large"
+      },
       "env": {
         "APP_VARIANT": "hydra",
         "ORG_GRADLE_PROJECT_reactNativeArchitectures": "arm64-v8a"
