@@ -356,29 +356,49 @@ deploy must re-stamp versions from current HEAD so the suffix changes:
      restored in the next step)
    - overlay fresh `packages/server/dist/server/web-ui`
    - PRESERVE TEST branding — favicon.ico, apple-touch-icon.png,
-     pwa-icon-192/512.png are grayscale versions of the production icons
-     (distinguishes TEST from prod at a glance) and live durably at
-     `~/.paseo-test-branding/` (independent of `~/.paseo-test/`, survives a
-     full service rebuild). Copy those four files over the fresh build's
-     colored ones; then patch manifest.json (name "Paseo TEST", theme_color
-     #2563eb) and DELETE manifest.json.br/.gz siblings (stale pre-compressed
-     copies of the unbranded manifest).
-   - Also overlay the grayscale status-favicon set from
+     pwa-icon-192/512.png are light-blue-tinted (`#7dd3fc`) versions of the
+     production icons (distinguishes TEST from prod at a glance) and live
+     durably at `~/.paseo-test-branding/` (independent of `~/.paseo-test/`,
+     survives a full service rebuild). Copy those four files over the fresh
+     build's colored ones; then patch manifest.json (name "Paseo TEST",
+     theme_color #2563eb) and DELETE manifest.json.br/.gz siblings (stale
+     pre-compressed copies of the unbranded manifest).
+   - Also overlay the tinted status-favicon set from
      `~/.paseo-test-branding/status-icons/{none,running,attention}.png` onto
      the hashed `dist/server/web-ui/assets/assets/images/favicon-{dark,light}[-{running,attention}].png`
      files (glob-match by the `dark`/`light` + status infix, since the hash
      suffix is content-derived and stable but not hardcoded). **Past bug**:
      an earlier version of this runbook deliberately excluded these from
-     grayscaling, reasoning they're "functional agent-status color signals"
+     branding, reasoning they're "functional agent-status color signals"
      (`use-favicon-status.ts`) rather than branding. That was wrong —
      `useFaviconStatus()` unconditionally overwrites the `<link rel="icon">`
      href with one of these three images on every mount, so they are the
      _only_ thing ever shown as the browser tab favicon; the static
-     `favicon.ico`/`pwa-icon-*` grayscale work above never had any visible
-     effect on the tab icon at all (it only affects the PWA/home-screen
-     install icon). Skipping this step means TEST silently shows the
-     colored PROD favicon in every browser tab regardless of the four files
-     above.
+     `favicon.ico`/`pwa-icon-*` work above never had any visible effect on
+     the tab icon at all (it only affects the PWA/home-screen install icon).
+     Skipping this step means TEST silently shows the colored PROD favicon
+     in every browser tab regardless of the four files above.
+   - **How the tint is generated** (Paseo's icon source assets are bitonal
+     black-ink-on-transparent, not colored — a naive `sharp().grayscale()`
+     or `sharp().tint()` is a no-op on pixels that are already pure
+     black/white, since LAB-based tinting preserves luminance and barely
+     touches the extremes). Recolor by hand: for each pixel, treat
+     darkness as "ink density" (`t = 1 - luminance/255`) and lerp from
+     white to the tint color by `t`, leaving the alpha channel untouched so
+     transparency/shape is preserved exactly:
+     ```js
+     const TINT = [125, 211, 252]; // #7dd3fc
+     for (let i = 0; i < data.length; i += 4) {
+       const lum = (data[i] + data[i + 1] + data[i + 2]) / 3;
+       const t = 1 - lum / 255;
+       data[i] = Math.round(TINT[0] * t + 255 * (1 - t));
+       data[i + 1] = Math.round(TINT[1] * t + 255 * (1 - t));
+       data[i + 2] = Math.round(TINT[2] * t + 255 * (1 - t));
+     }
+     ```
+     Regenerate `favicon.ico` from the tinted `pwa-icon-512.png` (resize to
+     16/32/48px, hand-encode ICONDIR + 3×ICONDIRENTRY headers wrapping PNG
+     frame data — no ICO encoder is available in the workspace's deps).
    - copy stamped `packages/server/package.json` (version string source of
      truth) — this can happen any time, it doesn't touch web-ui
    - **Past bug**: an earlier version of this runbook replaced server dist

@@ -1,8 +1,9 @@
 import { useMemo, type ComponentProps, type ReactNode } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View, type ViewStyle } from "react-native";
 import { GestureDetector, type GestureType } from "react-native-gesture-handler";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { isWeb } from "@/constants/platform";
+import { useSettings } from "@/hooks/use-settings";
 import { WindowChromeRootRegion } from "@/utils/desktop-window";
 import { usePanelStore, type MobilePanelView } from "@/stores/panel-store";
 import { getMobilePanelFrame } from "./model";
@@ -29,22 +30,44 @@ export function MobilePanelOverlay({
   const isOpen = target === panel;
   const isPresented = useIsMobilePanelPresented(panel);
   const isLeft = panel === "agent-list";
+  const uiScale = useSettings((settings) => settings.uiScale);
+
+  // This overlay lives inside #root's normal React tree (not portaled to
+  // #overlay-root), so it renders within the SAME `zoom: uiScale` transform
+  // applied to #root (see apply-root-scale.web.ts) rather than getting its
+  // own compensation the way #overlay-root does. #root itself is left
+  // uncompensated by design — its shrink is invisible there because body's
+  // background shows through — but this panel paints a solid surface, so
+  // that same shrink leaves a visible gap unless we correct for it here.
+  // `windowWidth` from useWindowDimensions() reports the true, un-zoomed
+  // viewport, so dividing by uiScale before using it as a *logical* size
+  // makes the post-zoom rendered size land back on the true viewport size.
+  const compensatedWidth = isWeb && uiScale !== 1 ? windowWidth / uiScale : windowWidth;
 
   const sidebarAnimatedStyle = useAnimatedStyle(() => {
-    const frame = getMobilePanelFrame(position.value, windowWidth);
+    const frame = getMobilePanelFrame(position.value, compensatedWidth);
     return {
       transform: [{ translateX: isLeft ? frame.leftTranslateX : frame.rightTranslateX }],
     };
-  }, [isLeft, windowWidth]);
+  }, [isLeft, compensatedWidth]);
 
   const backdropAnimatedStyle = useAnimatedStyle(() => {
-    const frame = getMobilePanelFrame(position.value, windowWidth);
+    const frame = getMobilePanelFrame(position.value, compensatedWidth);
     return { opacity: isLeft ? frame.leftBackdropOpacity : frame.rightBackdropOpacity };
-  }, [isLeft, windowWidth]);
+  }, [isLeft, compensatedWidth]);
 
   const overlayStyle = useMemo(
-    () => [styles.overlay, { display: isPresented ? ("flex" as const) : ("none" as const) }],
-    [isPresented],
+    () => [
+      styles.overlay,
+      isWeb && uiScale !== 1
+        ? ({
+            width: `${100 / uiScale}%`,
+            height: `${100 / uiScale}%`,
+          } as ViewStyle)
+        : null,
+      { display: isPresented ? ("flex" as const) : ("none" as const) },
+    ],
+    [isPresented, uiScale],
   );
   const positionedPanelStyle = isLeft ? styles.leftPanel : styles.rightPanel;
   const backdropStyle = useMemo(
@@ -55,11 +78,11 @@ export function MobilePanelOverlay({
     () => [
       styles.panel,
       positionedPanelStyle,
-      { width: windowWidth },
+      { width: compensatedWidth },
       panelStyle,
       sidebarAnimatedStyle,
     ],
-    [panelStyle, positionedPanelStyle, sidebarAnimatedStyle, windowWidth],
+    [panelStyle, positionedPanelStyle, sidebarAnimatedStyle, compensatedWidth],
   );
   let overlayPointerEvents: "auto" | "box-none" | "none";
   if (!isWeb) {
