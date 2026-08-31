@@ -61,13 +61,21 @@ export const MAX_CONTENT_FONT_SIZE = 21;
 export const DEFAULT_CODE_FONT_SIZE = 12; // == FONT_SIZE.code
 export const MIN_CODE_FONT_SIZE = 9;
 export const MAX_CODE_FONT_SIZE = 22; // line-height 1.5×22=33 stays safe
+export const FONT_SIZE_STEP = 0.5;
 export const MAX_FONT_FAMILY_LENGTH = 200;
-// UI zoom: scales the whole interface (text, icons, controls, spacing, borders).
-// 1.0 is the authored design; <1.0 is denser, >1.0 is larger.
+// UI zoom: scales the whole interface (text, controls, spacing, borders).
+// 1.0 is the authored design; <1.0 is denser, >1.0 is larger. Icons are
+// scaled independently by iconScale, not by this.
 export const DEFAULT_UI_SCALE = 1;
 export const MIN_UI_SCALE = 0.75;
 export const MAX_UI_SCALE = 1.5;
 export const UI_SCALE_STEP = 0.01;
+// Icon size: multiplier on icon glyphs only, independent of uiScale so icons
+// can be resized without affecting fonts, borders, or spacing.
+export const DEFAULT_ICON_SCALE = 1;
+export const MIN_ICON_SCALE = 0.5;
+export const MAX_ICON_SCALE = 2;
+export const ICON_SCALE_STEP = 0.05;
 // Text line height: multiplier on the body content font size. Independent of zoom
 // so the user can tighten/loosen text without resizing the rest of the UI.
 export const DEFAULT_LINE_HEIGHT_SCALE = 1.3;
@@ -96,8 +104,10 @@ export interface AppSettings {
   uiBaseFontSize: number; // clamped px, platform default 14 or 15
   contentFontSize: number; // clamped px, default 15
   codeFontSize: number; // clamped px, default 12
-  /** Multiplier on the whole design token ramp (text, icons, borders). */
+  /** Multiplier on the whole design token ramp (text, borders). */
   uiScale: number; // clamped, default 1
+  /** Multiplier on icon glyph sizes only, independent of uiScale. */
+  iconScale: number; // clamped, default 1
   /** Multiplier on spacing tokens only (padding, margin, gap). */
   spacingScale: number; // clamped, default 1
   /** Multiplier on the body text font size to derive `lineHeight.content`. */
@@ -151,6 +161,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   contentFontSize: DEFAULT_CONTENT_FONT_SIZE,
   codeFontSize: DEFAULT_CODE_FONT_SIZE,
   uiScale: DEFAULT_UI_SCALE,
+  iconScale: DEFAULT_ICON_SCALE,
   spacingScale: DEFAULT_SPACING_SCALE,
   lineHeightScale: DEFAULT_LINE_HEIGHT_SCALE,
   syntaxTheme: "one",
@@ -246,6 +257,7 @@ const StoredAppSettingsSchema = z
       DEFAULT_CODE_FONT_SIZE,
     ),
     uiScale: clampedScale(MIN_UI_SCALE, MAX_UI_SCALE).optional().catch(undefined),
+    iconScale: clampedScale(MIN_ICON_SCALE, MAX_ICON_SCALE).optional().catch(undefined),
     spacingScale: clampedScale(MIN_SPACING_SCALE, MAX_SPACING_SCALE).optional().catch(undefined),
     lineHeightScale: clampedScale(MIN_LINE_HEIGHT_SCALE, MAX_LINE_HEIGHT_SCALE)
       .optional()
@@ -322,6 +334,7 @@ const StoredAppSettingsSchema = z
       uiBaseFontSize,
       contentFontSize: stored.contentFontSize ?? uiBaseFontSize,
       uiScale: stored.uiScale ?? DEFAULT_UI_SCALE,
+      iconScale: stored.iconScale ?? DEFAULT_ICON_SCALE,
       spacingScale: stored.spacingScale ?? DEFAULT_SPACING_SCALE,
       lineHeightScale: stored.lineHeightScale ?? DEFAULT_LINE_HEIGHT_SCALE,
       sidebarChecksDisplay,
@@ -503,7 +516,10 @@ export function parseClampedFontSize(
   if (!Number.isFinite(numericValue)) {
     return null;
   }
-  return Math.min(bounds.max, Math.max(bounds.min, Math.floor(numericValue)));
+  // Round to the nearest half-pixel rather than flooring to an integer, so
+  // fractional sizes (e.g. 14.5px) survive round-tripping through storage.
+  const stepped = Math.round(numericValue / FONT_SIZE_STEP) * FONT_SIZE_STEP;
+  return Math.min(bounds.max, Math.max(bounds.min, stepped));
 }
 
 function parseClampedScale(value: unknown, bounds: { min: number; max: number }): number | null {

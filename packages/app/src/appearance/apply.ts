@@ -22,7 +22,8 @@ export interface AppearanceInput {
   uiBaseFontSize: number; // already clamped
   contentFontSize: number; // already clamped
   codeFontSize: number; // already clamped
-  uiScale: number; // 0.75–1.50, default 1 — scales fonts, icons, borders (NOT spacing)
+  uiScale: number; // 0.75–1.50, default 1 — scales fonts, borders (NOT spacing, NOT icons)
+  iconScale: number; // 0.5–2.0, default 1 — scales icon glyphs only
   spacingScale: number; // 0.5–2.0, default 1 — scales spacing tokens only
   lineHeightScale: number; // 0.5–2.0, default 1.3
   syntaxTheme: SyntaxThemeId;
@@ -82,23 +83,28 @@ function scaleSpacingTokens(scale: number): Theme["spacing"] {
 
 /**
  * Scale non-font, non-spacing design tokens (icons, borders) from their
- * canonical constants by `uiScale`. Idempotent: derives from the authored
- * ramp, never compounds.
+ * canonical constants. Icons scale by `iconScale`; borders scale by `scale`
+ * (uiScale) — the two are independent axes. Idempotent: derives from the
+ * authored ramp, never compounds.
  *
  * `borderRadius.full` is left at its authored 9999 (pill shape), not scaled.
  */
-function scaleUiTokens(scale: number): {
+function scaleUiTokens(
+  scale: number,
+  iconScale: number,
+): {
   iconSize: Theme["iconSize"];
   borderRadius: Theme["borderRadius"];
   borderWidth: Theme["borderWidth"];
 } {
   const round = (v: number) => Math.round(v * scale);
+  const roundIcon = (v: number) => Math.round(v * iconScale);
   return {
     iconSize: {
-      xs: round(ICON_SIZE.xs),
-      sm: round(ICON_SIZE.sm),
-      md: round(ICON_SIZE.md),
-      lg: round(ICON_SIZE.lg),
+      xs: roundIcon(ICON_SIZE.xs),
+      sm: roundIcon(ICON_SIZE.sm),
+      md: roundIcon(ICON_SIZE.md),
+      lg: roundIcon(ICON_SIZE.lg),
     },
     borderRadius: {
       none: 0,
@@ -134,7 +140,7 @@ export function applyAppearance(input: AppearanceInput): void {
   const mono = input.monoFontFamily.trim() || DEFAULT_MONO_FONT_STACK;
   const diffLineHeight = Math.round(input.codeFontSize * 1.5); // couple to code size
   const contentLineHeight = Math.round(input.contentFontSize * input.lineHeightScale);
-  const uiTokens = scaleUiTokens(input.uiScale);
+  const uiTokens = scaleUiTokens(input.uiScale, input.iconScale);
   const spacing = scaleSpacingTokens(input.spacingScale);
   const activeTheme = UnistylesRuntime.themeName;
   // Unistyles web emits after each registry patch. Updating the mounted theme

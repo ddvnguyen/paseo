@@ -83,6 +83,7 @@ function makeInput(overrides: Partial<AppearanceInput> = {}): AppearanceInput {
     contentFontSize: 15,
     codeFontSize: 12,
     uiScale: 1,
+    iconScale: 1,
     spacingScale: 1,
     lineHeightScale: 1.3,
     syntaxTheme: "one",
@@ -213,14 +214,28 @@ describe("applyAppearance", () => {
     expect(runCapturedUpdater().colors.syntax).toEqual(resolveSyntaxColors("github", "dark"));
   });
 
-  it("scales icons, and borders by uiScale but NOT spacing", () => {
+  it("scales borders by uiScale but NOT spacing or icons", () => {
     applyAppearance(makeInput({ uiScale: 1.2 }));
 
     const result = runCapturedUpdater();
     expect(result.spacing[4]).toBe(SPACING[4]); // unchanged
-    expect(result.iconSize.md).toBe(Math.round(ICON_SIZE.md * 1.2)); // 19
+    expect(result.iconSize.md).toBe(ICON_SIZE.md); // unchanged, driven by iconScale instead
     expect(result.borderRadius.lg).toBe(Math.round(BORDER_RADIUS.lg * 1.2)); // 10
     expect(result.borderWidth[1]).toBe(Math.round(BORDER_WIDTH[1] * 1.2)); // 1
+  });
+
+  it("scales icons by iconScale only, independent of uiScale", () => {
+    applyAppearance(makeInput({ uiScale: 1.2, iconScale: 1.5 }));
+
+    const result = runCapturedUpdater();
+    expect(result.iconSize.md).toBe(Math.round(ICON_SIZE.md * 1.5));
+    expect(result.borderRadius.lg).toBe(Math.round(BORDER_RADIUS.lg * 1.2)); // unaffected by iconScale
+  });
+
+  it("iconScale 1.0 leaves icon sizes at authored values", () => {
+    applyAppearance(makeInput({ iconScale: 1.0 }));
+
+    expect(runCapturedUpdater().iconSize.md).toBe(ICON_SIZE.md);
   });
 
   it("scales spacing by spacingScale only", () => {

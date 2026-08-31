@@ -24,12 +24,14 @@ import {
   LINE_HEIGHT_SCALE_STEP,
   MAX_CODE_FONT_SIZE,
   MAX_CONTENT_FONT_SIZE,
+  MAX_ICON_SCALE,
   MAX_LINE_HEIGHT_SCALE,
   MAX_SPACING_SCALE,
   MAX_UI_BASE_FONT_SIZE,
   MAX_UI_SCALE,
   MIN_CODE_FONT_SIZE,
   MIN_CONTENT_FONT_SIZE,
+  MIN_ICON_SCALE,
   MIN_LINE_HEIGHT_SCALE,
   MIN_SPACING_SCALE,
   MIN_UI_BASE_FONT_SIZE,
@@ -37,9 +39,11 @@ import {
   DEFAULT_UI_BASE_FONT_SIZE,
   DEFAULT_CONTENT_FONT_SIZE,
   DEFAULT_CODE_FONT_SIZE,
+  DEFAULT_ICON_SCALE,
   DEFAULT_UI_SCALE,
   DEFAULT_SPACING_SCALE,
   DEFAULT_LINE_HEIGHT_SCALE,
+  ICON_SCALE_STEP,
   parseClampedFontSize,
   sanitizeFontFamily,
   useAppSettings,
@@ -89,16 +93,21 @@ function resolveDefaultStackPlaceholder(t: TFunction, stack: string): string {
   return BARE_DEFAULT_STACKS.has(stack) ? t("settings.appearance.fonts.systemDefault") : stack;
 }
 
-// Local size string (digits only) -> preview override number. Empty/invalid
-// yields undefined so the preview falls back to the committed theme value.
+// Local size string (digits + optional decimal point) -> preview override
+// number. Empty/invalid yields undefined so the preview falls back to the
+// committed theme value.
 function sizeDraftToOverride(value: string): number | undefined {
   if (value.length === 0) return undefined;
-  const parsed = Number.parseInt(value, 10);
+  const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function dropdownTriggerStyle({ pressed }: PressableStateCallbackType) {
   return [styles.trigger, pressed ? styles.triggerPressed : null];
+}
+
+function resetDefaultsRowStyle({ pressed }: PressableStateCallbackType) {
+  return [settingsStyles.row, { opacity: pressed ? 0.6 : 1 }];
 }
 
 // ---------------------------------------------------------------------------
@@ -416,6 +425,15 @@ function FontFamilyRow({
   );
 }
 
+// Keeps digits and at most one decimal point, so a size draft like "14.5" can
+// be typed without a second "." or letters leaking into the numeric parse.
+function sanitizeSizeDraft(value: string): string {
+  const digitsAndDot = value.replace(/[^\d.]/g, "");
+  const firstDot = digitsAndDot.indexOf(".");
+  if (firstDot === -1) return digitsAndDot;
+  return digitsAndDot.slice(0, firstDot + 1) + digitsAndDot.slice(firstDot + 1).replace(/\./g, "");
+}
+
 interface FontSizeRowProps {
   title: string;
   hint: string;
@@ -447,8 +465,8 @@ function FontSizeRow({
           onChangeText={onChangeDraft}
           onBlur={onCommit}
           onSubmitEditing={onCommit}
-          keyboardType="number-pad"
-          inputMode="numeric"
+          keyboardType="decimal-pad"
+          inputMode="decimal"
           selectTextOnFocus
           style={styles.sizeInput}
           accessibilityLabel={accessibilityLabel}
@@ -678,6 +696,13 @@ export function AppearanceSection() {
     [updateSettings],
   );
 
+  const handleIconScaleChange = useCallback(
+    (iconScale: number) => {
+      void updateSettings({ iconScale });
+    },
+    [updateSettings],
+  );
+
   const handleSpacingScaleChange = useCallback(
     (spacingScale: number) => {
       void updateSettings({ spacingScale });
@@ -701,6 +726,7 @@ export function AppearanceSection() {
       contentFontSize: DEFAULT_CONTENT_FONT_SIZE,
       codeFontSize: DEFAULT_CODE_FONT_SIZE,
       uiScale: DEFAULT_UI_SCALE,
+      iconScale: DEFAULT_ICON_SCALE,
       spacingScale: DEFAULT_SPACING_SCALE,
       lineHeightScale: DEFAULT_LINE_HEIGHT_SCALE,
     });
@@ -737,15 +763,15 @@ export function AppearanceSection() {
   );
 
   const handleUiBaseSizeChange = useCallback((value: string) => {
-    setUiBaseSizeDraft(value.replace(/[^\d]/g, ""));
+    setUiBaseSizeDraft(sanitizeSizeDraft(value));
   }, []);
 
   const handleCodeSizeChange = useCallback((value: string) => {
-    setCodeSizeDraft(value.replace(/[^\d]/g, ""));
+    setCodeSizeDraft(sanitizeSizeDraft(value));
   }, []);
 
   const handleContentSizeChange = useCallback((value: string) => {
-    setContentSizeDraft(value.replace(/[^\d]/g, ""));
+    setContentSizeDraft(sanitizeSizeDraft(value));
   }, []);
 
   const commitUiBaseSize = useCallback(() => {
@@ -863,6 +889,17 @@ export function AppearanceSection() {
             onChange={handleUiScaleChange}
           />
           <StepperRow
+            title={t("settings.appearance.fonts.iconScale")}
+            hint={t("settings.appearance.fonts.iconScaleHint")}
+            accessibilityLabel={t("settings.appearance.fonts.iconScaleAccessibility")}
+            value={settings.iconScale}
+            min={MIN_ICON_SCALE}
+            max={MAX_ICON_SCALE}
+            step={ICON_SCALE_STEP}
+            format="percent"
+            onChange={handleIconScaleChange}
+          />
+          <StepperRow
             title={t("settings.appearance.fonts.spacingScale")}
             hint={t("settings.appearance.fonts.spacingScaleHint")}
             accessibilityLabel={t("settings.appearance.fonts.spacingScaleAccessibility")}
@@ -911,10 +948,7 @@ export function AppearanceSection() {
             onChangeDraft={handleCodeSizeChange}
             onCommit={commitCodeSize}
           />
-          <Pressable
-            onPress={handleResetDefaults}
-            style={({ pressed }) => [settingsStyles.row, { opacity: pressed ? 0.6 : 1 }]}
-          >
+          <Pressable onPress={handleResetDefaults} style={resetDefaultsRowStyle}>
             <View style={settingsStyles.rowContent}>
               <Text style={settingsStyles.rowTitle}>
                 {t("settings.appearance.fonts.resetDefaults")}
