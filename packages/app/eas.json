@@ -30,6 +30,7 @@
     },
     "hydra-apk": {
       "extends": "production-apk",
+      "environment": "production",
       "env": {
         "APP_VARIANT": "hydra"
       }

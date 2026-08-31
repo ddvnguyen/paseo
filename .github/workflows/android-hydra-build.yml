@@ -124,7 +124,14 @@ jobs:
             cat "$RUNNER_TEMP/eas-build.json"
             if [ -n "$build_id" ]; then
               echo "Fetching build detail for diagnosis:"
-              npx eas build:view "$build_id" --json | jq '.error // .status' || true
+              build_view_json="$(npx eas build:view "$build_id" --json)"
+              echo "$build_view_json" | jq '.[0].error // .error // .status' || true
+              log_urls="$(echo "$build_view_json" | jq -r '(.[0].logFiles // .logFiles // [])[]' 2>/dev/null || true)"
+              for log_url in $log_urls; do
+                echo "::group::EAS build log: $log_url"
+                curl -sS --fail --location "$log_url" || echo "(failed to fetch log)"
+                echo "::endgroup::"
+              done
             fi
             exit 1
           fi
