@@ -7,7 +7,6 @@ packages/protocol/
 packages/plugin/
 packages/highlight/
 packages/expo-two-way-audio/
-scripts/
 docs/
 .github/
 .dev/
