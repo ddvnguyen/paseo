@@ -45,11 +45,13 @@ jobs:
       - name: Resolve build metadata
         id: meta
         shell: bash
+        env:
+          BUILD_BRANCH: ${{ github.event.inputs.branch || 'Paseo-Mobile-UI' }}
         run: |
           set -euo pipefail
           short_sha="$(git rev-parse --short HEAD)"
           app_version="$(node -p "require('./packages/app/package.json').version")"
-          branch_slug="$(echo '${{ github.event.inputs.branch || "Paseo-Mobile-UI" }}' | tr -c 'A-Za-z0-9._-' '-')"
+          branch_slug="$(echo "$BUILD_BRANCH" | tr -c 'A-Za-z0-9._-' '-')"
           echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
           echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
           echo "branch_slug=$branch_slug" >> "$GITHUB_OUTPUT"
