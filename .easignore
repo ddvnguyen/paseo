@@ -1,11 +1,13 @@
 # Exclude non-app packages and docs from EAS upload.
-# NOTE: protocol/plugin/highlight/expo-two-way-audio must stay included —
-# eas-build-post-install's build:app-deps step builds them from source
-# (npm run build --workspace=@getpaseo/<pkg>), which fails with "No
-# workspaces found" if the workspace directory isn't in the upload.
+# NOTE: protocol/plugin/highlight/expo-two-way-audio/relay must stay
+# included — eas-build-post-install's build:app-deps step builds
+# protocol/plugin/highlight/expo-two-way-audio from source, and client's
+# build imports @getpaseo/relay/e2ee directly from packages/relay/src (its
+# package.json "exports" map has no built dist fallback for that subpath).
+# Excluding any of them breaks the build with "No workspaces found" or a
+# "Cannot find module" TS error.
 packages/cli/
 packages/desktop/
-packages/relay/
 packages/website/
 docs/
 .github/
