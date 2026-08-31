@@ -89,6 +89,21 @@ const variants = {
       fallbackRelativePath: "./.secrets/GoogleService-Info.debug.plist",
     }),
   },
+  // Fork build (this "hydra-paseo" fork's Paseo-Mobile-UI branch): distinct
+  // packageId so it installs side-by-side with upstream's "sh.paseo", never
+  // submitted to a store. See docs/fork-maintenance.md.
+  hydra: {
+    name: "Paseo Hydra",
+    packageId: "sh.paseo.hydra",
+    googleServicesFile: resolveSecretFile({
+      envKey: "GOOGLE_SERVICES_FILE_HYDRA",
+      fallbackRelativePath: "./.secrets/google-services.hydra.json",
+    }),
+    googleServiceInfoPlist: resolveSecretFile({
+      envKey: "GOOGLE_SERVICE_INFO_PLIST_HYDRA",
+      fallbackRelativePath: "./.secrets/GoogleService-Info.hydra.plist",
+    }),
+  },
 };
 
 const variant = variants[appVariant] ?? variants.production;

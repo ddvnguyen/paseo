@@ -1,0 +1,160 @@
+name: Android Hydra Build
+
+# On-demand APK build for this fork's mobile-UI branch. Unlike
+# android-apk-release.yml (which only fires on upstream-style release tags
+# and builds the sh.paseo production app id), this workflow:
+#   - builds from an arbitrary branch (default: Paseo-Mobile-UI), not a tag
+#   - uses the "hydra" app variant -> sh.paseo.hydra package id, so the
+#     build installs side-by-side with an upstream sh.paseo install
+#   - stamps the build with this fork's hydra version suffix, derived fresh
+#     from the checked-out commit (scripts/sync-workspace-versions.mjs)
+#   - publishes the APK as a workflow artifact only (no GitHub Release;
+#     branch builds have no tag/release to attach to)
+#
+# workflow_dispatch only, not a push trigger: EAS builds take ~15-25 min and
+# this fork's EAS account is free-tier, so builds should be requested
+# on-demand rather than fired on every push to the branch.
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to build"
+        required: false
+        default: "Paseo-Mobile-UI"
+        type: string
+
+concurrency:
+  group: android-hydra-build-${{ github.event.inputs.branch || 'Paseo-Mobile-UI' }}
+  cancel-in-progress: false
+
+jobs:
+  build-hydra-apk:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.branch || 'Paseo-Mobile-UI' }}
+
+      - name: Stamp hydra version from current commit
+        run: node scripts/sync-workspace-versions.mjs
+
+      - name: Resolve build metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          short_sha="$(git rev-parse --short HEAD)"
+          app_version="$(node -p "require('./packages/app/package.json').version")"
+          branch_slug="$(echo '${{ github.event.inputs.branch || "Paseo-Mobile-UI" }}' | tr -c 'A-Za-z0-9._-' '-')"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+          echo "branch_slug=$branch_slug" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@boudra"
+
+      - name: Install JS dependencies
+        run: node scripts/npm-retry.mjs ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Expo and EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build Android APK on EAS
+        id: eas_build
+        shell: bash
+        env:
+          EAS_ANDROID_KEYSTORE_BASE64: ${{ secrets.EAS_ANDROID_KEYSTORE_BASE64 }}
+          EAS_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.EAS_ANDROID_KEYSTORE_PASSWORD }}
+          EAS_ANDROID_KEY_ALIAS: ${{ secrets.EAS_ANDROID_KEY_ALIAS }}
+          EAS_ANDROID_KEY_PASSWORD: ${{ secrets.EAS_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          # Strip bun.lock from the repo so EAS doesn't try bun install.
+          # EAS detects bun workspace from bun.lock before .easignore applies.
+          rm -f bun.lock bun.lockb
+
+          cd packages/app
+
+          # Write keystore INSIDE the project so EAS uploads it to cloud
+          echo "$EAS_ANDROID_KEYSTORE_BASE64" | base64 -d > .release.keystore
+          cat > credentials.json <<CREDS
+          {
+            "android": {
+              "keystore": {
+                "keystorePath": ".release.keystore",
+                "keystorePassword": "$EAS_ANDROID_KEYSTORE_PASSWORD",
+                "keyAlias": "$EAS_ANDROID_KEY_ALIAS",
+                "keyPassword": "$EAS_ANDROID_KEY_PASSWORD"
+              }
+            }
+          }
+          CREDS
+
+          set +e
+          build_json="$(npx eas build --platform android --profile hydra-apk --non-interactive --wait --json)"
+          build_status=$?
+          set -e
+          rm -f credentials.json .release.keystore
+          echo "$build_json" > "$RUNNER_TEMP/eas-build.json"
+
+          build_id="$(jq -r 'if type == "array" then .[0].id // empty else .id // empty end' "$RUNNER_TEMP/eas-build.json")"
+          if [ -n "$build_id" ]; then
+            echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$build_status" -ne 0 ] || [ -z "$build_id" ]; then
+            echo "EAS build did not complete successfully."
+            cat "$RUNNER_TEMP/eas-build.json"
+            if [ -n "$build_id" ]; then
+              echo "Fetching build detail for diagnosis:"
+              npx eas build:view "$build_id" --json | jq '.error // .status' || true
+            fi
+            exit 1
+          fi
+
+      - name: Resolve APK artifact URL
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd packages/app
+
+          build_view_json="$(npx eas build:view '${{ steps.eas_build.outputs.build_id }}' --json)"
+          echo "$build_view_json" > "$RUNNER_TEMP/eas-build-view.json"
+
+          artifact_url="$(jq -r '.artifacts.buildUrl // .artifacts.applicationArchiveUrl // empty' "$RUNNER_TEMP/eas-build-view.json")"
+          if [ -z "$artifact_url" ]; then
+            echo "Failed to determine APK artifact URL."
+            cat "$RUNNER_TEMP/eas-build-view.json"
+            exit 1
+          fi
+
+          asset_name="hydra-paseo-${{ steps.meta.outputs.branch_slug }}-${{ steps.meta.outputs.short_sha }}-android.apk"
+          asset_path="$RUNNER_TEMP/$asset_name"
+
+          curl --fail --location --output "$asset_path" "$artifact_url"
+
+          echo "asset_name=$asset_name" >> "$GITHUB_OUTPUT"
+          echo "asset_path=$asset_path" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.asset_name }}
+          path: ${{ steps.artifact.outputs.asset_path }}
+          retention-days: 30
