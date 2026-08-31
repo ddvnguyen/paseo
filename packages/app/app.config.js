@@ -180,10 +180,14 @@ export default {
       "expo-audio",
       [
         "expo-gradle-jvmargs",
-        {
-          xmx: "4096m",
-          maxMetaspace: "1024m",
-        },
+        // hydra builds run on EAS's free-tier 4vCPU/15.62GB worker, where
+        // hermesc gets OOM-killed compiling this app's ~5850-module bundle.
+        // Gradle's own JVM heap never comes close to using 4096m (705 tasks
+        // complete fine every time before hermesc runs) — shrinking it frees
+        // headroom for hermesc's memory spike without affecting production.
+        isHydraBuild
+          ? { xmx: "1536m", maxMetaspace: "512m" }
+          : { xmx: "4096m", maxMetaspace: "1024m" },
       ],
       [
         "expo-build-properties",
