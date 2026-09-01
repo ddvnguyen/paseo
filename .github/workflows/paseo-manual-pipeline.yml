@@ -87,7 +87,7 @@ jobs:
     if: ${{ inputs.run_build_hydra }}
     runs-on: [self-hosted, paseo-host]
     outputs:
-      sha: ${{ steps.resolve.outputs.sha }}
+      sha: ${{ steps.sha.outputs.full }}
     steps:
       - name: Resolve branch and SHA
         id: resolve
