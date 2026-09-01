@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
 import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -53,26 +53,22 @@ async function copyAssets() {
   await cp(SOURCE_DIST, TARGET_DIST, { recursive: true, force: true });
 }
 
-function getGitCommitShortHash() {
-  try {
-    return execFileSync("git", ["rev-parse", "--short", "HEAD"], {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-  } catch {
-    return null;
-  }
-}
-
 // sw.js is copied verbatim from packages/app/public/ by the Expo export, so its
 // own bytes never change between deploys that only touch static assets (icons,
 // manifest). Browsers only re-run the SW "install" handler (and thus
 // re-precache PRECACHE_URLS) when the SW script's bytes change, so a static
 // CACHE_VERSION literal in the source file would leave every returning
 // visitor stuck on stale precached icons/manifest forever. Stamping the
-// version with the current commit hash here, at build time, forces a fresh
-// SW + cache on every deploy without anyone needing to remember to bump it.
+// version here, at build time, forces a fresh SW + cache on every deploy
+// without anyone needing to remember to bump it.
+//
+// Deliberately read the already-stamped root package.json version instead of
+// shelling out to `git rev-parse HEAD`: deploy-web/deploy-test build from a
+// persisted build directory (see "Persist build" in the CI workflow) that
+// excludes .git and re-inits an empty repo with no commits, so `git` would
+// have nothing to resolve there. package.json's version is written earlier,
+// during build-hydra, by scripts/sync-workspace-versions.mjs while the real
+// .git is still present, and that stamped value survives the copy.
 async function stampServiceWorkerCacheVersion() {
   const swPath = path.join(TARGET_DIST, "sw.js");
   const swStat = await stat(swPath).catch(() => null);
@@ -80,16 +76,17 @@ async function stampServiceWorkerCacheVersion() {
     return;
   }
 
-  const gitHash = getGitCommitShortHash();
-  if (!gitHash) {
-    console.warn("Could not resolve git commit hash; leaving sw.js CACHE_VERSION unstamped.");
+  const rootPackage = JSON.parse(await readFile(path.join(REPO_ROOT, "package.json"), "utf8"));
+  const cacheVersion = rootPackage.version;
+  if (typeof cacheVersion !== "string" || cacheVersion.length === 0) {
+    console.warn("Could not resolve root package.json version; leaving sw.js unstamped.");
     return;
   }
 
   const source = await readFile(swPath, "utf8");
   const stamped = source.replace(
     /const CACHE_VERSION = "[^"]*";/,
-    `const CACHE_VERSION = "${gitHash}";`,
+    `const CACHE_VERSION = "${cacheVersion}";`,
   );
   if (stamped === source) {
     console.warn("sw.js CACHE_VERSION marker not found; leaving sw.js unstamped.");
@@ -97,7 +94,7 @@ async function stampServiceWorkerCacheVersion() {
   }
 
   await writeFile(swPath, stamped);
-  console.log(`Stamped sw.js CACHE_VERSION to ${gitHash}`);
+  console.log(`Stamped sw.js CACHE_VERSION to ${cacheVersion}`);
 }
 
 async function compressFile(filePath) {
