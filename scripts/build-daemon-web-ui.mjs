@@ -62,13 +62,16 @@ async function copyAssets() {
 // version here, at build time, forces a fresh SW + cache on every deploy
 // without anyone needing to remember to bump it.
 //
-// Deliberately read the already-stamped root package.json version instead of
-// shelling out to `git rev-parse HEAD`: deploy-web/deploy-test build from a
-// persisted build directory (see "Persist build" in the CI workflow) that
-// excludes .git and re-inits an empty repo with no commits, so `git` would
-// have nothing to resolve there. package.json's version is written earlier,
-// during build-hydra, by scripts/sync-workspace-versions.mjs while the real
-// .git is still present, and that stamped value survives the copy.
+// Deliberately read the already-stamped packages/app/package.json version
+// instead of shelling out to `git rev-parse HEAD`: deploy-web/deploy-test
+// build from a persisted build directory (see "Persist build" in the CI
+// workflow) that excludes .git and re-inits an empty repo with no commits,
+// so `git` would have nothing to resolve there. This app workspace's version
+// is written earlier, during build-hydra, by
+// scripts/sync-workspace-versions.mjs while the real .git is still present,
+// and that stamped value survives the copy. (The root package.json's own
+// version field is never rewritten by that script — only each workspace's
+// is — so it can't be used here.)
 async function stampServiceWorkerCacheVersion() {
   const swPath = path.join(TARGET_DIST, "sw.js");
   const swStat = await stat(swPath).catch(() => null);
@@ -76,10 +79,10 @@ async function stampServiceWorkerCacheVersion() {
     return;
   }
 
-  const rootPackage = JSON.parse(await readFile(path.join(REPO_ROOT, "package.json"), "utf8"));
-  const cacheVersion = rootPackage.version;
+  const appPackage = JSON.parse(await readFile(path.join(APP_DIR, "package.json"), "utf8"));
+  const cacheVersion = appPackage.version;
   if (typeof cacheVersion !== "string" || cacheVersion.length === 0) {
-    console.warn("Could not resolve root package.json version; leaving sw.js unstamped.");
+    console.warn("Could not resolve packages/app/package.json version; leaving sw.js unstamped.");
     return;
   }
 
