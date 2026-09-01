@@ -85,6 +85,7 @@ function makeInput(overrides: Partial<AppearanceInput> = {}): AppearanceInput {
     uiScale: 1,
     iconScale: 1,
     spacingScale: 1,
+    contentSpacingScale: 0.75,
     lineHeightScale: 1.3,
     syntaxTheme: "one",
     ...overrides,
