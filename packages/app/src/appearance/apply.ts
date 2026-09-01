@@ -25,6 +25,7 @@ export interface AppearanceInput {
   uiScale: number; // 0.75–1.50, default 1 — scales fonts, borders (NOT spacing, NOT icons)
   iconScale: number; // 0.5–2.0, default 1 — scales icon glyphs only
   spacingScale: number; // 0.5–2.0, default 1 — scales spacing tokens only
+  contentSpacingScale: number; // 0.5–2.0, default 0.75 — scales markdown/HTML spacing
   lineHeightScale: number; // 0.5–2.0, default 1.3
   syntaxTheme: SyntaxThemeId;
 }
@@ -168,6 +169,7 @@ export function applyAppearance(input: AppearanceInput): void {
           lineHeight,
           spacing,
           ...uiTokens,
+          contentSpacingScale: input.contentSpacingScale,
           colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
         };
       }
@@ -178,6 +180,7 @@ export function applyAppearance(input: AppearanceInput): void {
         lineHeight,
         spacing,
         ...uiTokens,
+        contentSpacingScale: input.contentSpacingScale,
         colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
       };
     });

@@ -89,6 +89,14 @@ export const DEFAULT_SPACING_SCALE = 1;
 export const MIN_SPACING_SCALE = 0.5;
 export const MAX_SPACING_SCALE = 2;
 export const SPACING_SCALE_STEP = 0.05;
+// Content spacing: multiplier for markdown/HTML element spacing (hr, br,
+// headings, paragraphs, code blocks, tables, lists, blockquotes, images).
+// Applies on top of spacingScale — this controls content density independently
+// from layout spacing. Range 0.5–2.0, default 0.75 (compact).
+export const DEFAULT_CONTENT_SPACING_SCALE = 0.75;
+export const MIN_CONTENT_SPACING_SCALE = 0.5;
+export const MAX_CONTENT_SPACING_SCALE = 2;
+export const CONTENT_SPACING_SCALE_STEP = 0.05;
 
 export interface AppSettings {
   theme: ThemePreference;
@@ -110,6 +118,8 @@ export interface AppSettings {
   iconScale: number; // clamped, default 1
   /** Multiplier on spacing tokens only (padding, margin, gap). */
   spacingScale: number; // clamped, default 1
+  /** Multiplier for markdown/HTML element spacing (hr, br, headings, etc). */
+  contentSpacingScale: number; // clamped, default 0.75
   /** Multiplier on the body text font size to derive `lineHeight.content`. */
   lineHeightScale: number; // clamped, default 1.3
   syntaxTheme: SyntaxThemeId; // default "one"
@@ -163,6 +173,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   uiScale: DEFAULT_UI_SCALE,
   iconScale: DEFAULT_ICON_SCALE,
   spacingScale: DEFAULT_SPACING_SCALE,
+  contentSpacingScale: DEFAULT_CONTENT_SPACING_SCALE,
   lineHeightScale: DEFAULT_LINE_HEIGHT_SCALE,
   syntaxTheme: "one",
   workspaceTitleSource: "title",
@@ -259,6 +270,9 @@ const StoredAppSettingsSchema = z
     uiScale: clampedScale(MIN_UI_SCALE, MAX_UI_SCALE).optional().catch(undefined),
     iconScale: clampedScale(MIN_ICON_SCALE, MAX_ICON_SCALE).optional().catch(undefined),
     spacingScale: clampedScale(MIN_SPACING_SCALE, MAX_SPACING_SCALE).optional().catch(undefined),
+    contentSpacingScale: clampedScale(MIN_CONTENT_SPACING_SCALE, MAX_CONTENT_SPACING_SCALE)
+      .optional()
+      .catch(undefined),
     lineHeightScale: clampedScale(MIN_LINE_HEIGHT_SCALE, MAX_LINE_HEIGHT_SCALE)
       .optional()
       .catch(undefined),
@@ -336,6 +350,7 @@ const StoredAppSettingsSchema = z
       uiScale: stored.uiScale ?? DEFAULT_UI_SCALE,
       iconScale: stored.iconScale ?? DEFAULT_ICON_SCALE,
       spacingScale: stored.spacingScale ?? DEFAULT_SPACING_SCALE,
+      contentSpacingScale: stored.contentSpacingScale ?? DEFAULT_CONTENT_SPACING_SCALE,
       lineHeightScale: stored.lineHeightScale ?? DEFAULT_LINE_HEIGHT_SCALE,
       sidebarChecksDisplay,
       sidebarRowItems: {

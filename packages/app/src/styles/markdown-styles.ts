@@ -12,12 +12,13 @@ function contentHeadingLineHeight(contentSize: number, tier: keyof typeof FONT_S
 }
 
 /**
- * Compact spacing helper: multiplies spacing values by a factor smaller than 1
- * so markdown elements sit tighter than the global spacing scale.
- * spacing[2]=8px → 6px, spacing[3]=12px → 9px, spacing[4]=16px → 12px, etc.
+ * Compact spacing helper: multiplies spacing values by the theme's
+ * `contentSpacingScale` so markdown element spacing is independently
+ * adjustable (50%–200%, default 75%). The scale applies on top of the
+ * global `spacingScale` which already multiplies `theme.spacing[]`.
  */
 function cs(theme: Theme, token: number): number {
-  return Math.round(token * 0.75);
+  return Math.round(token * (theme.contentSpacingScale ?? 0.75));
 }
 
 /**

@@ -29,9 +29,7 @@ function getHydraTimestamp() {
 const rootPackage = JSON.parse(readFileSync(rootPackagePath, "utf8"));
 const rootVersion = rootPackage.version;
 const gitHash = getGitCommitShortHash();
-const versionWithHash = gitHash
-  ? `${rootVersion}-${gitHash}-${getHydraTimestamp()}`
-  : rootVersion;
+const versionWithHash = gitHash ? `${rootVersion}-${gitHash}-${getHydraTimestamp()}` : rootVersion;
 const workspacePaths = Array.isArray(rootPackage.workspaces) ? rootPackage.workspaces : [];
 const sharedMetadata = {
   homepage: rootPackage.homepage,

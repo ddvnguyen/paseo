@@ -42,7 +42,11 @@ import {
   DEFAULT_ICON_SCALE,
   DEFAULT_UI_SCALE,
   DEFAULT_SPACING_SCALE,
+  DEFAULT_CONTENT_SPACING_SCALE,
   DEFAULT_LINE_HEIGHT_SCALE,
+  MIN_CONTENT_SPACING_SCALE,
+  MAX_CONTENT_SPACING_SCALE,
+  CONTENT_SPACING_SCALE_STEP,
   ICON_SCALE_STEP,
   parseClampedFontSize,
   sanitizeFontFamily,
@@ -710,6 +714,13 @@ export function AppearanceSection() {
     [updateSettings],
   );
 
+  const handleContentSpacingScaleChange = useCallback(
+    (contentSpacingScale: number) => {
+      void updateSettings({ contentSpacingScale });
+    },
+    [updateSettings],
+  );
+
   const handleLineHeightScaleChange = useCallback(
     (lineHeightScale: number) => {
       void updateSettings({ lineHeightScale });
@@ -728,6 +739,7 @@ export function AppearanceSection() {
       uiScale: DEFAULT_UI_SCALE,
       iconScale: DEFAULT_ICON_SCALE,
       spacingScale: DEFAULT_SPACING_SCALE,
+      contentSpacingScale: DEFAULT_CONTENT_SPACING_SCALE,
       lineHeightScale: DEFAULT_LINE_HEIGHT_SCALE,
     });
   }, [updateSettings]);
@@ -909,6 +921,17 @@ export function AppearanceSection() {
             step={SPACING_SCALE_STEP}
             format="multiplier"
             onChange={handleSpacingScaleChange}
+          />
+          <StepperRow
+            title={t("settings.appearance.fonts.contentSpacingScale")}
+            hint={t("settings.appearance.fonts.contentSpacingScaleHint")}
+            accessibilityLabel={t("settings.appearance.fonts.contentSpacingScaleAccessibility")}
+            value={settings.contentSpacingScale}
+            min={MIN_CONTENT_SPACING_SCALE}
+            max={MAX_CONTENT_SPACING_SCALE}
+            step={CONTENT_SPACING_SCALE_STEP}
+            format="percent"
+            onChange={handleContentSpacingScaleChange}
           />
           <StepperRow
             title={t("settings.appearance.fonts.lineHeightScale")}

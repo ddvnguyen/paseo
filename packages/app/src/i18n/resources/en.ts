@@ -2225,6 +2225,10 @@ export const en = {
         spacingScale: "Spacing",
         spacingScaleHint: "Padding, margins, and gaps between elements",
         spacingScaleAccessibility: "Global spacing",
+        contentSpacingScale: "Content spacing",
+        contentSpacingScaleHint:
+          "Markdown/HTML element spacing (headings, hr, code blocks, tables)",
+        contentSpacingScaleAccessibility: "Content spacing",
         resetDefaults: "Reset all to defaults",
         resetDefaultsHint: "Restore all font and spacing settings",
       },
