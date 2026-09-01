@@ -336,7 +336,7 @@ jobs:
           fi
 
           # 3. Patch manifest.json name/short_name to "Paseo Hub"
-          MANIFEST="$DEST/manifest.webmanifest"
+          MANIFEST="$DEST/manifest.json"
           if [ -f "$MANIFEST" ]; then
             node -e "
               const fs = require('fs');
@@ -349,7 +349,6 @@ jobs:
           fi
 
           # 4. Delete stale pre-compressed manifest copies
-          rm -f "$DEST/manifest.webmanifest.br" "$DEST/manifest.webmanifest.gz"
           rm -f "$DEST/manifest.json.br" "$DEST/manifest.json.gz"
 
       - name: Reload Caddy
