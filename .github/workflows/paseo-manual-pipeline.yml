@@ -172,8 +172,17 @@ jobs:
   # Stage 2 — Android APK
   # ═══════════════════════════════════════════════════════════════════════
   build-android:
-    if: ${{ inputs.run_build_android }}
-    needs: [build-hydra]
+    # Lowest priority: waits for deploy-web/deploy-test/deploy-prod to finish
+    # (or be skipped) before starting, so the fast deploy stages aren't stuck
+    # queueing behind Android's long Gradle build on the shared runner pool.
+    if: |
+      always() &&
+      inputs.run_build_android &&
+      (needs.build-hydra.result == 'success' || needs.build-hydra.result == 'skipped') &&
+      (needs.deploy-web.result == 'success' || needs.deploy-web.result == 'skipped') &&
+      (needs.deploy-test.result == 'success' || needs.deploy-test.result == 'skipped') &&
+      (needs.deploy-prod.result == 'success' || needs.deploy-prod.result == 'skipped')
+    needs: [build-hydra, deploy-web, deploy-test, deploy-prod]
     runs-on: [self-hosted, paseo-host]
     steps:
       - name: Resolve build ref
@@ -217,12 +226,8 @@ jobs:
           echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
         id: meta
 
-      - name: Build client packages (for Expo prebuild)
-        working-directory: ${{ steps.locate.outputs.dir }}
-        run: |
-          npm run build:client
-          npm run build:highlight
-          npm run build:plugin
+      # client/highlight/plugin dist/ are already built and persisted by
+      # Stage 1 (build-hydra) — no need to rebuild them here.
 
       - name: Expo prebuild (production variant)
         working-directory: ${{ steps.locate.outputs.dir }}/packages/app
