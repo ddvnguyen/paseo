@@ -453,6 +453,48 @@ If versions don't have the hash suffix:
 2. Check git is available in the environment
 3. Verify the script completed without errors
 
+## Manual Pipeline (GitHub Actions)
+
+`.github/workflows/paseo-manual-pipeline.yml` — workflow_dispatch only, no
+automatic triggers. Runs on the self-hosted runner (`paseo-host`) at
+`/mnt/WorkDisk/actions-runners/paseo`.
+
+### Triggering
+
+```bash
+gh workflow run paseo-manual-pipeline.yml \
+  -f run_build_hydra=true \
+  -f run_deploy_web=true \
+  -f run_deploy_test=true
+```
+
+Or use the GitHub Actions UI — tick whichever stages you need.
+
+### Stages
+
+| Stage            | Input               | What it does                                                                                     |
+| ---------------- | ------------------- | ------------------------------------------------------------------------------------------------ |
+| 1. Build hydra   | `run_build_hydra`   | Checkout, `npm ci`, build server + web UI, persist to `builds/hydra/<sha>/`                      |
+| 2. Android APK   | `run_build_android` | Expo prebuild + `gradlew assembleRelease` (JDK 17, local SDK), output `builds/android/<sha>.apk` |
+| 3. Deploy web UI | `run_deploy_web`    | Build web UI from SHA, rsync to `~/paseo-app/web-ui/`, reload Caddy on `:6969`                   |
+| 4. Deploy TEST   | `run_deploy_test`   | Rsync server dist to `~/.paseo-test/`, restart `paseo-test.service` (`:6868`)                    |
+| 5. Deploy PROD   | `run_deploy_prod`   | Rsync server dist to `~/paseo-prod-bun/`, restart `paseo.service` (`:6767`) ⚠️                   |
+
+Stage 1 must run first (or a valid `*_build_ref` SHA must be supplied) for
+stages 2–5. When both selected in one run, stages 2–5 wait for stage 1 via
+`needs:`. Each stage is independently toggleable.
+
+⚠️ Stage 5 restarts the PROD daemon, which drops all active agent sessions.
+Only tick it when you have explicit permission.
+
+### Persisted builds
+
+```
+/mnt/WorkDisk/actions-runners/paseo/builds/
+├── hydra/<full-sha>/    # Complete repo tree with built artifacts
+└── android/<sha>.apk   # Release APK
+```
+
 ## References
 
 - Upstream repository: https://github.com/getpaseo/paseo

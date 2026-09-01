@@ -1,0 +1,424 @@
+name: Paseo Manual Pipeline
+
+# Fully manual pipeline — NO automatic triggers (push/PR/schedule/tag).
+# Trigger from GitHub Actions UI or: gh workflow run paseo-manual-pipeline.yml
+#
+# Five independently-selectable stages. Tick any combination; stages 2-5
+# wait for stage 1 when both selected in the same run, but can also run
+# standalone against a past SHA when stage 1 is NOT selected.
+
+on:
+  workflow_dispatch:
+    inputs:
+      # ── Stage 1: Build ────────────────────────────────────────────────
+      run_build_hydra:
+        description: "Stage 1 — Build paseo hydra"
+        required: false
+        type: boolean
+        default: false
+      hydra_branch:
+        description: "Branch to build (default: repo default)"
+        required: false
+        type: string
+        default: ""
+
+      # ── Stage 2: Android ──────────────────────────────────────────────
+      run_build_android:
+        description: "Stage 2 — Build Android APK"
+        required: false
+        type: boolean
+        default: false
+      android_build_ref:
+        description: "Git SHA to build (empty = use this run's fresh build from Stage 1)"
+        required: false
+        type: string
+        default: ""
+
+      # ── Stage 3: Deploy web UI ────────────────────────────────────────
+      run_deploy_web:
+        description: "Stage 3 — Deploy paseo web app (Caddy :6969)"
+        required: false
+        type: boolean
+        default: false
+      web_build_ref:
+        description: "Git SHA to deploy (empty = use this run's fresh build from Stage 1)"
+        required: false
+        type: string
+        default: ""
+
+      # ── Stage 4: Deploy TEST daemon ───────────────────────────────────
+      run_deploy_test:
+        description: "Stage 4 — Deploy paseo TEST daemon (:6868)"
+        required: false
+        type: boolean
+        default: false
+      test_build_ref:
+        description: "Git SHA to deploy (empty = use this run's fresh build from Stage 1)"
+        required: false
+        type: string
+        default: ""
+
+      # ── Stage 5: Deploy PROD daemon ───────────────────────────────────
+      run_deploy_prod:
+        description: "Stage 5 — Deploy paseo PROD daemon (:6767) ⚠️ drops active agents"
+        required: false
+        type: boolean
+        default: false
+      prod_build_ref:
+        description: "Git SHA to deploy (empty = use this run's fresh build from Stage 1)"
+        required: false
+        type: string
+        default: ""
+
+env:
+  BUILDS_ROOT: /mnt/WorkDisk/actions-runners/paseo/builds
+  JAVA_HOME: /tmp/jdk-17.0.12
+  ANDROID_HOME: /tmp/android-sdk
+  GRADLE_USER_HOME: /mnt/WorkDisk/actions-runners/paseo/.gradle
+  WEB_UI_DEPLOY: /home/ddv/paseo-app/web-ui
+  TEST_HOME: /home/ddv/.paseo-test
+  PROD_HOME: /home/ddv/paseo-prod-bun
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════
+  # Stage 1 — Build paseo hydra
+  # ═══════════════════════════════════════════════════════════════════════
+  build-hydra:
+    if: ${{ inputs.run_build_hydra }}
+    runs-on: [self-hosted, paseo-host]
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Resolve branch and SHA
+        id: resolve
+        run: |
+          set -euo pipefail
+          BRANCH="${{ inputs.hydra_branch }}"
+          if [ -z "$BRANCH" ]; then
+            BRANCH="${{ github.event.repository.default_branch }}"
+          fi
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.branch }}
+          fetch-depth: 0
+
+      - name: Record resolved SHA
+        id: sha
+        run: |
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          FULL_SHA="$(git rev-parse HEAD)"
+          echo "short=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "full=$FULL_SHA" >> "$GITHUB_OUTPUT"
+          echo "## Build hydra — branch \`${{ steps.resolve.outputs.branch }}\` → SHA $SHORT_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stamp hydra version
+        run: node scripts/sync-workspace-versions.mjs
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install JS dependencies
+        run: npm ci --prefer-offline
+
+      - name: Build server stack
+        run: |
+          npm run build:highlight
+          npm run build:relay
+          npm run build:protocol
+          npm run build:client
+          npm run build --workspace=@getpaseo/server
+          npm run build --workspace=@getpaseo/cli
+
+      - name: Build web UI (standalone)
+        run: node scripts/build-web-ui.mjs
+
+      - name: Persist build
+        run: |
+          set -euo pipefail
+          DEST="${{ env.BUILDS_ROOT }}/hydra/${{ steps.sha.outputs.full }}"
+          mkdir -p "$DEST"
+          # Copy the entire repo tree (built artifacts included)
+          rsync -a --delete \
+            --exclude '.git' \
+            --exclude 'node_modules' \
+            --exclude '.dev' \
+            --exclude 'packages/app/android' \
+            ./ "$DEST/"
+          echo "Build persisted to $DEST"
+          du -sh "$DEST"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Stage 2 — Android APK
+  # ═══════════════════════════════════════════════════════════════════════
+  build-android:
+    if: ${{ inputs.run_build_android }}
+    needs: [build-hydra]
+    runs-on: [self-hosted, paseo-host]
+    steps:
+      - name: Resolve build ref
+        id: ref
+        run: |
+          set -euo pipefail
+          REF="${{ inputs.android_build_ref }}"
+          if [ -z "$REF" ] && [ "${{ needs.build-hydra.result }}" = "success" ]; then
+            REF="${{ needs.build-hydra.outputs.sha }}"
+          fi
+          if [ -z "$REF" ]; then
+            echo "::error::android_build_ref is required when Stage 1 is not selected"
+            exit 1
+          fi
+          echo "sha=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Locate persisted build
+        id: locate
+        run: |
+          set -euo pipefail
+          BUILD_DIR="${{ env.BUILDS_ROOT }}/hydra/${{ steps.ref.outputs.sha }}"
+          if [ ! -d "$BUILD_DIR" ]; then
+            echo "::error::No persisted build found at $BUILD_DIR — run Stage 1 first or provide a valid SHA"
+            exit 1
+          fi
+          echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+          echo "## Android build — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Stamp version and resolve metadata
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: |
+          node scripts/sync-workspace-versions.mjs
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          APP_VERSION="$(node -p "require('./packages/app/package.json').version")"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+        id: meta
+
+      - name: Install dependencies
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: npm ci --prefer-offline
+
+      - name: Build client packages (for Expo prebuild)
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: |
+          npm run build:client
+          npm run build:highlight
+          npm run build:plugin
+
+      - name: Expo prebuild (production variant)
+        working-directory: ${{ steps.locate.outputs.dir }}/packages/app
+        run: |
+          npx cross-env APP_VARIANT=production expo prebuild \
+            --platform android --clean --non-interactive
+
+      - name: Gradle assembleRelease
+        working-directory: ${{ steps.locate.outputs.dir }}/packages/app/android
+        run: |
+          export JAVA_HOME="${{ env.JAVA_HOME }}"
+          export ANDROID_HOME="${{ env.ANDROID_HOME }}"
+          export GRADLE_USER_HOME="${{ env.GRADLE_USER_HOME }}"
+          export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+          ./gradlew assembleRelease \
+            -x lint -x lintVitalAnalyzeRelease -x lintVitalRelease \
+            -x generateReleaseLintModel -x generateReleaseLintVitalModel \
+            --no-daemon
+
+      - name: Copy APK to builds
+        run: |
+          set -euo pipefail
+          APK_SRC="${{ steps.locate.outputs.dir }}/packages/app/android/app/build/outputs/apk/release/app-release.apk"
+          APK_DEST="${{ env.BUILDS_ROOT }}/android/${{ steps.ref.outputs.sha }}.apk"
+          mkdir -p "${{ env.BUILDS_ROOT }}/android"
+          cp "$APK_SRC" "$APK_DEST"
+          echo "APK persisted to $APK_DEST"
+          ls -lh "$APK_DEST"
+          echo "## APK artifact: \`$APK_DEST\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hydra-paseo-${{ steps.ref.outputs.sha }}-android.apk
+          path: ${{ env.BUILDS_ROOT }}/android/${{ steps.ref.outputs.sha }}.apk
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Stage 3 — Deploy web UI
+  # ═══════════════════════════════════════════════════════════════════════
+  deploy-web:
+    if: ${{ inputs.run_deploy_web }}
+    needs: [build-hydra]
+    runs-on: [self-hosted, paseo-host]
+    steps:
+      - name: Resolve build ref
+        id: ref
+        run: |
+          set -euo pipefail
+          REF="${{ inputs.web_build_ref }}"
+          if [ -z "$REF" ] && [ "${{ needs.build-hydra.result }}" = "success" ]; then
+            REF="${{ needs.build-hydra.outputs.sha }}"
+          fi
+          if [ -z "$REF" ]; then
+            echo "::error::web_build_ref is required when Stage 1 is not selected"
+            exit 1
+          fi
+          echo "sha=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Locate persisted build
+        id: locate
+        run: |
+          set -euo pipefail
+          BUILD_DIR="${{ env.BUILDS_ROOT }}/hydra/${{ steps.ref.outputs.sha }}"
+          if [ ! -d "$BUILD_DIR" ]; then
+            echo "::error::No persisted build found at $BUILD_DIR"
+            exit 1
+          fi
+          echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+          echo "## Deploy web UI — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build web UI from persisted build
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: node scripts/build-web-ui.mjs
+
+      - name: Deploy to paseo-app
+        run: |
+          set -euo pipefail
+          SRC="${{ steps.locate.outputs.dir }}/dist/web-ui"
+          DEST="${{ env.WEB_UI_DEPLOY }}"
+          mkdir -p "$DEST"
+          rsync -a --delete "$SRC/" "$DEST/"
+          echo "Deployed web UI to $DEST"
+          ls "$DEST" | head -5
+
+      - name: Reload Caddy
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          systemctl --user reload paseo-app.service || \
+            systemctl --user restart paseo-app.service
+          echo "Caddy reloaded"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Stage 4 — Deploy TEST daemon
+  # ═══════════════════════════════════════════════════════════════════════
+  deploy-test:
+    if: ${{ inputs.run_deploy_test }}
+    needs: [build-hydra]
+    runs-on: [self-hosted, paseo-host]
+    steps:
+      - name: Resolve build ref
+        id: ref
+        run: |
+          set -euo pipefail
+          REF="${{ inputs.test_build_ref }}"
+          if [ -z "$REF" ] && [ "${{ needs.build-hydra.result }}" = "success" ]; then
+            REF="${{ needs.build-hydra.outputs.sha }}"
+          fi
+          if [ -z "$REF" ]; then
+            echo "::error::test_build_ref is required when Stage 1 is not selected"
+            exit 1
+          fi
+          echo "sha=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Locate persisted build
+        id: locate
+        run: |
+          set -euo pipefail
+          BUILD_DIR="${{ env.BUILDS_ROOT }}/hydra/${{ steps.ref.outputs.sha }}"
+          if [ ! -d "$BUILD_DIR" ]; then
+            echo "::error::No persisted build found at $BUILD_DIR"
+            exit 1
+          fi
+          echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+          echo "## Deploy TEST daemon — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy server to TEST
+        run: |
+          set -euo pipefail
+          BUILD_DIR="${{ steps.locate.outputs.dir }}"
+          TEST_HOME="${{ env.TEST_HOME }}"
+          mkdir -p "$TEST_HOME/node_modules/@getpaseo"
+          rsync -a --delete \
+            "$BUILD_DIR/packages/server/dist/" \
+            "$TEST_HOME/node_modules/@getpaseo/server/dist/"
+          cp "$BUILD_DIR/packages/server/package.json" \
+            "$TEST_HOME/node_modules/@getpaseo/server/package.json"
+          echo "Server deployed to TEST"
+
+      - name: Restart TEST daemon
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          systemctl --user restart paseo-test.service
+          echo "TEST daemon restarted"
+          sleep 3
+          systemctl --user status paseo-test.service --no-pager | head -10
+
+      - name: Verify TEST health
+        run: |
+          sleep 2
+          HEALTH=$(curl -sf http://127.0.0.1:6868/api/health 2>/dev/null || echo '{"status":"error"}')
+          echo "TEST health: $HEALTH"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Stage 5 — Deploy PROD daemon
+  # ═══════════════════════════════════════════════════════════════════════
+  deploy-prod:
+    if: ${{ inputs.run_deploy_prod }}
+    needs: [build-hydra]
+    runs-on: [self-hosted, paseo-host]
+    steps:
+      - name: Resolve build ref
+        id: ref
+        run: |
+          set -euo pipefail
+          REF="${{ inputs.prod_build_ref }}"
+          if [ -z "$REF" ] && [ "${{ needs.build-hydra.result }}" = "success" ]; then
+            REF="${{ needs.build-hydra.outputs.sha }}"
+          fi
+          if [ -z "$REF" ]; then
+            echo "::error::prod_build_ref is required when Stage 1 is not selected"
+            exit 1
+          fi
+          echo "sha=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Locate persisted build
+        id: locate
+        run: |
+          set -euo pipefail
+          BUILD_DIR="${{ env.BUILDS_ROOT }}/hydra/${{ steps.ref.outputs.sha }}"
+          if [ ! -d "$BUILD_DIR" ]; then
+            echo "::error::No persisted build found at $BUILD_DIR"
+            exit 1
+          fi
+          echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+          echo "## Deploy PROD daemon — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy server to PROD
+        run: |
+          set -euo pipefail
+          BUILD_DIR="${{ steps.locate.outputs.dir }}"
+          PROD_HOME="${{ env.PROD_HOME }}"
+          mkdir -p "$PROD_HOME/node_modules/@getpaseo"
+          rsync -a --delete \
+            "$BUILD_DIR/packages/server/dist/" \
+            "$PROD_HOME/node_modules/@getpaseo/server/dist/"
+          cp "$BUILD_DIR/packages/server/package.json" \
+            "$PROD_HOME/node_modules/@getpaseo/server/package.json"
+          echo "Server deployed to PROD"
+
+      - name: Restart PROD daemon
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          systemctl --user restart paseo.service
+          echo "PROD daemon restarted"
+          sleep 3
+          systemctl --user status paseo.service --no-pager | head -10
+
+      - name: Verify PROD health
+        run: |
+          sleep 2
+          HEALTH=$(curl -sf http://127.0.0.1:6767/api/health 2>/dev/null || echo '{"status":"error"}')
+          echo "PROD health: $HEALTH"
