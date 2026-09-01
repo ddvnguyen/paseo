@@ -392,7 +392,7 @@ deploy must re-stamp versions from current HEAD so the suffix changes:
    - overlay fresh `packages/server/dist/server/web-ui`
    - PRESERVE TEST branding: save & restore pwa-icon-512/192.png, favicon.ico,
      apple-touch-icon.png, assets/assets/images/\*.png; then patch manifest.json
-     (name "Paseo TEST", theme_color #2563eb) and DELETE manifest.json.br siblings
+     (name "Paseo Hub", short_name "Paseo Hub") and DELETE manifest.json.br/.gz siblings
    - copy stamped `packages/server/package.json` (version string source of truth)
    - if server code changed: replace server dist too
 4. `systemctl --user restart paseo-test.service`

@@ -294,6 +294,64 @@ jobs:
           echo "Deployed web UI to $DEST"
           ls "$DEST" | head -5
 
+      - name: Apply Paseo Hub branding
+        run: |
+          set -euo pipefail
+          DEST="${{ env.WEB_UI_DEPLOY }}"
+          BRANDING="/home/ddv/.paseo-test-branding"
+
+          if [ ! -d "$BRANDING" ]; then
+            echo "::warning::Branding source $BRANDING does not exist — skipping branding overlay. Seed it once with tinted PWA icons and status favicons."
+            exit 0
+          fi
+
+          echo "Applying Paseo Hub branding from $BRANDING"
+
+          # 1. PWA icons
+          for f in favicon.ico apple-touch-icon.png pwa-icon-192.png pwa-icon-512.png; do
+            if [ -f "$BRANDING/$f" ]; then
+              cp "$BRANDING/$f" "$DEST/$f"
+              echo "  Copied $f"
+            fi
+          done
+
+          # 2. Status favicons (tab icons set by useFaviconStatus())
+          if [ -d "$BRANDING/status-icons" ]; then
+            ASSETS="$DEST/assets/assets/images"
+            mkdir -p "$ASSETS"
+            for pair in \
+              "none.png:favicon-dark.png" \
+              "running.png:favicon-dark-running.png" \
+              "attention.png:favicon-dark-attention.png" \
+              "none.png:favicon-light.png" \
+              "running.png:favicon-light-running.png" \
+              "attention.png:favicon-light-attention.png"; do
+              src_name="${pair%%:*}"
+              dst_name="${pair##*:}"
+              if [ -f "$BRANDING/status-icons/$src_name" ]; then
+                cp "$BRANDING/status-icons/$src_name" "$ASSETS/$dst_name"
+                echo "  Copied status-icons/$src_name → $dst_name"
+              fi
+            done
+          fi
+
+          # 3. Patch manifest.json name/short_name to "Paseo Hub"
+          MANIFEST="$DEST/manifest.webmanifest"
+          if [ -f "$MANIFEST" ]; then
+            node -e "
+              const fs = require('fs');
+              const m = JSON.parse(fs.readFileSync('$MANIFEST', 'utf8'));
+              m.name = 'Paseo Hub';
+              m.short_name = 'Paseo Hub';
+              fs.writeFileSync('$MANIFEST', JSON.stringify(m, null, 2) + '\n');
+            "
+            echo "  Patched manifest name → Paseo Hub"
+          fi
+
+          # 4. Delete stale pre-compressed manifest copies
+          rm -f "$DEST/manifest.webmanifest.br" "$DEST/manifest.webmanifest.gz"
+          rm -f "$DEST/manifest.json.br" "$DEST/manifest.json.gz"
+
       - name: Reload Caddy
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
