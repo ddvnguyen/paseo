@@ -117,14 +117,11 @@ jobs:
           echo "## Build hydra — branch \`${{ steps.resolve.outputs.branch }}\` → SHA $SHORT_SHA" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Stamp hydra version
-        run: bun scripts/sync-workspace-versions.mjs
+        run: node scripts/sync-workspace-versions.mjs
 
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.0"
 
       - name: Install JS dependencies
         run: npm ci --prefer-offline
@@ -140,7 +137,7 @@ jobs:
           npm run build --workspace=@getpaseo/cli
 
       - name: Build web UI (standalone)
-        run: bun scripts/build-web-ui.mjs
+        run: node scripts/build-web-ui.mjs
 
       - name: Persist build
         run: |
@@ -228,9 +225,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.0"
 
       - name: Stamp version and resolve metadata
         working-directory: ${{ steps.locate.outputs.dir }}
@@ -355,13 +349,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.0"
 
       - name: Build web UI from persisted build
         working-directory: ${{ steps.locate.outputs.dir }}
-        run: bun scripts/build-web-ui.mjs
+        run: node scripts/build-web-ui.mjs
 
       - name: Deploy to paseo-app
         run: |
