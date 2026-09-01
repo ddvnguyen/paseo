@@ -130,6 +130,7 @@ jobs:
           npm run build:relay
           npm run build:protocol
           npm run build:client
+          npm run build:plugin
           npm run build --workspace=@getpaseo/server
           npm run build --workspace=@getpaseo/cli
 
