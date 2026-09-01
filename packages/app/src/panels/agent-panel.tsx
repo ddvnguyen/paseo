@@ -1037,11 +1037,16 @@ function ChatAgentContent({
     [effectiveAgent?.id],
   );
 
+  const lastComposerHeightRef = useRef(0);
   const handleComposerHeightChange = useCallback(
-    (_height: number) => {
+    (height: number) => {
       if (!agentId) {
         return;
       }
+      if (Math.abs(lastComposerHeightRef.current - height) < 1) {
+        return;
+      }
+      lastComposerHeightRef.current = height;
       streamViewRef.current?.prepareForViewportChange();
     },
     [agentId],
