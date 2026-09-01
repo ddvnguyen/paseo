@@ -154,7 +154,13 @@ jobs:
           # near-zero extra inode cost (vs. ~130k inodes per fresh install,
           # which exhausted the NTFS MFT when two downstream jobs ran their
           # own `npm ci` in parallel against the same persisted directory).
-          cp -al node_modules "$DEST/node_modules"
+          # npm workspaces can nest per-package node_modules (e.g. a package's
+          # own devDependency not hoisted to root) — hardlink every
+          # node_modules dir found, not just the root one.
+          find . -maxdepth 4 -type d -name node_modules | while read -r nm; do
+            mkdir -p "$DEST/$(dirname "$nm")"
+            cp -al "$nm" "$DEST/$nm"
+          done
           # A minimal git repo so any script that shells out to `git`
           # (e.g. lefthook's prepare hook, version-resolution scripts)
           # doesn't hard-fail against the persisted, .git-less copy.
