@@ -1135,6 +1135,34 @@ function AppendSystemPromptCard({ serverId }: { serverId: string }) {
     setDraft(persistedPrompt);
   }, [persistedPrompt]);
 
+  const footer = useMemo(
+    () => (
+      <View style={styles.appendPromptActions}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onPress={handleReset}
+          disabled={!hasChanges || isSaving}
+          testID="host-page-append-system-prompt-reset"
+        >
+          {t("settings.host.orchestration.systemPrompt.reset")}
+        </Button>
+        <Button
+          variant="default"
+          size="sm"
+          onPress={handleSave}
+          disabled={!hasChanges || isSaving}
+          testID="host-page-append-system-prompt-save"
+        >
+          {isSaving
+            ? t("settings.host.orchestration.systemPrompt.saving")
+            : t("settings.host.orchestration.systemPrompt.save")}
+        </Button>
+      </View>
+    ),
+    [handleReset, handleSave, hasChanges, isSaving, t],
+  );
+
   if (!isConnected) return null;
 
   return (
@@ -1165,6 +1193,8 @@ function AppendSystemPromptCard({ serverId }: { serverId: string }) {
           header={header}
           visible
           onClose={handleClose}
+          footer={footer}
+          sizeContentToCurrentSnapPoint
           testID="host-page-append-system-prompt-sheet"
           desktopMaxWidth={560}
         >
@@ -1175,28 +1205,6 @@ function AppendSystemPromptCard({ serverId }: { serverId: string }) {
             onChangeText={setDraft}
             placeholder={t("settings.host.orchestration.systemPrompt.placeholder")}
           />
-          <View style={styles.appendPromptActions}>
-            <Button
-              variant="ghost"
-              size="sm"
-              onPress={handleReset}
-              disabled={!hasChanges || isSaving}
-              testID="host-page-append-system-prompt-reset"
-            >
-              {t("settings.host.orchestration.systemPrompt.reset")}
-            </Button>
-            <Button
-              variant="default"
-              size="sm"
-              onPress={handleSave}
-              disabled={!hasChanges || isSaving}
-              testID="host-page-append-system-prompt-save"
-            >
-              {isSaving
-                ? t("settings.host.orchestration.systemPrompt.saving")
-                : t("settings.host.orchestration.systemPrompt.save")}
-            </Button>
-          </View>
         </AdaptiveModalSheet>
       ) : null}
     </>
