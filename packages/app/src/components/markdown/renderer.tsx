@@ -119,7 +119,7 @@ export function MarkdownRenderer({
   return <MarkdownPartList parts={parts} rendererProps={rendererProps} />;
 }
 
-type MarkdownPartRendererProps = Omit<MarkdownRendererProps, "text" | "enableHtmlish"> & {
+export type MarkdownPartRendererProps = Omit<MarkdownRendererProps, "text" | "enableHtmlish"> & {
   rules: RenderRules;
 };
 
@@ -169,7 +169,7 @@ function getMarkdownPartIdentity(part: MarkdownDisplayPart): string {
   return `details:${part.summary.slice(0, 80)}:${part.body.slice(0, 80)}`;
 }
 
-function MarkdownPart({
+export function MarkdownPart({
   part,
   rendererProps,
 }: {

@@ -61,7 +61,13 @@ import Animated, {
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from "react-native-svg";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
-import { MarkdownRenderer, type MarkdownStyles } from "@/components/markdown/renderer";
+import {
+  MarkdownRenderer,
+  MarkdownPart,
+  type MarkdownPartRendererProps,
+  type MarkdownStyles,
+} from "@/components/markdown/renderer";
+import { splitHtmlishMarkdown, type MarkdownDisplayPart } from "@/components/markdown/html-ish";
 import type { TaskActivity, TodoEntry, UserMessageImageAttachment } from "@/types/stream";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
@@ -1391,6 +1397,13 @@ const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
   return (
     <MarkdownRenderer
       text={text}
+      // html-ish parsing already ran once over the whole revealed message in
+      // AssistantMessage (see `buildAssistantRenderUnits`), before this text was
+      // chunked by splitMarkdownBlocks. Re-running it per chunk here would see
+      // only a fragment of e.g. a <details>...</details> block whose body is
+      // separated by a blank line — markdown-it's own block boundaries put the
+      // opening tag, the blank-line-separated body, and the closing tag in
+      // different chunks — and fail to find the matching close tag.
       enableHtmlish={false}
       rules={rules}
       markdownit={parser}
@@ -1400,6 +1413,44 @@ const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
     />
   );
 });
+
+type AssistantRenderUnit =
+  | { kind: "markdown"; key: string; text: string }
+  | { kind: "part"; key: string; part: MarkdownDisplayPart };
+
+function assistantPartIdentity(part: MarkdownDisplayPart): string {
+  if (part.kind === "markdown") {
+    return `markdown:${part.text}`;
+  }
+  if (part.kind === "inlineImage") {
+    return `inlineImage:${part.src}:${part.alt}`;
+  }
+  return `details:${part.summary}:${part.body}`;
+}
+
+// Runs html-ish extraction once over the whole message, then chunks only the
+// resulting plain-markdown segments with splitMarkdownBlocks — the block-level
+// memoization/height-caching scheme AssistantMessage already relies on.
+// Structured parts (details, inline images) become their own render unit so
+// they're never split across a markdown-block boundary. See the note on
+// MemoizedMarkdownBlock's enableHtmlish prop above for why per-block html-ish
+// parsing isn't used instead.
+function buildAssistantRenderUnits(revealedMessage: string): AssistantRenderUnit[] {
+  const units: AssistantRenderUnit[] = [];
+  let unitIndex = 0;
+  for (const part of splitHtmlishMarkdown(revealedMessage)) {
+    if (part.kind === "markdown") {
+      for (const block of splitMarkdownBlocks(part.text)) {
+        units.push({ kind: "markdown", key: `block:${unitIndex}`, text: block });
+        unitIndex += 1;
+      }
+      continue;
+    }
+    units.push({ kind: "part", key: `block:${unitIndex}`, part });
+    unitIndex += 1;
+  }
+  return units;
+}
 
 interface MarkdownInheritedTextProps {
   inheritedStyles: TextStyle;
@@ -1930,10 +1981,16 @@ export const AssistantMessage = memo(function AssistantMessage({
     };
   }, [client, fileLinkActions, markdownParser, occurrenceKey, phase, serverId, workspaceRoot]);
 
-  const blocks = useMemo(() => splitMarkdownBlocks(revealedMessage), [revealedMessage]);
-  const keyedBlocks = useMemo(
-    () => blocks.map((block, index) => ({ key: `block:${index}`, block })),
-    [blocks],
+  const renderUnits = useMemo(() => buildAssistantRenderUnits(revealedMessage), [revealedMessage]);
+  const markdownPartRendererProps = useMemo<MarkdownPartRendererProps>(
+    () => ({
+      rules: markdownRules,
+      markdownit: markdownParser,
+      onLinkPress: handleMarkdownLinkPress,
+      allowedImageHandlers: MARKDOWN_ALLOWED_IMAGE_HANDLERS,
+      topLevelMaxExceededItem: MARKDOWN_TOP_LEVEL_MAX_EXCEEDED_ITEM,
+    }),
+    [handleMarkdownLinkPress, markdownParser, markdownRules],
   );
 
   const assistantContainerStyle = useMemo(
@@ -1956,18 +2013,22 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   return (
     <View testID="assistant-message" dataSet={revealDataSet} style={assistantContainerStyle}>
-      {keyedBlocks.map(({ key, block }, index) => (
+      {renderUnits.map((unit, index) => (
         <AssistantMessageBlockContainer
-          key={key}
-          block={block}
-          marginBottom={index < keyedBlocks.length - 1 ? 12 : 0}
+          key={unit.key}
+          block={unit.kind === "markdown" ? unit.text : assistantPartIdentity(unit.part)}
+          marginBottom={index < renderUnits.length - 1 ? 12 : 0}
         >
-          <MemoizedMarkdownBlock
-            text={block}
-            rules={markdownRules}
-            parser={markdownParser}
-            onLinkPress={handleMarkdownLinkPress}
-          />
+          {unit.kind === "markdown" ? (
+            <MemoizedMarkdownBlock
+              text={unit.text}
+              rules={markdownRules}
+              parser={markdownParser}
+              onLinkPress={handleMarkdownLinkPress}
+            />
+          ) : (
+            <MarkdownPart part={unit.part} rendererProps={markdownPartRendererProps} />
+          )}
         </AssistantMessageBlockContainer>
       ))}
     </View>
