@@ -28,7 +28,7 @@
 	@root path /
 	header @root Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate"
 
-	# manifest.webmanifest → correct MIME type
-	@manifest path /manifest.webmanifest
+	# manifest.json → correct MIME type
+	@manifest path /manifest.json
 	header @manifest Content-Type "application/manifest+json"
 }
