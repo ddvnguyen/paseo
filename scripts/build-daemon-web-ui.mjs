@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
-import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -51,6 +51,53 @@ async function cleanTarget() {
 async function copyAssets() {
   console.log(`Copying assets to ${path.relative(REPO_ROOT, TARGET_DIST)}...`);
   await cp(SOURCE_DIST, TARGET_DIST, { recursive: true, force: true });
+}
+
+function getGitCommitShortHash() {
+  try {
+    return execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+// sw.js is copied verbatim from packages/app/public/ by the Expo export, so its
+// own bytes never change between deploys that only touch static assets (icons,
+// manifest). Browsers only re-run the SW "install" handler (and thus
+// re-precache PRECACHE_URLS) when the SW script's bytes change, so a static
+// CACHE_VERSION literal in the source file would leave every returning
+// visitor stuck on stale precached icons/manifest forever. Stamping the
+// version with the current commit hash here, at build time, forces a fresh
+// SW + cache on every deploy without anyone needing to remember to bump it.
+async function stampServiceWorkerCacheVersion() {
+  const swPath = path.join(TARGET_DIST, "sw.js");
+  const swStat = await stat(swPath).catch(() => null);
+  if (!swStat?.isFile()) {
+    return;
+  }
+
+  const gitHash = getGitCommitShortHash();
+  if (!gitHash) {
+    console.warn("Could not resolve git commit hash; leaving sw.js CACHE_VERSION unstamped.");
+    return;
+  }
+
+  const source = await readFile(swPath, "utf8");
+  const stamped = source.replace(
+    /const CACHE_VERSION = "[^"]*";/,
+    `const CACHE_VERSION = "${gitHash}";`,
+  );
+  if (stamped === source) {
+    console.warn("sw.js CACHE_VERSION marker not found; leaving sw.js unstamped.");
+    return;
+  }
+
+  await writeFile(swPath, stamped);
+  console.log(`Stamped sw.js CACHE_VERSION to ${gitHash}`);
 }
 
 async function compressFile(filePath) {
@@ -126,6 +173,7 @@ async function main() {
 
   await cleanTarget();
   await copyAssets();
+  await stampServiceWorkerCacheVersion();
   await precompressAssets(TARGET_DIST);
 
   const sizes = await measureBundle(TARGET_DIST);
