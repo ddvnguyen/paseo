@@ -148,7 +148,7 @@ jobs:
           # existing build; this run's own directory is created fresh below.
           HYDRA_BUILDS_DIR="${{ env.BUILDS_ROOT }}/hydra"
           mkdir -p "$HYDRA_BUILDS_DIR"
-          ls -1dt "$HYDRA_BUILDS_DIR"/*/ 2>/dev/null | tail -n +2 | xargs -r rm -rf
+          ls -1dt "$HYDRA_BUILDS_DIR"/*/ 2>/dev/null | tail -n +2 | xargs -r rm -rf || true
           DEST="$HYDRA_BUILDS_DIR/${{ steps.sha.outputs.full }}"
           mkdir -p "$DEST"
           # Copy the entire repo tree (built artifacts included)
