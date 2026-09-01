@@ -9,7 +9,7 @@ const FDROID_ABI_VERSION_CODE_SUFFIXES = {
 
 function getNativeReleaseVersion(version) {
   // Strip any trailing build-metadata suffix the workspace stamp appends
-  // (e.g. -hydra-abcdef, -e19868364, -rc1) so the upstream semver core — the
+  // (e.g. -hub-abcdef, -e19868364, -rc1) so the upstream semver core — the
   // only thing the native release codes should be derived from — survives.
   // The pattern keeps an optional "-beta.N" but drops anything that follows.
   const coreVersionPattern = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.\d+)?/;

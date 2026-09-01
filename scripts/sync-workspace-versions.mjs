@@ -32,12 +32,12 @@ function getHydraTimestamp() {
 // that takes upstream's version line. Keeping it as a constant in this
 // fork-only script means merges either apply this hunk cleanly or conflict
 // loudly — they never silently erase the fork identity.
-const FORK_IDENTIFIER = "hydra";
+const FORK_IDENTIFIER = "hub";
 
 const rootPackage = JSON.parse(readFileSync(rootPackagePath, "utf8"));
 // Strip a redundant fork suffix if package.json still carries one (defensive,
 // covers the transition away from hardcoding it there and any future
-// accidental re-additions) so we never double up as "-hydra-hydra".
+// accidental re-additions) so we never double up as "-hub-hub".
 const rootVersion = rootPackage.version.replace(new RegExp(`-${FORK_IDENTIFIER}$`), "");
 const gitHash = getGitCommitShortHash();
 const versionWithHash = gitHash

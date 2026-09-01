@@ -93,8 +93,8 @@ const variants = {
 
 const variant = variants[appVariant] ?? variants.production;
 const nativeReleaseVersion = getNativeReleaseVersion(pkg.version);
-// Strip the trailing git-hash suffix (e.g. -hydra-e31e7ccbd → -hydra) so the
-// Android versionName / iOS display version preserves the hydra branding while
+// Strip the trailing git-hash suffix (e.g. -hub-e31e7ccbd → -hub) so the
+// Android versionName / iOS display version preserves the fork branding while
 // keeping native versionCode derived from clean semver.
 const displayVersion = pkg.version.replace(/-[0-9a-f]{7,40}$/, "");
 
