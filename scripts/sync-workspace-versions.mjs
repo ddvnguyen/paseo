@@ -74,8 +74,12 @@ for (const workspacePath of workspacePaths) {
   let changed = false;
 
   if (pkg.version !== versionWithHash) {
-    pkg.version = versionWithHash;
-    changed = true;
+    if (!gitHash && pkg.version.includes(`-${FORK_IDENTIFIER}-`)) {
+      // Persisted build dir has no git history, keep the already-stamped version from build-hydra
+    } else {
+      pkg.version = versionWithHash;
+      changed = true;
+    }
   }
 
   if (pkg.name === "@getpaseo/desktop") {
@@ -93,6 +97,7 @@ for (const workspacePath of workspacePaths) {
   // resolves the local sibling, never a registry artifact. Publishable workspaces
   // get the version with hash so their published tarballs reference real npm versions.
   const internalDepRange = pkg.private === true ? "*" : versionWithHash;
+  const isAlreadyStamped = (v) => typeof v === "string" && v.includes(`-${FORK_IDENTIFIER}-`) && v !== `${rootVersion}-${FORK_IDENTIFIER}`;
 
   for (const section of dependencySections) {
     const deps = pkg[section];
@@ -108,8 +113,12 @@ for (const workspacePath of workspacePaths) {
         continue;
       }
       if (deps[name] !== internalDepRange) {
-        deps[name] = internalDepRange;
-        changed = true;
+        if (!gitHash && isAlreadyStamped(deps[name])) {
+          // Keep already-stamped dep version when git not available
+        } else {
+          deps[name] = internalDepRange;
+          changed = true;
+        }
       }
     }
   }

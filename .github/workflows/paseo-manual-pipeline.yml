@@ -291,8 +291,12 @@ jobs:
           set -euo pipefail
           APP_VER="${{ steps.meta.outputs.app_version }}"
           SHORT_SHA="${{ steps.meta.outputs.short_sha }}"
-          TAG="hub-android-${APP_VER}"
-          # Fallback if app_version empty (should not happen)
+          # Ensure tag is unique per commit even if APP_VER was short-stamped in persisted dir without git
+          if [[ "$APP_VER" == *"$SHORT_SHA"* ]]; then
+            TAG="hub-android-${APP_VER}"
+          else
+            TAG="hub-android-${APP_VER}-${SHORT_SHA}"
+          fi
           if [ -z "$APP_VER" ]; then TAG="hub-android-${SHORT_SHA}"; fi
           echo "Checking for existing release $TAG..."
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
