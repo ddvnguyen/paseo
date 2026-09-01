@@ -149,6 +149,16 @@ jobs:
             --exclude '.dev' \
             --exclude 'packages/app/android' \
             ./ "$DEST/"
+          # Hardlink-copy node_modules instead of a real copy or a fresh
+          # `npm ci` per downstream job: same filesystem, same commit/lockfile,
+          # near-zero extra inode cost (vs. ~130k inodes per fresh install,
+          # which exhausted the NTFS MFT when two downstream jobs ran their
+          # own `npm ci` in parallel against the same persisted directory).
+          cp -al node_modules "$DEST/node_modules"
+          # A minimal git repo so any script that shells out to `git`
+          # (e.g. lefthook's prepare hook, version-resolution scripts)
+          # doesn't hard-fail against the persisted, .git-less copy.
+          git -C "$DEST" init -q
           echo "Build persisted to $DEST"
           du -sh "$DEST"
 
@@ -200,10 +210,6 @@ jobs:
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
         id: meta
-
-      - name: Install dependencies
-        working-directory: ${{ steps.locate.outputs.dir }}
-        run: npm ci --prefer-offline
 
       - name: Build client packages (for Expo prebuild)
         working-directory: ${{ steps.locate.outputs.dir }}
@@ -285,10 +291,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      - name: Install dependencies
-        working-directory: ${{ steps.locate.outputs.dir }}
-        run: npm ci --prefer-offline
 
       - name: Build web UI from persisted build
         working-directory: ${{ steps.locate.outputs.dir }}
