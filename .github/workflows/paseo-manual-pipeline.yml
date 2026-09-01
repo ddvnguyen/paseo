@@ -243,6 +243,7 @@ jobs:
           export GRADLE_USER_HOME="${{ env.GRADLE_USER_HOME }}"
           export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
           ./gradlew assembleRelease \
+            -PreactNativeArchitectures=arm64-v8a \
             -x lint -x lintVitalAnalyzeRelease -x lintVitalRelease \
             -x generateReleaseLintModel -x generateReleaseLintVitalModel \
             --no-daemon
