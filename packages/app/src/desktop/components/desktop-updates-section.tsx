@@ -490,6 +490,7 @@ const styles = StyleSheet.create((theme) => ({
   valueText: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
+    flexShrink: 0,
   },
   valueSubtext: {
     color: theme.colors.foregroundMuted,

@@ -34,6 +34,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   row: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "space-between",
     paddingVertical: theme.spacing[4],
@@ -45,7 +46,11 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   rowContent: {
     flex: 1,
+    minWidth: "50%",
     marginRight: theme.spacing[3],
+  },
+  rowValue: {
+    flexShrink: 0,
   },
   rowTitle: {
     color: theme.colors.foreground,

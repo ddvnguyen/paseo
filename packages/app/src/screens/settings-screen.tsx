@@ -1672,6 +1672,7 @@ const styles = StyleSheet.create((theme) => ({
   aboutValue: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
+    flexShrink: 0,
   },
   aboutVersionMismatch: {
     color: theme.colors.palette.amber[500],
