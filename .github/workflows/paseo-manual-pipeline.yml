@@ -70,6 +70,9 @@ on:
         type: string
         default: ""
 
+permissions:
+  contents: write
+
 env:
   BUILDS_ROOT: /mnt/WorkDisk/actions-runners/paseo/builds
   JAVA_HOME: /tmp/jdk-17.0.12
@@ -274,6 +277,37 @@ jobs:
           name: hydra-paseo-${{ steps.ref.outputs.sha }}-android.apk
           path: ${{ env.BUILDS_ROOT }}/android/${{ steps.ref.outputs.sha }}.apk
           retention-days: 30
+
+      - name: Create tag and GitHub Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          APP_VER="${{ steps.meta.outputs.app_version }}"
+          SHORT_SHA="${{ steps.meta.outputs.short_sha }}"
+          TAG="hub-android-${APP_VER}"
+          # Fallback if app_version empty (should not happen)
+          if [ -z "$APP_VER" ]; then TAG="hub-android-${SHORT_SHA}"; fi
+          echo "Checking for existing release $TAG..."
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — skipping create"
+            exit 0
+          fi
+          APK="${{ env.BUILDS_ROOT }}/android/${{ steps.ref.outputs.sha }}.apk"
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK not found at $APK"
+            exit 1
+          fi
+          echo "Creating release $TAG for $APK (app_version $APP_VER, sha ${{ steps.ref.outputs.sha }})"
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "Paseo Hub Android $APP_VER" \
+            --notes "Automated Android build for commit ${{ steps.ref.outputs.sha }} (branch \`${{ github.ref_name }}\`). Built via Paseo Manual Pipeline.\n\nAPK: hydra-paseo-${{ steps.ref.outputs.sha }}-android.apk" \
+            --target "${{ steps.ref.outputs.sha }}" \
+            "$APK"
+          echo "Release $TAG created with APK"
+          echo "## 📦 Release [$TAG](${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG) created" >> "$GITHUB_STEP_SUMMARY"
 
   # ═══════════════════════════════════════════════════════════════════════
   # Stage 3 — Deploy web UI
