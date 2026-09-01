@@ -29,11 +29,18 @@ export function MarkdownLinkText({
   return (
     <Pressable
       accessibilityRole="link"
+      // @ts-ignore - RN 0.81 native prop not in PressableProps types yet, required to prevent LinkPreview crash
+      allowsLinkPreview={false}
       onPress={onPress}
       onHoverIn={handleHoverIn}
       onHoverOut={handleHoverOut}
     >
-      <Text dataSet={dataSet} style={textStyle}>
+      <Text
+        dataSet={dataSet}
+        style={textStyle}
+        // @ts-ignore - RN 0.81 native prop not in TextProps types yet
+        allowsLinkPreview={false}
+      >
         {children}
       </Text>
     </Pressable>
