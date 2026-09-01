@@ -47,7 +47,7 @@ import {
   MicVocal,
   FileSymlink,
 } from "lucide-react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { StyleSheet, UnistylesRuntime, withUnistyles } from "react-native-unistyles";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import Animated, {
@@ -2003,6 +2003,8 @@ export const AssistantMessage = memo(function AssistantMessage({
     ],
     [spacing],
   );
+  const theme = UnistylesRuntime.getTheme();
+  const contentBlockGap = Math.round(theme.spacing[3] * (theme.contentSpacingScale ?? 0.75));
   const revealDataSet = useMemo(
     () =>
       isRenderProfileEnabled()
@@ -2017,7 +2019,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         <AssistantMessageBlockContainer
           key={unit.key}
           block={unit.kind === "markdown" ? unit.text : assistantPartIdentity(unit.part)}
-          marginBottom={index < renderUnits.length - 1 ? 12 : 0}
+          marginBottom={index < renderUnits.length - 1 ? contentBlockGap : 0}
         >
           {unit.kind === "markdown" ? (
             <MemoizedMarkdownBlock
