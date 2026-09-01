@@ -194,7 +194,8 @@ jobs:
         working-directory: ${{ steps.locate.outputs.dir }}
         run: |
           node scripts/sync-workspace-versions.mjs
-          SHORT_SHA="$(git rev-parse --short HEAD)"
+          FULL_SHA="${{ steps.ref.outputs.sha }}"
+          SHORT_SHA="${FULL_SHA:0:7}"
           APP_VERSION="$(node -p "require('./packages/app/package.json').version")"
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
@@ -280,6 +281,14 @@ jobs:
           fi
           echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           echo "## Deploy web UI — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: npm ci --prefer-offline
 
       - name: Build web UI from persisted build
         working-directory: ${{ steps.locate.outputs.dir }}
