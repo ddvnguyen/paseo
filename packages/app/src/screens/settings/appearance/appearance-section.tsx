@@ -946,7 +946,7 @@ export function AppearanceSection() {
             <View style={settingsStyles.rowContent}>
               <Text style={settingsStyles.rowTitle}>Debug conversation spacing</Text>
               <Text style={settingsStyles.rowHint}>
-                Red = content gaps (paragraphs, blocks, lists), Pink = compact edges
+                Red = content gaps, Pink = compact edges, Blue = tool gaps
               </Text>
             </View>
             <Switch

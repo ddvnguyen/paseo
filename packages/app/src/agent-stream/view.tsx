@@ -21,7 +21,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { StyleSheet, UnistylesRuntime, withUnistyles } from "react-native-unistyles";
 import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { useMutation } from "@tanstack/react-query";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
@@ -176,8 +176,16 @@ function renderStreamItemWithTurnFooter(input: {
       onForkAssistantTurn={input.onForkAssistantTurn}
     />
   ) : null;
+  const isToolBlock =
+    input.layoutItem.item.kind === "tool_call" ||
+    input.layoutItem.item.kind === "thought" ||
+    input.layoutItem.item.kind === "todo_list";
   const content = (
-    <StreamItemWrapper itemId={input.layoutItem.item.id} gapBelow={input.layoutItem.gapBelow}>
+    <StreamItemWrapper
+      itemId={input.layoutItem.item.id}
+      gapBelow={input.layoutItem.gapBelow}
+      isToolBlock={isToolBlock}
+    >
       {input.content}
     </StreamItemWrapper>
   );
@@ -1784,13 +1792,23 @@ const permissionStyles = StyleSheet.create((theme) => ({
 interface StreamItemWrapperProps {
   itemId: string;
   gapBelow: number;
+  isToolBlock?: boolean;
   children: ReactNode;
 }
 
-function StreamItemWrapper({ gapBelow, children }: StreamItemWrapperProps) {
-  const wrapperStyle = useMemo(
-    () => [stylesheet.streamItemWrapper, { marginBottom: gapBelow }],
-    [gapBelow],
-  );
+function StreamItemWrapper({ gapBelow, isToolBlock, children }: StreamItemWrapperProps) {
+  const theme = UnistylesRuntime.getTheme();
+  const wrapperStyle = useMemo(() => {
+    if (!theme.debugConversationSpacing) {
+      return [stylesheet.streamItemWrapper, { marginBottom: gapBelow }];
+    }
+    if (isToolBlock) {
+      return [
+        stylesheet.streamItemWrapper,
+        { marginBottom: gapBelow, backgroundColor: "rgba(59,130,246,0.22)" },
+      ];
+    }
+    return [stylesheet.streamItemWrapper, { marginBottom: gapBelow }];
+  }, [gapBelow, isToolBlock, theme.debugConversationSpacing]);
   return <View style={wrapperStyle}>{children}</View>;
 }
