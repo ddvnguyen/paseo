@@ -140,7 +140,16 @@ jobs:
       - name: Persist build
         run: |
           set -euo pipefail
-          DEST="${{ env.BUILDS_ROOT }}/hydra/${{ steps.sha.outputs.full }}"
+          # Prune old persisted builds first. Each one is a full source copy
+          # (node_modules excepted, which is hardlinked) and accumulates real
+          # inodes on the NTFS volume, which has a fixed inode ceiling
+          # independent of free bytes — an unbounded accumulation of these
+          # has exhausted it before. Keep only the single most recent
+          # existing build; this run's own directory is created fresh below.
+          HYDRA_BUILDS_DIR="${{ env.BUILDS_ROOT }}/hydra"
+          mkdir -p "$HYDRA_BUILDS_DIR"
+          ls -1dt "$HYDRA_BUILDS_DIR"/*/ 2>/dev/null | tail -n +2 | xargs -r rm -rf
+          DEST="$HYDRA_BUILDS_DIR/${{ steps.sha.outputs.full }}"
           mkdir -p "$DEST"
           # Copy the entire repo tree (built artifacts included)
           rsync -a --delete \
