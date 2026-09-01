@@ -339,12 +339,9 @@ the UI reload is zero-downtime.
 
 ### TEST Branding Preservation
 
-With the single paseo-app instance, the static web UI bundle is shared. TEST
-branding (tinted icons, "Paseo TEST" manifest name) is applied to the web-ui
-files at `~/paseo-app/web-ui/` before each deploy. Note: this means the shared
-bundle temporarily shows TEST branding until the next PROD deploy overwrites it.
-If this is unacceptable, deploy separate web-ui directories and switch the
-Caddyfile `root` directive per-environment.
+With the single paseo-app instance, the static web UI bundle is shared. Hub
+branding (tinted icons, "Paseo Hub" manifest name) is applied to the web-ui
+files at `~/paseo-app/web-ui/` before each deploy.
 
 TEST branding lives durably at `~/.paseo-test-branding/` (survives full
 rebuilds). After every web UI deploy, overlay these files onto `~/paseo-app/web-ui/`:
@@ -367,10 +364,10 @@ rebuilds). After every web UI deploy, overlay these files onto `~/paseo-app/web-
    mount (the static `favicon.ico`/`pwa-icon-*` only affect the PWA install
    icon, not the browser tab).
 
-3. **manifest.json** — patch `name` and `short_name` to "Paseo TEST". Delete
+3. **manifest.json** — patch `name` and `short_name` to "Paseo Hub". Delete
    `manifest.json.br` and `manifest.json.gz` (stale pre-compressed copies).
    **Do not override `theme_color`** — leave it at the app's real background
-   (`#181B1A`). TEST stays visually distinct via the tinted icons alone.
+   (`#181B1A`). Hub stays visually distinct via the tinted icons alone.
 
 ### Systemd Service Configuration
 
