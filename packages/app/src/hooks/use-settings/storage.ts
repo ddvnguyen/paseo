@@ -98,6 +98,8 @@ export const MIN_CONTENT_SPACING_SCALE = 0.5;
 export const MAX_CONTENT_SPACING_SCALE = 2;
 export const CONTENT_SPACING_SCALE_STEP = 0.05;
 
+export const DEFAULT_DEBUG_CONVERSATION_SPACING = false;
+
 export interface AppSettings {
   theme: ThemePreference;
   /** Which contributed theme `theme: "plugin"` selects. */
@@ -120,6 +122,7 @@ export interface AppSettings {
   spacingScale: number; // clamped, default 1
   /** Multiplier for markdown/HTML element spacing (hr, br, headings, etc). */
   contentSpacingScale: number; // clamped, default 0.75
+  debugConversationSpacing: boolean;
   /** Multiplier on the body text font size to derive `lineHeight.content`. */
   lineHeightScale: number; // clamped, default 1.3
   syntaxTheme: SyntaxThemeId; // default "one"
@@ -174,6 +177,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   iconScale: DEFAULT_ICON_SCALE,
   spacingScale: DEFAULT_SPACING_SCALE,
   contentSpacingScale: DEFAULT_CONTENT_SPACING_SCALE,
+  debugConversationSpacing: DEFAULT_DEBUG_CONVERSATION_SPACING,
   lineHeightScale: DEFAULT_LINE_HEIGHT_SCALE,
   syntaxTheme: "one",
   workspaceTitleSource: "title",
@@ -273,6 +277,7 @@ const StoredAppSettingsSchema = z
     contentSpacingScale: clampedScale(MIN_CONTENT_SPACING_SCALE, MAX_CONTENT_SPACING_SCALE)
       .optional()
       .catch(undefined),
+    debugConversationSpacing: z.boolean().catch(false),
     lineHeightScale: clampedScale(MIN_LINE_HEIGHT_SCALE, MAX_LINE_HEIGHT_SCALE)
       .optional()
       .catch(undefined),
@@ -351,6 +356,8 @@ const StoredAppSettingsSchema = z
       iconScale: stored.iconScale ?? DEFAULT_ICON_SCALE,
       spacingScale: stored.spacingScale ?? DEFAULT_SPACING_SCALE,
       contentSpacingScale: stored.contentSpacingScale ?? DEFAULT_CONTENT_SPACING_SCALE,
+      debugConversationSpacing:
+        stored.debugConversationSpacing ?? DEFAULT_DEBUG_CONVERSATION_SPACING,
       lineHeightScale: stored.lineHeightScale ?? DEFAULT_LINE_HEIGHT_SCALE,
       sidebarChecksDisplay,
       sidebarRowItems: {

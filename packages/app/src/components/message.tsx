@@ -762,12 +762,15 @@ export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
   container: {
     paddingVertical: theme.spacing[3],
     ...(isWeb ? { userSelect: "text" as const } : {}),
+    ...(theme.debugConversationSpacing ? { backgroundColor: "rgba(255,0,0,0.10)" } : {}),
   },
   containerCompactTop: {
     paddingTop: 0,
+    ...(theme.debugConversationSpacing ? { backgroundColor: "rgba(255,192,203,0.6)" } : {}),
   },
   containerCompactBottom: {
     paddingBottom: 0,
+    ...(theme.debugConversationSpacing ? { backgroundColor: "rgba(255,192,203,0.6)" } : {}),
   },
   imageFrame: {
     width: "100%",
@@ -1366,7 +1369,13 @@ function AssistantMessageBlockContainer({
   marginBottom,
   children,
 }: AssistantMessageBlockContainerProps) {
-  const style = useMemo(() => (marginBottom > 0 ? { marginBottom } : undefined), [marginBottom]);
+  const theme = UnistylesRuntime.getTheme();
+  const style = useMemo(() => {
+    const base = marginBottom > 0 ? { marginBottom } : undefined;
+    if (!theme.debugConversationSpacing) return base;
+    const debugBg = { backgroundColor: "rgba(255,0,0,0.18)" } as const;
+    return base ? { ...base, ...debugBg } : debugBg;
+  }, [marginBottom, theme.debugConversationSpacing]);
   const handleLayout = useCallback(
     (event: LayoutChangeEvent) => {
       const { width, height } = event.nativeEvent.layout;

@@ -647,6 +647,7 @@ interface CommonTheme {
   borderWidth: Record<keyof typeof BORDER_WIDTH, number>;
   opacity: typeof OPACITY;
   contentSpacingScale: number;
+  debugConversationSpacing: boolean;
 }
 
 const commonTheme: CommonTheme = {
@@ -659,6 +660,7 @@ const commonTheme: CommonTheme = {
   borderRadius: BORDER_RADIUS,
   borderWidth: BORDER_WIDTH,
   contentSpacingScale: 0.75,
+  debugConversationSpacing: false,
   opacity: OPACITY,
 };
 

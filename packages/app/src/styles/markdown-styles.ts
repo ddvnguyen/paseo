@@ -21,6 +21,10 @@ function cs(theme: Theme, token: number): number {
   return Math.round(token * (theme.contentSpacingScale ?? 0.75));
 }
 
+function debugSpacingBg(theme: Theme): Record<string, string> {
+  return theme.debugConversationSpacing ? { backgroundColor: "rgba(255,0,0,0.18)" } : {};
+}
+
 /**
  * Creates comprehensive markdown styles for react-native-markdown-display.
  *
@@ -60,6 +64,7 @@ export function createMarkdownStyles(theme: Theme) {
     paragraph: {
       marginTop: 0,
       marginBottom: cs(theme, theme.spacing[3]),
+      ...debugSpacingBg(theme),
       flexWrap: "wrap" as const,
       flexDirection: "row" as const,
       alignItems: "flex-start" as const,
@@ -75,6 +80,7 @@ export function createMarkdownStyles(theme: Theme) {
 
     heading1: {
       ...webSelectableTextStyle,
+      ...debugSpacingBg(theme),
       fontSize: contentHeadingSize(theme.fontSize.content, "4xl"),
       fontWeight: theme.fontWeight.bold,
       color: theme.colors.foreground,
@@ -88,6 +94,7 @@ export function createMarkdownStyles(theme: Theme) {
 
     heading2: {
       ...webSelectableTextStyle,
+      ...debugSpacingBg(theme),
       fontSize: contentHeadingSize(theme.fontSize.content, "3xl"),
       fontWeight: theme.fontWeight.bold,
       color: theme.colors.foreground,
@@ -101,6 +108,7 @@ export function createMarkdownStyles(theme: Theme) {
 
     heading3: {
       ...webSelectableTextStyle,
+      ...debugSpacingBg(theme),
       fontSize: contentHeadingSize(theme.fontSize.content, "2xl"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
@@ -111,6 +119,7 @@ export function createMarkdownStyles(theme: Theme) {
 
     heading4: {
       ...webSelectableTextStyle,
+      ...debugSpacingBg(theme),
       fontSize: contentHeadingSize(theme.fontSize.content, "xl"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
@@ -121,6 +130,7 @@ export function createMarkdownStyles(theme: Theme) {
 
     heading5: {
       ...webSelectableTextStyle,
+      ...debugSpacingBg(theme),
       fontSize: contentHeadingSize(theme.fontSize.content, "lg"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
@@ -131,6 +141,7 @@ export function createMarkdownStyles(theme: Theme) {
 
     heading6: {
       ...webSelectableTextStyle,
+      ...debugSpacingBg(theme),
       fontSize: contentHeadingSize(theme.fontSize.content, "lg"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foregroundMuted,
@@ -197,7 +208,9 @@ export function createMarkdownStyles(theme: Theme) {
 
     code_block: {
       ...webSelectableTextStyle,
-      backgroundColor: theme.colors.surface2,
+      ...(theme.debugConversationSpacing
+        ? { backgroundColor: "rgba(255,0,0,0.22)" }
+        : { backgroundColor: theme.colors.surface2 }),
       color: theme.colors.foreground,
       padding: cs(theme, theme.spacing[3]),
       borderRadius: theme.borderRadius.md,
@@ -208,7 +221,9 @@ export function createMarkdownStyles(theme: Theme) {
 
     fence: {
       ...webSelectableTextStyle,
-      backgroundColor: theme.colors.surface2,
+      ...(theme.debugConversationSpacing
+        ? { backgroundColor: "rgba(255,0,0,0.22)" }
+        : { backgroundColor: theme.colors.surface2 }),
       color: theme.colors.foreground,
       padding: cs(theme, theme.spacing[3]),
       borderRadius: theme.borderRadius.md,
@@ -228,6 +243,7 @@ export function createMarkdownStyles(theme: Theme) {
     // =========================================================================
 
     table: {
+      ...debugSpacingBg(theme),
       borderWidth: 1,
       borderColor: theme.colors.border,
       borderRadius: theme.borderRadius.md,
@@ -284,6 +300,7 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     list_item: {
+      ...debugSpacingBg(theme),
       marginBottom: cs(theme, theme.spacing[1]),
       flexDirection: "row" as const,
       alignItems: "flex-start" as const,
@@ -323,7 +340,9 @@ export function createMarkdownStyles(theme: Theme) {
     // =========================================================================
 
     blockquote: {
-      backgroundColor: theme.colors.surface1,
+      ...(theme.debugConversationSpacing
+        ? { backgroundColor: "rgba(255,0,0,0.18)" }
+        : { backgroundColor: theme.colors.surface1 }),
       color: `${theme.colors.foreground}cc`,
       borderLeftWidth: 4,
       borderLeftColor: theme.colors.surface2,
@@ -341,7 +360,9 @@ export function createMarkdownStyles(theme: Theme) {
     // =========================================================================
 
     hr: {
-      backgroundColor: theme.colors.border,
+      ...(theme.debugConversationSpacing
+        ? { backgroundColor: "rgba(255,0,0,0.9)" }
+        : { backgroundColor: theme.colors.border }),
       height: 1,
       marginVertical: cs(theme, theme.spacing[2]),
     },
@@ -351,6 +372,7 @@ export function createMarkdownStyles(theme: Theme) {
     // =========================================================================
 
     image: {
+      ...debugSpacingBg(theme),
       borderRadius: theme.borderRadius.md,
       marginVertical: cs(theme, theme.spacing[2]),
     },
@@ -360,6 +382,7 @@ export function createMarkdownStyles(theme: Theme) {
     // =========================================================================
 
     hardbreak: {
+      ...debugSpacingBg(theme),
       height: cs(theme, theme.spacing[2]),
     },
 
@@ -385,6 +408,7 @@ export function createCompactMarkdownStyles(theme: Theme) {
 
     heading1: {
       ...baseStyles.heading1,
+      ...debugSpacingBg(theme),
       fontSize: contentHeadingSize(theme.fontSize.content, "2xl"),
       marginTop: cs(theme, theme.spacing[4]),
       marginBottom: cs(theme, theme.spacing[2]),
@@ -393,6 +417,7 @@ export function createCompactMarkdownStyles(theme: Theme) {
 
     heading2: {
       ...baseStyles.heading2,
+      ...debugSpacingBg(theme),
       fontSize: contentHeadingSize(theme.fontSize.content, "xl"),
       marginTop: cs(theme, theme.spacing[3]),
       marginBottom: cs(theme, theme.spacing[2]),
@@ -401,6 +426,7 @@ export function createCompactMarkdownStyles(theme: Theme) {
 
     heading3: {
       ...baseStyles.heading3,
+      ...debugSpacingBg(theme),
       fontSize: contentHeadingSize(theme.fontSize.content, "lg"),
       marginTop: cs(theme, theme.spacing[3]),
       marginBottom: cs(theme, theme.spacing[1]),
@@ -409,6 +435,7 @@ export function createCompactMarkdownStyles(theme: Theme) {
 
     paragraph: {
       ...baseStyles.paragraph,
+      ...debugSpacingBg(theme),
       marginBottom: cs(theme, theme.spacing[2]),
     },
 

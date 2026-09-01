@@ -63,6 +63,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       iconScale: settings.iconScale,
       spacingScale: settings.spacingScale,
       contentSpacingScale: settings.contentSpacingScale,
+      debugConversationSpacing: settings.debugConversationSpacing,
       lineHeightScale: settings.lineHeightScale,
       syntaxTheme: settings.syntaxTheme,
     });
@@ -79,6 +80,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     settings.iconScale,
     settings.spacingScale,
     settings.contentSpacingScale,
+    settings.debugConversationSpacing,
     settings.lineHeightScale,
     settings.syntaxTheme,
   ]);
