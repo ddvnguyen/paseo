@@ -1,8 +1,8 @@
 # Paseo systemd --user unit: paseo-app.service
 #
-# Static file server for the Paseo PROD web UI via Caddy.
-# The daemon (paseo.service) runs separately on port 6768 with --no-web-ui.
-# Clients connect to the daemon via the "Add host" flow in the web UI.
+# Static file server for the Paseo web UI via Caddy.
+# Daemons run separately (TEST on :6868, PROD on :6767).
+# Clients connect to a daemon via the "Add host" flow in the web UI.
 #
 # Install:
 #   cp deploy/systemd/paseo-app.service ~/.config/systemd/user/
@@ -15,8 +15,8 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/caddy run --config /home/ddv/paseo-prod/Caddyfile --adapter caddyfile
-ExecReload=/usr/bin/caddy reload --config /home/ddv/paseo-prod/Caddyfile --adapter caddyfile
+ExecStart=/usr/bin/caddy run --config /home/ddv/paseo-app/Caddyfile --adapter caddyfile
+ExecReload=/usr/bin/caddy reload --config /home/ddv/paseo-app/Caddyfile --adapter caddyfile
 Restart=on-failure
 RestartSec=2
 

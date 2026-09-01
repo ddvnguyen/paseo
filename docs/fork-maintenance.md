@@ -182,18 +182,21 @@ git commit -m "chore: sync workspace versions with git hash suffix"
 
 ## Split Architecture: Daemon + Static Web UI
 
-Both TEST and PROD run the daemon and web UI as two independent processes. The
-web UI is a static file bundle served by Caddy; the daemon handles API, WebSocket,
-and agent lifecycle. They don't proxy each other — the web UI client connects to
-the daemon directly via the "Add host" flow.
+The daemon and web UI are two independent processes. The web UI is a single
+static file bundle served by Caddy on port 6969; the daemons handle API,
+WebSocket, and agent lifecycle on their existing ports (TEST :6868, PROD :6767).
+They don't proxy each other — the web UI client connects to whichever daemon the
+user configures at runtime via the "Add host" flow.
 
 ```
-Browser → Caddy (:6868 TEST / :6767 PROD) → static files (web-ui/)
-Browser → Daemon (:6969 TEST / :6768 PROD) → API + WebSocket (via "Add host")
+Browser → paseo-app (Caddy :6969)          → static files (web-ui/)
+Browser → daemon (TEST :6868 / PROD :6767) → API + WebSocket (via "Add host")
 ```
 
 This means UI changes don't require a daemon restart, and daemon changes don't
-require a UI rebuild.
+require a UI rebuild. There is only ONE paseo-app instance — it serves the same
+static bundle for both environments; the client connects to whichever daemon the
+user pairs with.
 
 ### Why no reverse proxy
 
@@ -201,58 +204,59 @@ The web app already has a full host-connection registry (`HostConnection` /
 `HostProfile` in `packages/app/src/runtime/host-runtime.ts`) that lets the
 client pair with any daemon URL. This is the same mechanism mobile and desktop
 apps use. The daemon already supports configurable CORS origins
-(`daemon.cors.allowedOrigins` in persisted config). A same-origin proxy only
-added auto-fill of the connection hint — we intentionally give that up for
-independent deployability. First-time visitors do one "Add host" (daemon URL +
-password), same UX as pairing the mobile app.
+(`daemon.cors.allowedOrigins` in persisted config). First-time visitors do one
+"Add host" (daemon URL + password), same UX as pairing the mobile app.
 
 ### Daemon flag: `--no-web-ui`
 
 When Caddy serves the static files, the daemon must NOT also serve them. Start
-the daemon with `--no-web-ui`:
+each daemon with `--no-web-ui`:
 
 ```
-paseo daemon --listen 127.0.0.1:6969 --no-web-ui     # TEST
-paseo daemon --listen 127.0.0.1:6768 --no-web-ui     # PROD
+paseo daemon --listen 127.0.0.1:6868 --no-web-ui   # TEST (keeps its current port)
+paseo daemon --listen 127.0.0.1:6767 --no-web-ui   # PROD (keeps its current port)
 ```
 
 ### CORS configuration
 
-The daemon's `config.json` must allow the static file server's origin. Add the
-Caddy origin to `daemon.cors.allowedOrigins`:
+Both daemons must allow the paseo-app origin. Add `http://localhost:6969` (or
+the real domain once deployed) to `daemon.cors.allowedOrigins` in each daemon's
+config.json:
 
 ```json
 {
   "daemon": {
     "cors": {
-      "allowedOrigins": ["https://app.paseo.sh", "http://localhost:6868", "http://localhost:6767"]
+      "allowedOrigins": ["https://app.paseo.sh", "http://localhost:6969"]
     }
   }
 }
 ```
 
-For TEST: edit `~/.paseo-test/config.json`.
-For PROD: edit `~/paseo-prod-bun/config.json` (or wherever `PASEO_HOME` points).
+**TEST:** edit `~/.paseo-test/config.json`.
+**PROD:** edit `~/paseo-prod-bun/config.json` (or wherever `PASEO_HOME` points).
 
-The daemon also allows same-origin connections automatically (localhost variants
-matching the listen port are included in `fixedAllowedOrigins`).
+TODO(ddv): replace `http://localhost:6969` with the real paseo-app origin once
+the static file server is deployed to a persistent host (e.g.
+`https://app.ddvnguyen.com`). The daemons also allow same-origin connections
+automatically (localhost variants matching the listen port are in
+`fixedAllowedOrigins`).
 
 ### Port layout
 
-| Instance | Caddy (static files) | Daemon (API + WS) | Caddyfile                     |
-| -------- | -------------------- | ----------------- | ----------------------------- |
-| TEST     | :6868                | 127.0.0.1:6969    | `deploy/caddy/Caddyfile.test` |
-| PROD     | :6767                | 127.0.0.1:6768    | `deploy/caddy/Caddyfile.prod` |
+| Component         | Port  | Purpose                         |
+| ----------------- | ----- | ------------------------------- |
+| paseo-app (Caddy) | :6969 | Static web UI (single instance) |
+| TEST daemon       | :6868 | API + WebSocket (unchanged)     |
+| PROD daemon       | :6767 | API + WebSocket (unchanged)     |
 
 ### Files
 
-| File                                    | Purpose                                  |
-| --------------------------------------- | ---------------------------------------- |
-| `scripts/build-web-ui.mjs`              | Standalone web UI build → `dist/web-ui/` |
-| `deploy/caddy/Caddyfile.test`           | TEST static file server config           |
-| `deploy/caddy/Caddyfile.prod`           | PROD static file server config           |
-| `deploy/systemd/paseo-app-test.service` | TEST Caddy systemd unit                  |
-| `deploy/systemd/paseo-app.service`      | PROD Caddy systemd unit                  |
+| File                               | Purpose                                  |
+| ---------------------------------- | ---------------------------------------- |
+| `scripts/build-web-ui.mjs`         | Standalone web UI build → `dist/web-ui/` |
+| `deploy/caddy/Caddyfile`           | Static file server config (port 6969)    |
+| `deploy/systemd/paseo-app.service` | Caddy systemd unit for paseo-app         |
 
 ## Deployment
 
@@ -279,22 +283,16 @@ node scripts/build-web-ui.mjs
 2. Copy to the deploy target:
 
 ```bash
-# PROD
-rsync -a --delete dist/web-ui/ ~/paseo-prod/web-ui/
-
-# TEST
-rsync -a --delete dist/web-ui/ ~/.paseo-test/web-ui/
+rsync -a --delete dist/web-ui/ ~/paseo-app/web-ui/
 ```
 
-3. Apply TEST branding (if TEST — skip for PROD): see "TEST branding
-   preservation" below.
+3. Apply TEST branding if needed (see "TEST branding preservation" below).
 
 4. Reload Caddy (zero-downtime, no daemon restart):
 
 ```bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-systemctl --user reload paseo-app.service       # PROD
-systemctl --user reload paseo-app-test.service  # TEST
+systemctl --user reload paseo-app.service
 ```
 
 #### Scenario B: Daemon-only change (no UI rebuild needed)
@@ -308,20 +306,23 @@ npm run build --workspace=@getpaseo/server
 2. Deploy server dist:
 
 ```bash
-# PROD
-rsync -a --delete packages/server/dist/ ~/paseo-prod/node_modules/@getpaseo/server/dist/
-
 # TEST
 rsync -a --delete packages/server/dist/ ~/.paseo-test/node_modules/@getpaseo/server/dist/
+
+# PROD
+rsync -a --delete packages/server/dist/ ~/paseo-prod/node_modules/@getpaseo/server/dist/
 ```
 
 3. Copy stamped package.json:
 
 ```bash
+# TEST
 cp packages/server/package.json ~/.paseo-test/node_modules/@getpaseo/server/package.json
+# PROD
+cp packages/server/package.json ~/paseo-prod/node_modules/@getpaseo/server/package.json
 ```
 
-4. Restart daemon (drops active sessions):
+4. Restart the affected daemon (drops active sessions):
 
 ```bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -338,9 +339,15 @@ the UI reload is zero-downtime.
 
 ### TEST Branding Preservation
 
+With the single paseo-app instance, the static web UI bundle is shared. TEST
+branding (tinted icons, "Paseo TEST" manifest name) is applied to the web-ui
+files at `~/paseo-app/web-ui/` before each deploy. Note: this means the shared
+bundle temporarily shows TEST branding until the next PROD deploy overwrites it.
+If this is unacceptable, deploy separate web-ui directories and switch the
+Caddyfile `root` directive per-environment.
+
 TEST branding lives durably at `~/.paseo-test-branding/` (survives full
-rebuilds). After every web UI deploy to TEST, overlay these files onto the
-fresh build:
+rebuilds). After every web UI deploy, overlay these files onto `~/paseo-app/web-ui/`:
 
 1. **PWA icons** — copy from `~/.paseo-test-branding/`:
    - `favicon.ico`
@@ -348,12 +355,12 @@ fresh build:
    - `pwa-icon-192.png`
    - `pwa-icon-512.png`
 
-   Over the corresponding files in `~/.paseo-test/web-ui/`.
+   Over the corresponding files in `~/paseo-app/web-ui/`.
 
 2. **Status favicons** — copy from `~/.paseo-test-branding/status-icons/`:
-   - `none.png` → `~/.paseo-test/web-ui/assets/assets/images/favicon-dark.png`
-   - `running.png` → `~/.paseo-test/web-ui/assets/assets/images/favicon-dark-running.png`
-   - `attention.png` → `~/.paseo-test/web-ui/assets/assets/images/favicon-dark-attention.png`
+   - `none.png` → `~/paseo-app/web-ui/assets/assets/images/favicon-dark.png`
+   - `running.png` → `~/paseo-app/web-ui/assets/assets/images/favicon-dark-running.png`
+   - `attention.png` → `~/paseo-app/web-ui/assets/assets/images/favicon-dark-attention.png`
    - Same for `light` variants.
 
    These override the tab favicon that `useFaviconStatus()` sets on every
@@ -371,29 +378,29 @@ fresh build:
 
 | Unit                 | Location                                    | Port |
 | -------------------- | ------------------------------------------- | ---- |
-| `paseo-test.service` | `~/.config/systemd/user/paseo-test.service` | 6969 |
-| `paseo.service`      | `~/.config/systemd/user/paseo.service`      | 6768 |
+| `paseo-test.service` | `~/.config/systemd/user/paseo-test.service` | 6868 |
+| `paseo.service`      | `~/.config/systemd/user/paseo.service`      | 6767 |
 
 Both must run with `--no-web-ui` to avoid serving static files that Caddy handles.
 
-#### Static file server units (new)
+#### Static file server unit (new, single instance)
 
-| Unit                     | Location                                        | Port |
-| ------------------------ | ----------------------------------------------- | ---- |
-| `paseo-app-test.service` | `~/.config/systemd/user/paseo-app-test.service` | 6868 |
-| `paseo-app.service`      | `~/.config/systemd/user/paseo-app.service`      | 6767 |
+| Unit                | Location                                   | Port |
+| ------------------- | ------------------------------------------ | ---- |
+| `paseo-app.service` | `~/.config/systemd/user/paseo-app.service` | 6969 |
 
-Templates: `deploy/systemd/paseo-app-test.service`, `deploy/systemd/paseo-app.service`.
+Template: `deploy/systemd/paseo-app.service`.
 
 ### Verification
 
 After deployment, verify:
 
-1. **Static web UI:** `curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:6868/`
+1. **Static web UI:** `curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:6969/`
    - Should return: `200`
 
-2. **Daemon health (direct):** `curl -sf http://127.0.0.1:6969/api/health`
-   - Should return: `{"status":"ok","timestamp":"..."}`
+2. **Daemon health (direct):** `curl -sf http://127.0.0.1:6868/api/health`
+   - Should return: `{"status":"ok","timestamp":"..."}` (TEST)
+   - Or: `curl -sf http://127.0.0.1:6767/api/health` (PROD)
 
 3. **Daemon version:** `journalctl --user -u paseo-test.service | grep -oE 'daemonVersion":"[^"]*"' | tail -1`
    - Must show the NEW hash after a daemon deploy.
@@ -403,21 +410,21 @@ After deployment, verify:
 **Caddy won't start:**
 
 - Check Caddy is installed: `which caddy`
-- Check logs: `journalctl --user -u paseo-app-test.service --since "5 minutes ago"`
-- Check port availability: `ss -tlnp | grep 6868`
-- Validate config: `caddy validate --config ~/.paseo-test/Caddyfile --adapter caddyfile`
+- Check logs: `journalctl --user -u paseo-app.service --since "5 minutes ago"`
+- Check port availability: `ss -tlnp | grep 6969`
+- Validate config: `caddy validate --config ~/paseo-app/Caddyfile --adapter caddyfile`
 
 **Web UI returns 404:**
 
-- Verify `~/.paseo-test/web-ui/index.html` exists
+- Verify `~/paseo-app/web-ui/index.html` exists
 - Rebuild: `node scripts/build-web-ui.mjs`
 - Copy to deploy target and reload Caddy
 
 **WebSocket connection fails from web UI:**
 
-- Verify daemon is running: `systemctl --user status paseo-test.service`
-- Check daemon health directly: `curl -sf http://127.0.0.1:6969/api/health`
-- Verify CORS: the daemon's `config.json` must include the web UI origin in `cors.allowedOrigins`
+- Verify daemon is running: `systemctl --user status paseo-test.service` (or `paseo.service`)
+- Check daemon health directly: `curl -sf http://127.0.0.1:6868/api/health`
+- Verify CORS: the daemon's `config.json` must include `http://localhost:6969` (or the real paseo-app origin) in `cors.allowedOrigins`
 - Check browser console for CORS errors
 
 ## Troubleshooting
@@ -457,11 +464,11 @@ If versions don't have the hash suffix:
 The user verifies a TEST deployment by reading `daemonVersion`. Therefore every
 daemon deploy must re-stamp versions from current HEAD so the suffix changes.
 
-**For the current (reverse-proxy) architecture, see the three scenarios in
+**For the current split architecture, see the three scenarios in
 "Deployment" above.** The steps below are the legacy monolithic runbook,
 retained for reference during the transition period.
 
-### Legacy monolithic runbook (pre-reverse-proxy)
+### Legacy monolithic runbook (pre-split)
 
 1. `node scripts/sync-workspace-versions.mjs` → workspaces become `{upstream-version}-hydra-<shorthash>-<yyMMDDhhmm>`
 2. If app code changed: `CI=1 npm run build:daemon-web-ui` (purge /tmp/metro-cache first)

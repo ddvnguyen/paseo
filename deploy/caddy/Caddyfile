@@ -1,14 +1,16 @@
-# Caddyfile — Paseo PROD static file server
+# Caddyfile — Paseo static web UI server
 #
-# Serves the standalone web UI build at http://localhost:6767.
-# The daemon runs separately (paseo.service on port 6768).
-# Clients connect to the daemon via "Add host" — no reverse proxy needed.
+# Serves the standalone web UI build at http://localhost:6969.
+# Daemons run separately (TEST on :6868, PROD on :6767).
+# Clients connect to a daemon via the "Add host" flow — no reverse proxy needed.
 #
-# The daemon's config.json must include this origin in cors.allowedOrigins:
-#   "cors": { "allowedOrigins": ["http://localhost:6767"] }
+# Each daemon's config.json must include this origin in cors.allowedOrigins:
+#   "cors": { "allowedOrigins": ["http://localhost:6969"] }
+# TODO(ddv): replace localhost:6969 with the real domain once paseo-app is
+# deployed to a persistent host (e.g. "https://app.ddvnguyen.com").
 
-:6767 {
-	root * /home/ddv/paseo-prod/web-ui
+:6969 {
+	root * /home/ddv/paseo-app/web-ui
 	file_server {
 		precompressed br gzip
 	}
