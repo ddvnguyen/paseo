@@ -1,5 +1,11 @@
+import { UnistylesRuntime } from "react-native-unistyles";
 import type { StreamItem } from "@/types/stream";
-import { SPACING } from "@/styles/theme";
+import { SPACING, type Theme } from "@/styles/theme";
+
+function csContent(token: number): number {
+  const theme = UnistylesRuntime.getTheme() as Theme;
+  return Math.round(token * (theme.contentSpacingScale ?? 0.75));
+}
 
 export function isSameAssistantBlockGroup(params: {
   item: StreamItem | null | undefined;
@@ -54,13 +60,13 @@ export function getGapBetweenStreamItems(
     return 0;
   }
   if (item.kind === "user_message" && isToolSequenceItem(belowItem)) {
-    return SPACING[4];
+    return csContent(SPACING[4]);
   }
   if (item.kind === "assistant_message" && isToolSequenceItem(belowItem)) {
-    return SPACING[1];
+    return csContent(SPACING[1]);
   }
   if (isToolSequenceItem(item) && belowItem.kind === "assistant_message") {
-    return SPACING[1];
+    return csContent(SPACING[1]);
   }
   if (isSameAssistantBlockGroup({ item, other: belowItem })) {
     return SPACING[3];

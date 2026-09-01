@@ -928,7 +928,7 @@ export function AppearanceSection() {
             min={MIN_SPACING_SCALE}
             max={MAX_SPACING_SCALE}
             step={SPACING_SCALE_STEP}
-            format="multiplier"
+            format="percent"
             onChange={handleSpacingScaleChange}
           />
           <StepperRow
