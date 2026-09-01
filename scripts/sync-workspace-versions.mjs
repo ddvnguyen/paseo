@@ -26,10 +26,23 @@ function getHydraTimestamp() {
   return `${yy}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}`;
 }
 
+// Fork identifier lives here, not in package.json's "version" field: that
+// field is also written by upstream on every release, so a fork suffix
+// stored there gets silently dropped on the next `git merge upstream/main`
+// that takes upstream's version line. Keeping it as a constant in this
+// fork-only script means merges either apply this hunk cleanly or conflict
+// loudly — they never silently erase the fork identity.
+const FORK_IDENTIFIER = "hydra";
+
 const rootPackage = JSON.parse(readFileSync(rootPackagePath, "utf8"));
-const rootVersion = rootPackage.version;
+// Strip a redundant fork suffix if package.json still carries one (defensive,
+// covers the transition away from hardcoding it there and any future
+// accidental re-additions) so we never double up as "-hydra-hydra".
+const rootVersion = rootPackage.version.replace(new RegExp(`-${FORK_IDENTIFIER}$`), "");
 const gitHash = getGitCommitShortHash();
-const versionWithHash = gitHash ? `${rootVersion}-${gitHash}-${getHydraTimestamp()}` : rootVersion;
+const versionWithHash = gitHash
+  ? `${rootVersion}-${FORK_IDENTIFIER}-${gitHash}-${getHydraTimestamp()}`
+  : `${rootVersion}-${FORK_IDENTIFIER}`;
 const workspacePaths = Array.isArray(rootPackage.workspaces) ? rootPackage.workspaces : [];
 const sharedMetadata = {
   homepage: rootPackage.homepage,
