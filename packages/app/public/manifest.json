@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Paseo",
-  "short_name": "Paseo",
+  "name": "Paseo Hub",
+  "short_name": "Paseo Hub",
   "description": "Monitor and control local AI coding agents from anywhere.",
   "lang": "en",
   "dir": "ltr",
