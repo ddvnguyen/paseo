@@ -96,6 +96,7 @@ import { useAppSettings } from "@/hooks/use-settings";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { useOpenAgentListGesture, useBackSwipeGesture } from "@/mobile-panels/gestures";
 import { MobilePanelsProvider } from "@/mobile-panels/provider";
+import { useAndroidBackToExit } from "@/hooks/use-android-back-to-exit";
 import { I18nProvider } from "@/i18n/provider";
 import {
   KeyboardActionDispatcherProvider,
@@ -967,12 +968,18 @@ function RootProviders({ children }: { children: ReactNode }) {
   );
 }
 
+function AndroidBackToExit() {
+  useAndroidBackToExit();
+  return null;
+}
+
 function RootAppTree() {
   return (
     <GestureHandlerRootView style={flexStyle}>
       <View style={layoutStyles.surfaceFill}>
         <RootProviders>
           <RuntimeProviders>
+            <AndroidBackToExit />
             <AppShell />
           </RuntimeProviders>
         </RootProviders>
