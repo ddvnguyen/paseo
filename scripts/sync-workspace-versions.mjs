@@ -93,11 +93,10 @@ for (const workspacePath of workspacePaths) {
     }
   }
 
-  // Private workspaces (app, desktop) keep "workspace:*" for internal deps so pnpm
-  // (and npm with link-workspace-packages) always resolves the local sibling.
-  // Publishable workspaces get the version with hash so their published tarballs
-  // reference real npm versions.
-  const internalDepRange = pkg.private === true ? "workspace:*" : versionWithHash;
+  // All workspaces use "workspace:*" for internal deps under pnpm so the lockfile
+  // stays stable across version stamps. The stamped version is only for the
+  // package's own "version" field; deps stay as workspace:* for frozen installs.
+  const internalDepRange = "workspace:*";
   const isAlreadyStamped = (v) => typeof v === "string" && v.includes(`-${FORK_IDENTIFIER}-`) && v !== `${rootVersion}-${FORK_IDENTIFIER}`;
 
   for (const section of dependencySections) {
