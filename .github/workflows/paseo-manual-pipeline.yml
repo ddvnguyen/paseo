@@ -77,7 +77,7 @@ env:
   BUILDS_ROOT: /mnt/WorkDisk/actions-runners/paseo/builds
   JAVA_HOME: /tmp/jdk-17.0.12
   ANDROID_HOME: /tmp/android-sdk
-  GRADLE_USER_HOME: /mnt/WorkDisk/actions-runners/paseo/.gradle
+  GRADLE_USER_HOME: /home/ddv/.gradle
   WEB_UI_DEPLOY: /home/ddv/paseo-app/web-ui
   TEST_HOME: /home/ddv/.paseo-test
   PROD_HOME: /home/ddv/paseo-prod-bun
