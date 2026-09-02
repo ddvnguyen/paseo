@@ -47,7 +47,7 @@ import {
   MicVocal,
   FileSymlink,
 } from "lucide-react-native";
-import { StyleSheet, UnistylesRuntime, withUnistyles } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import Animated, {
@@ -1369,24 +1369,27 @@ function NativeShimmerPeakSvg({ gradientId }: { gradientId: string }) {
   );
 }
 
+const assistantMessageBlockContainerStylesheet = StyleSheet.create((theme) => ({
+  gap: {
+    marginBottom: Math.round(theme.spacing[3] * (theme.contentSpacingScale ?? 0.75)),
+    backgroundColor: theme.debugConversationSpacing ? "rgba(255,0,0,0.18)" : undefined,
+  },
+  debugOnly: {
+    backgroundColor: theme.debugConversationSpacing ? "rgba(255,0,0,0.18)" : undefined,
+  },
+}));
+
 interface AssistantMessageBlockContainerProps {
   block: string;
-  marginBottom: number;
+  hasGap: boolean;
   children: ReactNode;
 }
 
 function AssistantMessageBlockContainer({
   block,
-  marginBottom,
+  hasGap,
   children,
 }: AssistantMessageBlockContainerProps) {
-  const theme = UnistylesRuntime.getTheme();
-  const style = useMemo(() => {
-    const base = marginBottom > 0 ? { marginBottom } : undefined;
-    if (!theme.debugConversationSpacing) return base;
-    const debugBg = { backgroundColor: "rgba(255,0,0,0.18)" } as const;
-    return base ? { ...base, ...debugBg } : debugBg;
-  }, [marginBottom, theme.debugConversationSpacing]);
   const handleLayout = useCallback(
     (event: LayoutChangeEvent) => {
       const { width, height } = event.nativeEvent.layout;
@@ -1394,6 +1397,15 @@ function AssistantMessageBlockContainer({
     },
     [block],
   );
+  // Gap and debug wash are both derived from the theme via StyleSheet
+  // (Unistyles ShadowRegistry) — no useUnistyles()/UnistylesRuntime. See
+  // docs/unistyles.md "STOP — useUnistyles() Is Banned". The gap is
+  // Math.round(spacing[3] * contentSpacingScale) so appearance font/spacing
+  // changes repaint without a React re-render; the red wash appears only
+  // when theme.debugConversationSpacing is true.
+  const style = hasGap
+    ? assistantMessageBlockContainerStylesheet.gap
+    : assistantMessageBlockContainerStylesheet.debugOnly;
   return (
     <View style={style} onLayout={isWeb ? handleLayout : undefined}>
       {children}
@@ -2029,8 +2041,6 @@ export const AssistantMessage = memo(function AssistantMessage({
     ],
     [spacing],
   );
-  const theme = UnistylesRuntime.getTheme();
-  const contentBlockGap = Math.round(theme.spacing[3] * (theme.contentSpacingScale ?? 0.75));
   const revealDataSet = useMemo(
     () =>
       isRenderProfileEnabled()
@@ -2045,7 +2055,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         <AssistantMessageBlockContainer
           key={unit.key}
           block={unit.kind === "markdown" ? unit.text : assistantPartIdentity(unit.part)}
-          marginBottom={index < renderUnits.length - 1 ? contentBlockGap : 0}
+          hasGap={index < renderUnits.length - 1}
         >
           {unit.kind === "markdown" ? (
             <MemoizedMarkdownBlock

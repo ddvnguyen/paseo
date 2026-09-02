@@ -17,8 +17,12 @@ function contentHeadingLineHeight(contentSize: number, tier: keyof typeof FONT_S
  * adjustable (50%–200%, default 75%). The scale applies on top of the
  * global `spacingScale` which already multiplies `theme.spacing[]`.
  */
-function cs(theme: Theme, token: number): number {
+export function getContentSpacing(theme: Theme, token: number): number {
   return Math.round(token * (theme.contentSpacingScale ?? 0.75));
+}
+
+function cs(theme: Theme, token: number): number {
+  return getContentSpacing(theme, token);
 }
 
 function debugSpacingBg(theme: Theme): Record<string, string> {
