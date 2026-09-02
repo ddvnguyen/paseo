@@ -116,13 +116,18 @@ jobs:
       - name: Stamp hydra version
         run: node scripts/sync-workspace-versions.mjs
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.12.0
+          run_install: false
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: "pnpm"
 
       - name: Install JS dependencies
-        run: npm ci --prefer-offline
+        run: pnpm install --frozen-lockfile
 
       - name: Build server stack
         run: |
@@ -185,9 +190,15 @@ jobs:
           echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           echo "## Android build — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.12.0
+          run_install: false
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: "pnpm"
 
       - name: Stamp version and resolve metadata
         working-directory: ${{ steps.locate.outputs.dir }}
@@ -201,7 +212,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: ${{ steps.locate.outputs.dir }}
-        run: npm ci --prefer-offline
+        run: pnpm install --frozen-lockfile
 
       - name: Build client packages (for Expo prebuild)
         working-directory: ${{ steps.locate.outputs.dir }}
