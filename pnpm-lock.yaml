@@ -257,6 +257,9 @@ importers:
       mermaid:
         specifier: ^11.16.0
         version: 11.16.0
+      metro-resolver:
+        specifier: ^0.84.4
+        version: 0.84.4
       mnemonic-id:
         specifier: ^3.2.7
         version: 3.2.7

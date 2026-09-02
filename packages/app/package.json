@@ -132,7 +132,8 @@
     "use-sync-external-store": "^1.6.0",
     "yaml": "^2.8.4",
     "zod": "^4.4.3",
-    "zustand": "^5.0.9"
+    "zustand": "^5.0.9",
+    "metro-resolver": "^0.84.4"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",
