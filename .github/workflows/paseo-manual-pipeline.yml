@@ -458,7 +458,7 @@ jobs:
             "$TEST_HOME/node_modules/@getpaseo/server/dist/"
           cp "$BUILD_DIR/packages/server/package.json" \
             "$TEST_HOME/node_modules/@getpaseo/server/package.json"
-          echo "Server deployed to TEST via pnpm-built dist (reusing pnpm store at $PNPM_HOME)"
+          echo "Server deployed to TEST via pnpm-built dist"
 
       - name: Restart TEST daemon
         run: |
