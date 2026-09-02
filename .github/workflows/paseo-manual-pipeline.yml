@@ -252,6 +252,11 @@ jobs:
           npx cross-env APP_VARIANT=production expo prebuild \
             --platform android --clean --non-interactive
 
+      - name: Clean corrupted gradle cache (journal-1)
+        run: |
+          rm -rf "${{ env.GRADLE_USER_HOME }}/caches/journal-1/file-access.bin" 2>/dev/null || true
+          rm -rf "${{ env.GRADLE_USER_HOME }}/caches/journal-1/file-access.bin.lock" 2>/dev/null || true
+
       - name: Gradle assembleRelease
         working-directory: ${{ steps.locate.outputs.dir }}/packages/app/android
         run: |
