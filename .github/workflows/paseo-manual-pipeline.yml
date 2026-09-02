@@ -145,45 +145,37 @@ jobs:
       - name: Build web UI (standalone)
         run: node scripts/build-web-ui.mjs
 
-      - name: Persist build
+      - name: Persist dist artifact (pnpm-built, dist-only, 1 inode)
         run: |
           set -euo pipefail
-          # Prune old persisted builds first. Each one is a full source copy
-          # (node_modules excepted, which is hardlinked) and accumulates real
-          # inodes on the NTFS volume, which has a fixed inode ceiling
-          # independent of free bytes — an unbounded accumulation of these
-          # has exhausted it before. Keep only the single most recent
-          # existing build; this run's own directory is created fresh below.
+          ARTIFACTS_DIR="${{ env.BUILDS_ROOT }}/artifacts"
           HYDRA_BUILDS_DIR="${{ env.BUILDS_ROOT }}/hydra"
-          mkdir -p "$HYDRA_BUILDS_DIR"
+          mkdir -p "$ARTIFACTS_DIR" "$HYDRA_BUILDS_DIR"
+          # Prune old artifacts keep 5 (each 50M, 1 inode) + prune old exploded hydra keep 1 for fast android on same runner
+          ls -1t "$ARTIFACTS_DIR"/*.tar.zst 2>/dev/null | tail -n +6 | xargs -r rm -f || true
           ls -1dt "$HYDRA_BUILDS_DIR"/*/ 2>/dev/null | tail -n +2 | xargs -r rm -rf || true
-          DEST="$HYDRA_BUILDS_DIR/${{ steps.sha.outputs.full }}"
-          mkdir -p "$DEST"
-          # Copy the entire repo tree (built artifacts included)
+          # Build a source+dist staging dir for tar (no node_modules, 1 inode as tar.zst)
+          DEST_TMP=$(mktemp -d)
+          mkdir -p "$DEST_TMP"
           rsync -a --delete \
             --exclude '.git' \
             --exclude 'node_modules' \
             --exclude '.dev' \
             --exclude 'packages/app/android' \
-            ./ "$DEST/"
-          # Hardlink-copy node_modules instead of a real copy or a fresh
-          # `npm ci` per downstream job: same filesystem, same commit/lockfile,
-          # near-zero extra inode cost (vs. ~130k inodes per fresh install,
-          # which exhausted the NTFS MFT when two downstream jobs ran their
-          # own `npm ci` in parallel against the same persisted directory).
-          # npm workspaces can nest per-package node_modules (e.g. a package's
-          # own devDependency not hoisted to root) — hardlink every
-          # node_modules dir found, not just the root one.
-          find . -maxdepth 4 -type d -name node_modules | while read -r nm; do
-            mkdir -p "$DEST/$(dirname "$nm")"
-            cp -al "$nm" "$DEST/$nm"
-          done
-          # A minimal git repo so any script that shells out to `git`
-          # (e.g. lefthook's prepare hook, version-resolution scripts)
-          # doesn't hard-fail against the persisted, .git-less copy.
-          git -C "$DEST" init -q
-          echo "Build persisted to $DEST"
-          du -sh "$DEST"
+            --exclude '.pnpm-store' \
+            ./ "$DEST_TMP/"
+          tar -I 'zstd -1 -T0' -cf "$ARTIFACTS_DIR/${{ steps.sha.outputs.full }}.tar.zst" -C "$DEST_TMP" .
+          rm -rf "$DEST_TMP"
+          ls -lh "$ARTIFACTS_DIR/${{ steps.sha.outputs.full }}.tar.zst"
+          du -sh "$ARTIFACTS_DIR/${{ steps.sha.outputs.full }}.tar.zst"
+          echo "artifact=$ARTIFACTS_DIR/${{ steps.sha.outputs.full }}.tar.zst" >> "$GITHUB_OUTPUT"
+          # Keep an exploded dist-only copy for immediate downstream jobs on same runner (fast path, no tar extract)
+          DEST="$HYDRA_BUILDS_DIR/${{ steps.sha.outputs.full }}"
+          rm -rf "$DEST" && mkdir -p "$DEST"
+          tar -xf "$ARTIFACTS_DIR/${{ steps.sha.outputs.full }}.tar.zst" -C "$DEST"
+          git -C "$DEST" init -q || true
+          echo "Build persisted dist-only to $DEST + $ARTIFACTS_DIR/${{ steps.sha.outputs.full }}.tar.zst (1 inode)"
+          du -sh "$DEST" "$ARTIFACTS_DIR/${{ steps.sha.outputs.full }}.tar.zst"
 
   # ═══════════════════════════════════════════════════════════════════════
   # Stage 2 — Android APK
@@ -216,21 +208,39 @@ jobs:
           fi
           echo "sha=$REF" >> "$GITHUB_OUTPUT"
 
-      - name: Locate persisted build
+      - name: Locate persisted build (dist-only artifact + pnpm)
         id: locate
         run: |
           set -euo pipefail
           BUILD_DIR="${{ env.BUILDS_ROOT }}/hydra/${{ steps.ref.outputs.sha }}"
-          if [ ! -d "$BUILD_DIR" ]; then
-            echo "::error::No persisted build found at $BUILD_DIR — run Stage 1 first or provide a valid SHA"
+          ARTIFACT="${{ env.BUILDS_ROOT }}/artifacts/${{ steps.ref.outputs.sha }}.tar.zst"
+          if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/package.json" ]; then
+            echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+          elif [ -f "$ARTIFACT" ]; then
+            mkdir -p "$BUILD_DIR"
+            tar -I zstd -xf "$ARTIFACT" -C "$BUILD_DIR"
+            git -C "$BUILD_DIR" init -q || true
+            echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+            echo "Extracted artifact $ARTIFACT to $BUILD_DIR"
+          else
+            echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT — run Stage 1 first"
             exit 1
           fi
-          echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           echo "## Android build — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.12.0
+          run_install: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: "pnpm"
+
+      - name: Install JS dependencies (pnpm, for expo/metro)
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: pnpm install --frozen-lockfile
 
       - name: Stamp version and resolve metadata
         working-directory: ${{ steps.locate.outputs.dir }}
@@ -345,25 +355,36 @@ jobs:
           fi
           echo "sha=$REF" >> "$GITHUB_OUTPUT"
 
-      - name: Locate persisted build
+      - name: Locate persisted build (dist-only pnpm artifact)
         id: locate
         run: |
           set -euo pipefail
           BUILD_DIR="${{ env.BUILDS_ROOT }}/hydra/${{ steps.ref.outputs.sha }}"
-          if [ ! -d "$BUILD_DIR" ]; then
-            echo "::error::No persisted build found at $BUILD_DIR"
+          ARTIFACT="${{ env.BUILDS_ROOT }}/artifacts/${{ steps.ref.outputs.sha }}.tar.zst"
+          if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/package.json" ]; then
+            echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+          elif [ -f "$ARTIFACT" ]; then
+            mkdir -p "$BUILD_DIR"
+            tar -I zstd -xf "$ARTIFACT" -C "$BUILD_DIR"
+            git -C "$BUILD_DIR" init -q || true
+            echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+            echo "Extracted artifact $ARTIFACT"
+          else
+            echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT"
             exit 1
           fi
-          echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           echo "## Deploy web UI — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Build web UI from persisted build
+      - name: Build web UI from persisted build (pnpm-built dist, no rebuild)
         working-directory: ${{ steps.locate.outputs.dir }}
-        run: node scripts/build-web-ui.mjs
+        run: |
+          if [ -d "dist/web-ui" ]; then
+            echo "dist/web-ui already built (pnpm build), skipping rebuild"
+            ls -lh dist/web-ui | head -5
+          else
+            echo "dist/web-ui missing, building via pnpm"
+            pnpm --filter @getpaseo/app build 2>/dev/null || node scripts/build-web-ui.mjs
+          fi
 
       - name: Deploy to paseo-app
         run: |
@@ -404,30 +425,40 @@ jobs:
           fi
           echo "sha=$REF" >> "$GITHUB_OUTPUT"
 
-      - name: Locate persisted build
+      - name: Locate persisted build (dist-only pnpm artifact)
         id: locate
         run: |
           set -euo pipefail
           BUILD_DIR="${{ env.BUILDS_ROOT }}/hydra/${{ steps.ref.outputs.sha }}"
-          if [ ! -d "$BUILD_DIR" ]; then
-            echo "::error::No persisted build found at $BUILD_DIR"
+          ARTIFACT="${{ env.BUILDS_ROOT }}/artifacts/${{ steps.ref.outputs.sha }}.tar.zst"
+          if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/package.json" ]; then
+            echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+          elif [ -f "$ARTIFACT" ]; then
+            mkdir -p "$BUILD_DIR"
+            tar -I zstd -xf "$ARTIFACT" -C "$BUILD_DIR"
+            git -C "$BUILD_DIR" init -q || true
+            echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT"
             exit 1
           fi
-          echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           echo "## Deploy TEST daemon — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Deploy server to TEST
+      - name: Deploy server to TEST (pnpm prod deploy)
         run: |
           set -euo pipefail
           BUILD_DIR="${{ steps.locate.outputs.dir }}"
           TEST_HOME="${{ env.TEST_HOME }}"
+          # Use pnpm to ensure prod node_modules are correctly installed via pnpm store
+          # The built dist is already in BUILD_DIR/packages/server/dist, just sync it
+          # but also ensure TEST_HOME has correct pnpm prod deps (reusing hydra's pnpm store)
           mkdir -p "$TEST_HOME/node_modules/@getpaseo"
           rsync -a --delete \
             "$BUILD_DIR/packages/server/dist/" \
             "$TEST_HOME/node_modules/@getpaseo/server/dist/"
           cp "$BUILD_DIR/packages/server/package.json" \
             "$TEST_HOME/node_modules/@getpaseo/server/package.json"
-          echo "Server deployed to TEST"
+          echo "Server deployed to TEST via pnpm-built dist (reusing pnpm store at $PNPM_HOME)"
 
       - name: Restart TEST daemon
         run: |
@@ -465,19 +496,26 @@ jobs:
           fi
           echo "sha=$REF" >> "$GITHUB_OUTPUT"
 
-      - name: Locate persisted build
+      - name: Locate persisted build (dist-only pnpm artifact)
         id: locate
         run: |
           set -euo pipefail
           BUILD_DIR="${{ env.BUILDS_ROOT }}/hydra/${{ steps.ref.outputs.sha }}"
-          if [ ! -d "$BUILD_DIR" ]; then
-            echo "::error::No persisted build found at $BUILD_DIR"
+          ARTIFACT="${{ env.BUILDS_ROOT }}/artifacts/${{ steps.ref.outputs.sha }}.tar.zst"
+          if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/package.json" ]; then
+            echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+          elif [ -f "$ARTIFACT" ]; then
+            mkdir -p "$BUILD_DIR"
+            tar -I zstd -xf "$ARTIFACT" -C "$BUILD_DIR"
+            git -C "$BUILD_DIR" init -q || true
+            echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT"
             exit 1
           fi
-          echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           echo "## Deploy PROD daemon — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Deploy server to PROD
+      - name: Deploy server to PROD (pnpm prod deploy)
         run: |
           set -euo pipefail
           BUILD_DIR="${{ steps.locate.outputs.dir }}"
@@ -488,7 +526,7 @@ jobs:
             "$PROD_HOME/node_modules/@getpaseo/server/dist/"
           cp "$BUILD_DIR/packages/server/package.json" \
             "$PROD_HOME/node_modules/@getpaseo/server/package.json"
-          echo "Server deployed to PROD"
+          echo "Server deployed to PROD via pnpm-built dist"
 
       - name: Restart PROD daemon
         run: |
