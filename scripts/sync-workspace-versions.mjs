@@ -69,10 +69,11 @@ for (const workspacePath of workspacePaths) {
     }
   }
 
-  // Private workspaces (app, desktop) keep "*" for internal deps so npm always
-  // resolves the local sibling, never a registry artifact. Publishable workspaces
-  // get the version with hash so their published tarballs reference real npm versions.
-  const internalDepRange = pkg.private === true ? "*" : versionWithHash;
+  // Private workspaces (app, desktop) keep "workspace:*" for internal deps so pnpm
+  // (and npm with link-workspace-packages) always resolves the local sibling.
+  // Publishable workspaces get the version with hash so their published tarballs
+  // reference real npm versions.
+  const internalDepRange = pkg.private === true ? "workspace:*" : versionWithHash;
 
   for (const section of dependencySections) {
     const deps = pkg[section];
