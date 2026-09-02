@@ -93,10 +93,11 @@ for (const workspacePath of workspacePaths) {
     }
   }
 
-  // Private workspaces (app, desktop) keep "*" for internal deps so npm always
-  // resolves the local sibling, never a registry artifact. Publishable workspaces
-  // get the version with hash so their published tarballs reference real npm versions.
-  const internalDepRange = pkg.private === true ? "*" : versionWithHash;
+  // Private workspaces (app, desktop) keep "workspace:*" for internal deps so pnpm
+  // (and npm with link-workspace-packages) always resolves the local sibling.
+  // Publishable workspaces get the version with hash so their published tarballs
+  // reference real npm versions.
+  const internalDepRange = pkg.private === true ? "workspace:*" : versionWithHash;
   const isAlreadyStamped = (v) => typeof v === "string" && v.includes(`-${FORK_IDENTIFIER}-`) && v !== `${rootVersion}-${FORK_IDENTIFIER}`;
 
   for (const section of dependencySections) {
