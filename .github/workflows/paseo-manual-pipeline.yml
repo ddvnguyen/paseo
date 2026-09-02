@@ -449,16 +449,15 @@ jobs:
           set -euo pipefail
           BUILD_DIR="${{ steps.locate.outputs.dir }}"
           TEST_HOME="${{ env.TEST_HOME }}"
-          # Use pnpm to ensure prod node_modules are correctly installed via pnpm store
-          # The built dist is already in BUILD_DIR/packages/server/dist, just sync it
-          # but also ensure TEST_HOME has correct pnpm prod deps (reusing hydra's pnpm store)
           mkdir -p "$TEST_HOME/node_modules/@getpaseo"
-          rsync -a --delete \
-            "$BUILD_DIR/packages/server/dist/" \
-            "$TEST_HOME/node_modules/@getpaseo/server/dist/"
-          cp "$BUILD_DIR/packages/server/package.json" \
-            "$TEST_HOME/node_modules/@getpaseo/server/package.json"
-          echo "Server deployed to TEST via pnpm-built dist"
+          for pkg in client highlight plugin protocol relay server; do
+            if [ -d "$BUILD_DIR/packages/$pkg/dist" ]; then
+              mkdir -p "$TEST_HOME/node_modules/@getpaseo/$pkg"
+              rsync -a --delete "$BUILD_DIR/packages/$pkg/dist/" "$TEST_HOME/node_modules/@getpaseo/$pkg/dist/"
+              cp "$BUILD_DIR/packages/$pkg/package.json" "$TEST_HOME/node_modules/@getpaseo/$pkg/package.json" 2>/dev/null || true
+            fi
+          done
+          echo "Server + protocol/client deps deployed to TEST via pnpm-built dist"
 
       - name: Restart TEST daemon
         run: |
@@ -521,12 +520,14 @@ jobs:
           BUILD_DIR="${{ steps.locate.outputs.dir }}"
           PROD_HOME="${{ env.PROD_HOME }}"
           mkdir -p "$PROD_HOME/node_modules/@getpaseo"
-          rsync -a --delete \
-            "$BUILD_DIR/packages/server/dist/" \
-            "$PROD_HOME/node_modules/@getpaseo/server/dist/"
-          cp "$BUILD_DIR/packages/server/package.json" \
-            "$PROD_HOME/node_modules/@getpaseo/server/package.json"
-          echo "Server deployed to PROD via pnpm-built dist"
+          for pkg in client highlight plugin protocol relay server; do
+            if [ -d "$BUILD_DIR/packages/$pkg/dist" ]; then
+              mkdir -p "$PROD_HOME/node_modules/@getpaseo/$pkg"
+              rsync -a --delete "$BUILD_DIR/packages/$pkg/dist/" "$PROD_HOME/node_modules/@getpaseo/$pkg/dist/"
+              cp "$BUILD_DIR/packages/$pkg/package.json" "$PROD_HOME/node_modules/@getpaseo/$pkg/package.json" 2>/dev/null || true
+            fi
+          done
+          echo "Server + protocol/client deps deployed to PROD via pnpm-built dist"
 
       - name: Restart PROD daemon
         run: |
