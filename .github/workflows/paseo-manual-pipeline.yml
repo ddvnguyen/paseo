@@ -70,11 +70,14 @@ on:
         type: string
         default: ""
 
+permissions:
+  contents: write
+
 env:
   BUILDS_ROOT: /mnt/WorkDisk/actions-runners/paseo/builds
   JAVA_HOME: /tmp/jdk-17.0.12
   ANDROID_HOME: /tmp/android-sdk
-  GRADLE_USER_HOME: /mnt/WorkDisk/actions-runners/paseo/.gradle
+  GRADLE_USER_HOME: /home/ddv/.gradle
   WEB_UI_DEPLOY: /home/ddv/paseo-app/web-ui
   TEST_HOME: /home/ddv/.paseo-test
   PROD_HOME: /home/ddv/paseo-prod-bun
@@ -87,7 +90,7 @@ jobs:
     if: ${{ inputs.run_build_hydra }}
     runs-on: [self-hosted, paseo-host]
     outputs:
-      sha: ${{ steps.resolve.outputs.sha }}
+      sha: ${{ steps.sha.outputs.full }}
     steps:
       - name: Resolve branch and SHA
         id: resolve
@@ -135,6 +138,7 @@ jobs:
           npm run build:relay
           npm run build:protocol
           npm run build:client
+          npm run build:plugin
           npm run build --workspace=@getpaseo/server
           npm run build --workspace=@getpaseo/cli
 
@@ -144,7 +148,16 @@ jobs:
       - name: Persist build
         run: |
           set -euo pipefail
-          DEST="${{ env.BUILDS_ROOT }}/hydra/${{ steps.sha.outputs.full }}"
+          # Prune old persisted builds first. Each one is a full source copy
+          # (node_modules excepted, which is hardlinked) and accumulates real
+          # inodes on the NTFS volume, which has a fixed inode ceiling
+          # independent of free bytes — an unbounded accumulation of these
+          # has exhausted it before. Keep only the single most recent
+          # existing build; this run's own directory is created fresh below.
+          HYDRA_BUILDS_DIR="${{ env.BUILDS_ROOT }}/hydra"
+          mkdir -p "$HYDRA_BUILDS_DIR"
+          ls -1dt "$HYDRA_BUILDS_DIR"/*/ 2>/dev/null | tail -n +2 | xargs -r rm -rf || true
+          DEST="$HYDRA_BUILDS_DIR/${{ steps.sha.outputs.full }}"
           mkdir -p "$DEST"
           # Copy the entire repo tree (built artifacts included)
           rsync -a --delete \
@@ -153,6 +166,22 @@ jobs:
             --exclude '.dev' \
             --exclude 'packages/app/android' \
             ./ "$DEST/"
+          # Hardlink-copy node_modules instead of a real copy or a fresh
+          # `npm ci` per downstream job: same filesystem, same commit/lockfile,
+          # near-zero extra inode cost (vs. ~130k inodes per fresh install,
+          # which exhausted the NTFS MFT when two downstream jobs ran their
+          # own `npm ci` in parallel against the same persisted directory).
+          # npm workspaces can nest per-package node_modules (e.g. a package's
+          # own devDependency not hoisted to root) — hardlink every
+          # node_modules dir found, not just the root one.
+          find . -maxdepth 4 -type d -name node_modules | while read -r nm; do
+            mkdir -p "$DEST/$(dirname "$nm")"
+            cp -al "$nm" "$DEST/$nm"
+          done
+          # A minimal git repo so any script that shells out to `git`
+          # (e.g. lefthook's prepare hook, version-resolution scripts)
+          # doesn't hard-fail against the persisted, .git-less copy.
+          git -C "$DEST" init -q
           echo "Build persisted to $DEST"
           du -sh "$DEST"
 
@@ -160,8 +189,17 @@ jobs:
   # Stage 2 — Android APK
   # ═══════════════════════════════════════════════════════════════════════
   build-android:
-    if: ${{ inputs.run_build_android }}
-    needs: [build-hydra]
+    # Lowest priority: waits for deploy-web/deploy-test/deploy-prod to finish
+    # (or be skipped) before starting, so the fast deploy stages aren't stuck
+    # queueing behind Android's long Gradle build on the shared runner pool.
+    if: |
+      always() &&
+      inputs.run_build_android &&
+      (needs.build-hydra.result == 'success' || needs.build-hydra.result == 'skipped') &&
+      (needs.deploy-web.result == 'success' || needs.deploy-web.result == 'skipped') &&
+      (needs.deploy-test.result == 'success' || needs.deploy-test.result == 'skipped') &&
+      (needs.deploy-prod.result == 'success' || needs.deploy-prod.result == 'skipped')
+    needs: [build-hydra, deploy-web, deploy-test, deploy-prod]
     runs-on: [self-hosted, paseo-host]
     steps:
       - name: Resolve build ref
@@ -190,36 +228,23 @@ jobs:
           echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           echo "## Android build — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.12.0
-          run_install: false
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "pnpm"
 
       - name: Stamp version and resolve metadata
         working-directory: ${{ steps.locate.outputs.dir }}
         run: |
-          node scripts/sync-workspace-versions.mjs
-          SHORT_SHA="$(git rev-parse --short HEAD)"
+          bun scripts/sync-workspace-versions.mjs
+          FULL_SHA="${{ steps.ref.outputs.sha }}"
+          SHORT_SHA="${FULL_SHA:0:7}"
           APP_VERSION="$(node -p "require('./packages/app/package.json').version")"
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
         id: meta
 
-      - name: Install dependencies
-        working-directory: ${{ steps.locate.outputs.dir }}
-        run: pnpm install --frozen-lockfile
-
-      - name: Build client packages (for Expo prebuild)
-        working-directory: ${{ steps.locate.outputs.dir }}
-        run: |
-          npm run build:client
-          npm run build:highlight
-          npm run build:plugin
+      # client/highlight/plugin dist/ are already built and persisted by
+      # Stage 1 (build-hydra) — no need to rebuild them here.
 
       - name: Expo prebuild (production variant)
         working-directory: ${{ steps.locate.outputs.dir }}/packages/app
@@ -235,6 +260,7 @@ jobs:
           export GRADLE_USER_HOME="${{ env.GRADLE_USER_HOME }}"
           export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
           ./gradlew assembleRelease \
+            -PreactNativeArchitectures=arm64-v8a \
             -x lint -x lintVitalAnalyzeRelease -x lintVitalRelease \
             -x generateReleaseLintModel -x generateReleaseLintVitalModel \
             --no-daemon
@@ -256,6 +282,41 @@ jobs:
           name: hydra-paseo-${{ steps.ref.outputs.sha }}-android.apk
           path: ${{ env.BUILDS_ROOT }}/android/${{ steps.ref.outputs.sha }}.apk
           retention-days: 30
+
+      - name: Create tag and GitHub Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          APP_VER="${{ steps.meta.outputs.app_version }}"
+          SHORT_SHA="${{ steps.meta.outputs.short_sha }}"
+          # Ensure tag is unique per commit even if APP_VER was short-stamped in persisted dir without git
+          if [[ "$APP_VER" == *"$SHORT_SHA"* ]]; then
+            TAG="hub-android-${APP_VER}"
+          else
+            TAG="hub-android-${APP_VER}-${SHORT_SHA}"
+          fi
+          if [ -z "$APP_VER" ]; then TAG="hub-android-${SHORT_SHA}"; fi
+          echo "Checking for existing release $TAG..."
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — skipping create"
+            exit 0
+          fi
+          APK="${{ env.BUILDS_ROOT }}/android/${{ steps.ref.outputs.sha }}.apk"
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK not found at $APK"
+            exit 1
+          fi
+          echo "Creating release $TAG for $APK (app_version $APP_VER, sha ${{ steps.ref.outputs.sha }})"
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "Paseo Hub Android $APP_VER" \
+            --notes "Automated Android build for commit ${{ steps.ref.outputs.sha }} (branch \`${{ github.ref_name }}\`). Built via Paseo Manual Pipeline.\n\nAPK: hydra-paseo-${{ steps.ref.outputs.sha }}-android.apk" \
+            --target "${{ steps.ref.outputs.sha }}" \
+            "$APK"
+          echo "Release $TAG created with APK"
+          echo "## 📦 Release [$TAG](${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG) created" >> "$GITHUB_STEP_SUMMARY"
 
   # ═══════════════════════════════════════════════════════════════════════
   # Stage 3 — Deploy web UI
@@ -291,6 +352,10 @@ jobs:
           echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           echo "## Deploy web UI — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Build web UI from persisted build
         working-directory: ${{ steps.locate.outputs.dir }}
         run: node scripts/build-web-ui.mjs
@@ -304,63 +369,6 @@ jobs:
           rsync -a --delete "$SRC/" "$DEST/"
           echo "Deployed web UI to $DEST"
           ls "$DEST" | head -5
-
-      - name: Apply Paseo Hub branding
-        run: |
-          set -euo pipefail
-          DEST="${{ env.WEB_UI_DEPLOY }}"
-          BRANDING="/home/ddv/.paseo-test-branding"
-
-          if [ ! -d "$BRANDING" ]; then
-            echo "::warning::Branding source $BRANDING does not exist — skipping branding overlay. Seed it once with tinted PWA icons and status favicons."
-            exit 0
-          fi
-
-          echo "Applying Paseo Hub branding from $BRANDING"
-
-          # 1. PWA icons
-          for f in favicon.ico apple-touch-icon.png pwa-icon-192.png pwa-icon-512.png; do
-            if [ -f "$BRANDING/$f" ]; then
-              cp "$BRANDING/$f" "$DEST/$f"
-              echo "  Copied $f"
-            fi
-          done
-
-          # 2. Status favicons (tab icons set by useFaviconStatus())
-          if [ -d "$BRANDING/status-icons" ]; then
-            ASSETS="$DEST/assets/assets/images"
-            mkdir -p "$ASSETS"
-            for pair in \
-              "none.png:favicon-dark.png" \
-              "running.png:favicon-dark-running.png" \
-              "attention.png:favicon-dark-attention.png" \
-              "none.png:favicon-light.png" \
-              "running.png:favicon-light-running.png" \
-              "attention.png:favicon-light-attention.png"; do
-              src_name="${pair%%:*}"
-              dst_name="${pair##*:}"
-              if [ -f "$BRANDING/status-icons/$src_name" ]; then
-                cp "$BRANDING/status-icons/$src_name" "$ASSETS/$dst_name"
-                echo "  Copied status-icons/$src_name → $dst_name"
-              fi
-            done
-          fi
-
-          # 3. Patch manifest.json name/short_name to "Paseo Hub"
-          MANIFEST="$DEST/manifest.json"
-          if [ -f "$MANIFEST" ]; then
-            node -e "
-              const fs = require('fs');
-              const m = JSON.parse(fs.readFileSync('$MANIFEST', 'utf8'));
-              m.name = 'Paseo Hub';
-              m.short_name = 'Paseo Hub';
-              fs.writeFileSync('$MANIFEST', JSON.stringify(m, null, 2) + '\n');
-            "
-            echo "  Patched manifest name → Paseo Hub"
-          fi
-
-          # 4. Delete stale pre-compressed manifest copies
-          rm -f "$DEST/manifest.json.br" "$DEST/manifest.json.gz"
 
       - name: Reload Caddy
         run: |
