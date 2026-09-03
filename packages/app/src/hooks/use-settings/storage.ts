@@ -369,6 +369,7 @@ const StoredAppSettingsSchema = z
         stored.debugConversationSpacing ?? DEFAULT_DEBUG_CONVERSATION_SPACING,
       lineHeightScale: stored.lineHeightScale ?? DEFAULT_LINE_HEIGHT_SCALE,
       sidebarChecksDisplay,
+      sidebarNavItems: stored.sidebarNavItems ?? [],
       sidebarRowItems: {
         ...stored.sidebarRowItems,
         services:
