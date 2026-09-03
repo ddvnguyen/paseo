@@ -28,6 +28,7 @@ export type WorkspaceTitleSource = "title" | "branch";
 /** What a sidebar workspace row shows in the space to the right of its title. */
 export type SidebarWorkspaceTrailing = "diff" | "timestamp" | "none";
 export type ToolCallDetailLevel = "overview" | "detailed";
+export type DebugConversationSpacing = "compact" | "comfortable" | "spacious";
 
 const VALID_THEMES = new Set<string>(THEME_OPTIONS.map((option) => option.name));
 const ThemePreferenceSchema = z.enum(THEME_OPTIONS.map((option) => option.name));
@@ -39,6 +40,11 @@ const VALID_SIDEBAR_WORKSPACE_TRAILINGS = new Set<SidebarWorkspaceTrailing>([
   "none",
 ]);
 const VALID_TOOL_CALL_DETAIL_LEVELS = new Set<ToolCallDetailLevel>(["overview", "detailed"]);
+const VALID_DEBUG_CONVERSATION_SPACINGS = new Set<DebugConversationSpacing>([
+  "compact",
+  "comfortable",
+  "spacious",
+]);
 export const DEFAULT_TERMINAL_SCROLLBACK_LINES = 10_000;
 export const MIN_TERMINAL_SCROLLBACK_LINES = 0;
 export const MAX_TERMINAL_SCROLLBACK_LINES = 1_000_000;
@@ -70,6 +76,7 @@ export interface AppSettings {
   toolCallDetailLevel: ToolCallDetailLevel;
   chatOutlineEnabled: boolean;
   vimKeybindings: boolean;
+  debugConversationSpacing: DebugConversationSpacing;
 }
 
 export interface Settings extends AppSettings {
@@ -108,6 +115,7 @@ const StoredAppSettingsSchema = z.strictObject({
   compactToolCalls: z.boolean().optional(),
   chatOutlineEnabled: z.boolean().optional(),
   vimKeybindings: z.boolean().optional(),
+  debugConversationSpacing: z.enum(["compact", "comfortable", "spacious"]).optional(),
   // COMPAT(rendererDesktopSettings): these fields used to share this renderer-owned key.
   manageBuiltInDaemon: z.boolean().optional(),
   releaseChannel: z.enum(["stable", "beta"]).optional(),
@@ -137,6 +145,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   toolCallDetailLevel: "detailed",
   chatOutlineEnabled: true,
   vimKeybindings: false,
+  debugConversationSpacing: "comfortable",
 };
 
 export const DEFAULT_APP_SETTINGS: Settings = {
@@ -368,6 +377,14 @@ function pickAppSettings(stored: StoredAppSettings): Partial<AppSettings> {
   const toolCallDetailLevel = parseToolCallDetailLevel(stored);
   if (toolCallDetailLevel !== null) {
     result.toolCallDetailLevel = toolCallDetailLevel;
+  }
+  if (
+    typeof stored.debugConversationSpacing === "string" &&
+    VALID_DEBUG_CONVERSATION_SPACINGS.has(
+      stored.debugConversationSpacing as DebugConversationSpacing,
+    )
+  ) {
+    result.debugConversationSpacing = stored.debugConversationSpacing;
   }
   return result;
 }

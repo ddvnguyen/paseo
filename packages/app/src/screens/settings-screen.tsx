@@ -38,6 +38,7 @@ import {
   Smartphone,
   Sparkles,
   Blocks,
+  Bug,
 } from "lucide-react-native";
 import { DropdownTrigger } from "@/components/ui/dropdown-trigger";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
@@ -173,6 +174,7 @@ const SIDEBAR_SECTION_ITEMS: SidebarSectionItem[] = [
     desktopOnly: true,
   },
   { id: "diagnostics", labelKey: "settings.sections.diagnostics", icon: Stethoscope },
+  { id: "debug", labelKey: "settings.sections.debug", icon: Bug },
   { id: "about", labelKey: "settings.sections.about", icon: Info },
 ];
 
@@ -545,6 +547,96 @@ function DiagnosticsSection({
               ? t("settings.diagnostics.playing")
               : t("settings.diagnostics.playTest")}
           </Button>
+        </View>
+      </View>
+    </SettingsSection>
+  );
+}
+
+function DebugSection() {
+  const { t } = useTranslation();
+  const { settings, updateSettings } = useAppSettings();
+  const [testState, setTestState] = useState<"idle" | "sending" | "success" | "error">("idle");
+  const [testError, setTestError] = useState<string | null>(null);
+
+  const handleSendTestNotification = useCallback(async () => {
+    setTestState("sending");
+    setTestError(null);
+    try {
+      const { sendDebugTestNotification } = await import(
+        "@/push-notifications/debug-test-notification"
+      );
+      const result = await sendDebugTestNotification();
+      if (result.ok) {
+        setTestState("success");
+      } else {
+        setTestState("error");
+        setTestError(result.error ?? "Failed to send notification");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setTestState("error");
+      setTestError(message);
+    } finally {
+      setTimeout(() => setTestState("idle"), 3000);
+    }
+  }, []);
+
+  const handleSpacingChange = useCallback(
+    (value: AppSettings["debugConversationSpacing"]) => {
+      void updateSettings({ debugConversationSpacing: value });
+    },
+    [updateSettings],
+  );
+
+  const spacingOptions = useMemo(
+    () => [
+      { value: "compact" as const, label: "Compact" },
+      { value: "comfortable" as const, label: "Comfortable" },
+      { value: "spacious" as const, label: "Spacious" },
+    ],
+    [],
+  );
+
+  return (
+    <SettingsSection title={t("settings.sections.debug", { defaultValue: "Debug" })}>
+      <View style={settingsStyles.card}>
+        <View style={settingsStyles.row}>
+          <View style={settingsStyles.rowContent}>
+            <Text style={settingsStyles.rowTitle}>Send test notification</Text>
+            <Text style={settingsStyles.rowHint}>
+              Verify local notifications on this build (works without FCM)
+            </Text>
+            {testState === "success" ? (
+              <Text style={[settingsStyles.rowHint, { color: "#20744A" }]}>
+                Test notification sent — check the notification shade
+              </Text>
+            ) : null}
+            {testState === "error" && testError ? (
+              <Text style={[settingsStyles.rowHint, { color: "#b91c1c" }]}>{testError}</Text>
+            ) : null}
+          </View>
+          <Button
+            variant="outline"
+            size="sm"
+            onPress={handleSendTestNotification}
+            disabled={testState === "sending"}
+            testID="debug-send-test-notification"
+          >
+            {testState === "sending" ? "Sending…" : "Send"}
+          </Button>
+        </View>
+        <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+          <View style={settingsStyles.rowContent}>
+            <Text style={settingsStyles.rowTitle}>Conversation spacing</Text>
+            <Text style={settingsStyles.rowHint}>Gap between messages in the chat view</Text>
+          </View>
+          <SegmentedControl
+            size="sm"
+            value={settings.debugConversationSpacing}
+            onValueChange={handleSpacingChange}
+            options={spacingOptions}
+          />
         </View>
       </View>
     </SettingsSection>
@@ -1460,6 +1552,8 @@ export default function SettingsScreen({ view, openAddHostIntent = null }: Setti
               handlePlaybackTest={handlePlaybackTest}
             />
           );
+        case "debug":
+          return <DebugSection />;
         case "about":
           return (
             <AboutSection
