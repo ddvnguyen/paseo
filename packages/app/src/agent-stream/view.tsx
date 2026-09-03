@@ -1730,9 +1730,13 @@ interface StreamItemWrapperProps {
 }
 
 function StreamItemWrapper({ gapBelow, children }: StreamItemWrapperProps) {
+  const debugSpacing = useSettings((settings) => settings.debugConversationSpacing);
+  const spacingFactor =
+    debugSpacing === "compact" ? 0.5 : debugSpacing === "spacious" ? 1.5 : 1;
+  const scaledGap = gapBelow * spacingFactor;
   const wrapperStyle = useMemo(
-    () => [stylesheet.streamItemWrapper, { marginBottom: gapBelow }],
-    [gapBelow],
+    () => [stylesheet.streamItemWrapper, { marginBottom: scaledGap }],
+    [scaledGap],
   );
   return <View style={wrapperStyle}>{children}</View>;
 }

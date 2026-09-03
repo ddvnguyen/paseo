@@ -499,6 +499,7 @@ export const SETTINGS_SECTION_SLUGS = [
   "notifications",
   "permissions",
   "diagnostics",
+  "debug",
   "about",
 ] as const;
 

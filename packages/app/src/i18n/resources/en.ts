@@ -1906,6 +1906,7 @@ export const en = {
       notifications: "Notifications",
       permissions: "Permissions",
       diagnostics: "Diagnostics",
+      debug: "Debug",
       about: "About",
     },
     layout: {
