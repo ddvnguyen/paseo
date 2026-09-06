@@ -271,6 +271,8 @@ jobs:
         run: |
           rm -rf "${{ env.GRADLE_USER_HOME }}/caches/journal-1/file-access.bin" 2>/dev/null || true
           rm -rf "${{ env.GRADLE_USER_HOME }}/caches/journal-1/file-access.bin.lock" 2>/dev/null || true
+          rm -rf "${{ env.GRADLE_USER_HOME }}/caches/journal-1/journal-1.lock" 2>/dev/null || true
+          pkill -9 -f GradleDaemon 2>/dev/null || true
 
       - name: Gradle assembleRelease
         working-directory: ${{ steps.locate.outputs.dir }}/packages/app/android
