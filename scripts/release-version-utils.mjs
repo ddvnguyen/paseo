@@ -25,11 +25,8 @@ export function parseReleaseVersion(version) {
   const betaMatch = prerelease?.match(/^beta\.(?<beta>\d+)$/) ?? null;
   const betaNumber = betaMatch?.groups?.beta ? Number.parseInt(betaMatch.groups.beta, 10) : null;
 
-  if (prerelease !== null && betaNumber === null) {
-    throw new Error(
-      `Unsupported release version "${version}". Expected beta prerelease versions like 0.1.41-beta.1.`,
-    );
-  }
+  // Loosened: allow any prerelease suffix after main version (e.g. -hydra-290e6c0, -rc.1, -custom)
+  // isBeta/betaNumber still tracked for beta channel, but non-beta prereleases are accepted as prerelease.
 
   assertInteger(major, "major version");
   assertInteger(minor, "minor version");
