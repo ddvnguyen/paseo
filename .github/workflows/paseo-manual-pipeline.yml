@@ -74,7 +74,7 @@ permissions:
   contents: write
 
 env:
-  BUILDS_ROOT: /mnt/WorkDisk/actions-runners/paseo/builds
+  BUILDS_ROOT: /home/ddv/paseo-builds
   GRADLE_USER_HOME: /home/ddv/.gradle
   WEB_UI_DEPLOY: /home/ddv/paseo-app/web-ui
   TEST_HOME: /home/ddv/.paseo-test
