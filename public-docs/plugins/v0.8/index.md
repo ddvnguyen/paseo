@@ -24,7 +24,8 @@ A plugin is a TypeScript project installed into one Paseo daemon. It can add
 [timeline items](/docs/plugins/v0.8/reference#timeline-items),
 [themes](/docs/plugins/v0.8/reference#contribute-a-theme),
 [attachment sources](/docs/plugins/v0.8/reference#add-a-composer-attachment-source), and
-[daemon-side RPCs](/docs/plugins/v0.8/reference#add-plugin-specific-backend-behavior). Client
+[daemon-side RPCs](/docs/plugins/v0.8/reference#add-plugin-specific-backend-behavior). It can also
+[connect a coding agent as a provider](/docs/plugins/v0.8/providers). Client
 contributions run on every Paseo client connected to that daemon, including mobile.
 
 This guide scaffolds a plugin, runs it, and adds a workspace panel to it.
@@ -231,10 +232,12 @@ Append `:relative/path` when the plugin lives below the repository root. Without
 default branch is tracked; a branch tracks updates, while a tag or commit stays pinned.
 
 ```bash
-paseo plugin status
+paseo plugin ls
 paseo plugin update workspace-plugin
 paseo plugin update --all
 ```
+
+`ls` reports runtime state, source details, and the installed commit without contacting the remote.
 
 Paseo compiles TypeScript itself, so most plugins need no build step. A repository that must
 install a dependency Paseo does not provide, or generate files, declares
@@ -263,6 +266,8 @@ log.
 
 ## Next
 
+- [Build a provider plugin](/docs/plugins/v0.8/providers): connect an agent directly or through ACP,
+  render provider-owned timeline items, test it, and publish it.
 - [Plugin reference](/docs/plugins/v0.8/reference): every contribution type, its fields, the runtime
   modules, hosts, and the CLI.
 - [Migrate a plugin to runtime entries](/docs/plugins/v0.8/migration): move a plugin written against the
