@@ -1833,18 +1833,13 @@ interface StreamItemWrapperProps {
 }
 
 function StreamItemWrapper({ gapBelow, isToolBlock, children }: StreamItemWrapperProps) {
-  const theme = UnistylesRuntime.getTheme();
-  const wrapperStyle = useMemo(() => {
-    if (!theme.debugConversationSpacing) {
-      return [stylesheet.streamItemWrapper, { marginBottom: gapBelow }];
-    }
-    if (isToolBlock) {
-      return [
-        stylesheet.streamItemWrapper,
-        { marginBottom: gapBelow, backgroundColor: "rgba(59,130,246,0.22)" },
-      ];
-    }
-    return [stylesheet.streamItemWrapper, { marginBottom: gapBelow }];
-  }, [gapBelow, isToolBlock, theme.debugConversationSpacing]);
+  const debugSpacing = useSettings((settings) => settings.debugConversationSpacing);
+  const spacingFactor =
+    debugSpacing === "compact" ? 0.5 : debugSpacing === "spacious" ? 1.5 : 1;
+  const scaledGap = gapBelow * spacingFactor;
+  const wrapperStyle = useMemo(
+    () => [stylesheet.streamItemWrapper, { marginBottom: scaledGap }],
+    [scaledGap],
+  );
   return <View style={wrapperStyle}>{children}</View>;
 }

@@ -723,13 +723,6 @@ export function AppearanceSection() {
     [updateSettings],
   );
 
-  const handleDebugConversationSpacingChange = useCallback(
-    (debugConversationSpacing: boolean) => {
-      void updateSettings({ debugConversationSpacing });
-    },
-    [updateSettings],
-  );
-
   const handleLineHeightScaleChange = useCallback(
     (lineHeightScale: number) => {
       void updateSettings({ lineHeightScale });
@@ -944,19 +937,6 @@ export function AppearanceSection() {
             format="percent"
             onChange={handleContentSpacingScaleChange}
           />
-          <View style={settingsStyles.row}>
-            <View style={settingsStyles.rowContent}>
-              <Text style={settingsStyles.rowTitle}>Debug conversation spacing</Text>
-              <Text style={settingsStyles.rowHint}>
-                Red = content gaps, Pink = compact edges, Blue = tool gaps
-              </Text>
-            </View>
-            <Switch
-              value={settings.debugConversationSpacing}
-              onValueChange={handleDebugConversationSpacingChange}
-              accessibilityLabel="Debug conversation spacing"
-            />
-          </View>
           <StepperRow
             title={t("settings.appearance.fonts.lineHeightScale")}
             hint={t("settings.appearance.fonts.lineHeightScaleHint")}

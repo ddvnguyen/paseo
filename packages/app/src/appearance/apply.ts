@@ -13,6 +13,7 @@ import {
 } from "@/styles/theme";
 import { applyRootUiFont } from "./apply-root-font";
 import { applyRootUiScale } from "./apply-root-scale";
+import type { DebugConversationSpacing } from "@/hooks/use-settings/storage";
 
 const ALL_THEME_KEYS = Object.keys(REGISTERED_THEMES) as (keyof typeof REGISTERED_THEMES)[];
 
@@ -26,7 +27,7 @@ export interface AppearanceInput {
   iconScale: number; // 0.5–2.0, default 1 — scales icon glyphs only
   spacingScale: number; // 0.5–2.0, default 1 — scales spacing tokens only
   contentSpacingScale: number; // 0.5–2.0, default 0.75 — scales markdown/HTML spacing
-  debugConversationSpacing?: boolean;
+  debugConversationSpacing?: DebugConversationSpacing;
   lineHeightScale: number; // 0.5–2.0, default 1.3
   syntaxTheme: SyntaxThemeId;
 }
@@ -171,7 +172,7 @@ export function applyAppearance(input: AppearanceInput): void {
           spacing,
           ...uiTokens,
           contentSpacingScale: input.contentSpacingScale,
-          debugConversationSpacing: input.debugConversationSpacing ?? false,
+          debugConversationSpacing: false,
           colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
         };
       }
@@ -183,7 +184,7 @@ export function applyAppearance(input: AppearanceInput): void {
         spacing,
         ...uiTokens,
         contentSpacingScale: input.contentSpacingScale,
-        debugConversationSpacing: input.debugConversationSpacing ?? false,
+        debugConversationSpacing: false,
         colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
       };
     });

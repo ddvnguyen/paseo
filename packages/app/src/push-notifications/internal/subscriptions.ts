@@ -28,32 +28,69 @@ async function ensurePushPermission(): Promise<boolean> {
   return requested.status === Notifications.PermissionStatus.GRANTED;
 }
 
+async function ensureAndroidChannel(): Promise<void> {
+  if (Platform.OS !== "android") return;
+  try {
+    await Notifications.setNotificationChannelAsync("default", {
+      name: "default",
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: "#20744A",
+    });
+  } catch (error) {
+    console.warn("[PushNotifications] Failed to ensure Android channel", error);
+  }
+}
+
 async function resolveToken(serverId: string): Promise<string | null> {
   const key = storageKey(serverId);
   const cached = await readValidatedString(AsyncStorage, key, ExpoPushTokenSchema);
+  // Always ensure Android channel exists, even for custom builds without EAS
+  await ensureAndroidChannel();
+
   if (!(await ensurePushPermission())) {
     await AsyncStorage.removeItem(key);
     return null;
   }
 
-  if (Platform.OS === "android") {
-    await Notifications.setNotificationChannelAsync("default", {
-      name: "default",
-      importance: Notifications.AndroidImportance.DEFAULT,
-    });
-  }
-
   const projectId = getExpoProjectId();
   if (!projectId) {
-    console.warn("[PushNotifications] Missing EAS projectId; cannot fetch Expo push token");
+    console.warn(
+      "[PushNotifications] Missing EAS projectId; attempting device push token for custom build",
+    );
+    // Custom builds (local gradle, self-hosted EAS) may not have EAS projectId.
+    // Fall back to native device token so FCM/APNs can still deliver if google-services is present.
+    try {
+      const deviceToken = (await Notifications.getDevicePushTokenAsync()).data;
+      const trimmed = deviceToken?.trim();
+      if (trimmed) {
+        await AsyncStorage.setItem(key, trimmed);
+        return trimmed;
+      }
+    } catch (error) {
+      console.warn("[PushNotifications] Device token fallback failed", error);
+    }
     return cached;
   }
 
-  const result = await Notifications.getExpoPushTokenAsync({ projectId });
-  const token = result.data.trim();
-  if (!token) return cached;
-  await AsyncStorage.setItem(key, token);
-  return token;
+  try {
+    const result = await Notifications.getExpoPushTokenAsync({ projectId });
+    const token = result.data.trim();
+    if (!token) return cached;
+    await AsyncStorage.setItem(key, token);
+    return token;
+  } catch (error) {
+    console.warn("[PushNotifications] getExpoPushTokenAsync failed, trying device token", error);
+    try {
+      const deviceToken = (await Notifications.getDevicePushTokenAsync()).data;
+      const trimmed = deviceToken?.trim();
+      if (trimmed) {
+        await AsyncStorage.setItem(key, trimmed);
+        return trimmed;
+      }
+    } catch {}
+    return cached;
+  }
 }
 
 export function startSubscription(input: StartPushNotificationsInput): () => void {
