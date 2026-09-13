@@ -42,16 +42,16 @@ async function prepareCachedTimeline(input: {
   const before = useSessionStore.getState().sessions[input.serverId];
   const beforeTimeline = selectAgentTimelineState(before, input.agentId);
   if (beforeTimeline.status === "synced") return undefined;
-  const beforeHead = before?.agentStreamHead.get(input.agentId);
-  await input.prepareAgent(input.agentId);
-  const stored = await input.storage.readTimeline(input.serverId, input.agentId);
+  const [stored] = await Promise.all([
+    input.storage.readTimeline(input.serverId, input.agentId),
+    input.prepareAgent(input.agentId),
+  ]);
   if (!stored) return undefined;
   const session = useSessionStore.getState().sessions[input.serverId];
   const currentTimeline = selectAgentTimelineState(session, input.agentId);
   const currentHead = session?.agentStreamHead.get(input.agentId);
   if (currentTimeline.status === "synced") return undefined;
   if (!stored.range) {
-    if (currentHead !== beforeHead) return undefined;
     if (beforeTimeline.status === "painted") {
       return currentTimeline.status === "painted" && currentTimeline.items === beforeTimeline.items
         ? stored
@@ -63,18 +63,20 @@ async function prepareCachedTimeline(input: {
     currentTimeline.status === "painted"
       ? [...currentTimeline.items, ...(currentHead ?? [])]
       : (currentHead ?? []);
-  const replacement = stored.range
-    ? replaceWithCanonicalStream({
-        canonical: stored.items,
-        previousTail: [],
-        previousHead: liveItems,
-        sendingClientMessageIds: getSendingClientMessageIds(
-          session?.messageSubmissions.get(input.agentId),
-        ),
-        preserveContinuity: true,
-        canonicalCoverage: stored.range,
-      })
-    : { tail: stored.items, head: liveItems, acknowledgedClientMessageIds: [] };
+  const replacement = replaceWithCanonicalStream({
+    canonical: stored.items,
+    previousTail: [],
+    previousHead: liveItems,
+    sendingClientMessageIds: getSendingClientMessageIds(
+      session?.messageSubmissions.get(input.agentId),
+    ),
+    preserveContinuity: true,
+    // Display-only rows claim no coverage over the live head.
+    canonicalCoverage: stored.range ?? {
+      epoch: liveItems.find((item) => item.timelineCursor)?.timelineCursor?.epoch ?? "",
+      endSeq: null,
+    },
+  });
   useSessionStore.getState().applyAgentTimelineResponseState(input.serverId, input.agentId, {
     items: replacement.tail,
     head: replacement.head,
@@ -306,10 +308,9 @@ function applyAuthoritativeTimelineResponse(input: {
 }
 
 export interface ViewedTimelineSyncPorts {
-  initialDeliveryMode: TimelineDeliveryMode;
   prepare(agentId: string): Promise<void>;
   replaceDemandedAgentIds(agentIds: string[]): void;
-  setSubscription(agentIds: string[]): Promise<void>;
+  observe(agentIds: string[]): { ready: Promise<unknown>; release(): Promise<void> };
   readCursor(agentId: string): { epoch: string; endSeq: number } | undefined;
   fetchPage(
     agentId: string,
@@ -320,7 +321,6 @@ export interface ViewedTimelineSyncPorts {
   schedule(task: () => void, delayMs: number): () => void;
 }
 
-export type TimelineDeliveryMode = "legacy" | "selective";
 export type ViewedTimelineStatus = "ready" | "pending" | "error" | "retrying";
 
 export interface ViewedTimelineUiBridge {
@@ -334,7 +334,6 @@ export interface ViewedTimelineUiBridge {
 export interface ViewedTimelineSync extends ViewedTimelineUiBridge {
   setActive(active: boolean): void;
   setConnected(connected: boolean): void;
-  setDeliveryMode(mode: TimelineDeliveryMode): void;
   recoverGap(agentId: string, cursor: { epoch: string; endSeq: number }): void;
   dispose(): void;
 }
@@ -357,8 +356,17 @@ export function createViewedTimelineOwner(input: {
   drainQueuedAgentMessage: (agentId: string) => void;
   ports: ViewedTimelineOwnerPorts;
 }): ViewedTimelineOwner {
+  const forcedTailReplacements = new Set<string>();
   const sync = createViewedTimelineSync({
     ...input.ports,
+    fetchLatestTail: async (agentId) => {
+      forcedTailReplacements.add(agentId);
+      try {
+        return await input.ports.fetchLatestTail(agentId);
+      } finally {
+        forcedTailReplacements.delete(agentId);
+      }
+    },
     prepare: (agentId) => input.replica.prepare(agentId),
     readCursor: (agentId) => input.replica.readCursor(agentId) ?? input.ports.readCursor(agentId),
     replaceDemandedAgentIds: input.replaceDemandedAgentIds,
@@ -372,7 +380,8 @@ export function createViewedTimelineOwner(input: {
   });
   return {
     ...sync,
-    applyTimelineResponse(payload) {
+    applyTimelineResponse(receivedPayload) {
+      const payload = consumeForcedTimelineTailReplacement(receivedPayload, forcedTailReplacements);
       const accepted = applyAuthoritativeTimelineResponse({
         serverId: input.serverId,
         payload,
@@ -475,13 +484,14 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
   const listeners = new Set<() => void>();
   let active = true;
   let connected = false;
-  let deliveryMode = ports.initialDeliveryMode;
+  let observation: {
+    handle: ReturnType<ViewedTimelineSyncPorts["observe"]>;
+    agentIds: string[];
+  } | null = null;
   let disposed = false;
   let desired: string[] = [];
   let acknowledged: string[] = [];
   let membershipGeneration = 0;
-  let reconciling = false;
-  let reconcileRequested = false;
   let membershipNeedsRetry = false;
   let membershipRetryDelayMs: number | undefined;
   let cancelMembershipRetry: (() => void) | null = null;
@@ -676,78 +686,46 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
     }
   };
 
-  const reconcileLatestMembership = async (): Promise<void> => {
-    if (disposed || !connected || deliveryMode !== "selective") return;
+  const reconcileMembership = async (): Promise<void> => {
+    if (disposed || !connected) return;
     const generation = membershipGeneration;
     const requested = desired;
-    if (!membershipNeedsRetry && sameAgentIds(requested, acknowledged)) return;
+    if (!membershipNeedsRetry && sameAgentIds(requested, observation?.agentIds ?? acknowledged))
+      return;
     membershipNeedsRetry = false;
     try {
-      await ports.setSubscription(requested);
+      const previous = observation;
+      const handle = ports.observe(requested);
+      observation = { handle, agentIds: requested };
+      void previous?.handle.release().catch(ports.reportError);
+      await handle.ready;
     } catch (error) {
+      if (disposed || !connected || generation !== membershipGeneration) return;
       membershipNeedsRetry = true;
       setVisibilityCatchUpError(requested, error);
       cancelMembershipRetry?.();
       const nextRetryDelayMs = getNextRetryDelayMs(membershipRetryDelayMs);
       cancelMembershipRetry = ports.schedule(() => {
         cancelMembershipRetry = null;
-        if (
-          disposed ||
-          !connected ||
-          membershipGeneration !== generation ||
-          !sameAgentIds(desired, requested)
-        ) {
-          return;
-        }
+        if (disposed || !connected || membershipGeneration !== generation) return;
         void reconcileMembership();
       }, nextRetryDelayMs);
       membershipRetryDelayMs = nextRetryDelayMs;
       ports.reportError(error);
       return;
     }
+    if (disposed || !connected || generation !== membershipGeneration) return;
     cancelMembershipRetry?.();
     cancelMembershipRetry = null;
     membershipRetryDelayMs = undefined;
-    if (disposed || !connected || deliveryMode !== "selective") return;
     acknowledged = requested;
-    if (generation !== membershipGeneration) {
-      await reconcileLatestMembership();
-      return;
-    }
     startAcknowledgedCatchUps();
-    if (!sameAgentIds(desired, acknowledged)) await reconcileLatestMembership();
-  };
-
-  const reconcileMembership = async () => {
-    if (reconciling) {
-      reconcileRequested = true;
-      return;
-    }
-    if (disposed || !connected) return;
-    reconciling = true;
-    try {
-      await reconcileLatestMembership();
-    } finally {
-      reconciling = false;
-      if (reconcileRequested && !disposed && connected && deliveryMode === "selective") {
-        reconcileRequested = false;
-        void reconcileMembership();
-      } else if (
-        !disposed &&
-        connected &&
-        deliveryMode === "selective" &&
-        !membershipNeedsRetry &&
-        !sameAgentIds(desired, acknowledged)
-      ) {
-        void reconcileMembership();
-      }
-    }
   };
 
   const retryVisibleAgentTimeline = (agentId: string) => {
     if (!isDesired(agentId) || manualRetries.has(agentId)) return;
     const catchUp = catchUps.get(agentId);
-    const membershipRetryable = deliveryMode === "selective" && membershipNeedsRetry && connected;
+    const membershipRetryable = membershipNeedsRetry && connected;
     if (catchUp?.status !== "error" && !membershipRetryable) return;
     manualRetries.add(agentId);
     notifyListeners();
@@ -759,7 +737,6 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
     cancelMembershipRetry?.();
     cancelMembershipRetry = null;
     membershipRetryDelayMs = undefined;
-    membershipNeedsRetry = false;
     void reconcileMembership();
   };
 
@@ -805,17 +782,12 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
     ports.replaceDemandedAgentIds(desired);
     membershipGeneration += 1;
     notifyListeners();
-    if (deliveryMode === "legacy") {
-      acknowledged = connected ? desired : [];
-      if (connected) startAcknowledgedCatchUps();
-      return;
-    }
     void reconcileMembership();
   };
 
   const publishVisibleMembership = () => {
     const visible = visibleAgentIds();
-    if (!connected || deliveryMode !== "selective") {
+    if (!connected) {
       const activeVisible = active ? visible : [];
       recentlyViewedAgentIds = activeVisible;
       commitDesiredMembership(activeVisible);
@@ -860,40 +832,15 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
         cancelMembershipRetry?.();
         cancelMembershipRetry = null;
         membershipRetryDelayMs = undefined;
+        void observation?.handle.release().catch(ports.reportError);
+        observation = null;
         acknowledged = [];
         membershipGeneration += 1;
         for (const agentId of desired) cancelCatchUp(agentId);
         return;
       }
       membershipGeneration += 1;
-      if (deliveryMode === "legacy") {
-        acknowledged = desired;
-        startAcknowledgedCatchUps();
-      } else {
-        void reconcileMembership();
-      }
-    },
-    setDeliveryMode(nextMode) {
-      if (deliveryMode === nextMode) return;
-      deliveryMode = nextMode;
-      cancelMembershipRetry?.();
-      cancelMembershipRetry = null;
-      membershipRetryDelayMs = undefined;
-      membershipNeedsRetry = false;
-      membershipGeneration += 1;
-      for (const agentId of desired) cancelCatchUp(agentId);
-      const visible = active ? visibleAgentIds() : [];
-      recentlyViewedAgentIds = visible;
-      desired = visible;
-      ports.replaceDemandedAgentIds(desired);
-      visibilityCatchUpPending.clear();
-      visibilityCatchUpErrors.clear();
-      manualRetries.clear();
-      for (const agentId of desired) visibilityCatchUpPending.add(agentId);
-      acknowledged = deliveryMode === "legacy" && connected ? desired : [];
-      notifyListeners();
-      if (deliveryMode === "selective" && connected) void reconcileMembership();
-      else if (connected) startAcknowledgedCatchUps();
+      void reconcileMembership();
     },
     recoverGap(agentId, cursor) {
       if (!isDesired(agentId)) return;
@@ -904,6 +851,8 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
     },
     dispose() {
       disposed = true;
+      void observation?.handle.release().catch(ports.reportError);
+      observation = null;
       cancelMembershipRetry?.();
       cancelMembershipRetry = null;
       membershipNeedsRetry = false;

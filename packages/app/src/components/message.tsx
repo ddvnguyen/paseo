@@ -1573,6 +1573,10 @@ export const AssistantMessage = memo(function AssistantMessage({
 }: AssistantMessageProps) {
   const { t } = useTranslation();
   const markdownParser = useMemo(createAssistantMarkdownParser, []);
+  const streamingMarkdownParser = useMemo(
+    () => createAssistantMarkdownParser({ streaming: true }),
+    [],
+  );
   const renderedMessage = useMemo(() => capAssistantMessageForRender(message), [message]);
   // Paint a paced prefix while the turn is streaming so text arrives at a steady
   // rate instead of in whatever lumps the daemon's coalescing window produced.
@@ -2061,7 +2065,11 @@ export const AssistantMessage = memo(function AssistantMessage({
             <MemoizedMarkdownBlock
               text={unit.text}
               rules={markdownRules}
-              parser={markdownParser}
+              parser={
+                phase === "streaming" && index === renderUnits.length - 1
+                  ? streamingMarkdownParser
+                  : markdownParser
+              }
               onLinkPress={handleMarkdownLinkPress}
             />
           ) : (
@@ -3241,6 +3249,7 @@ export const ToolCall = memo(function ToolCall({
     return (
       <PlanCard
         text={effectiveDetail.text}
+        outcome={presentation.planOutcome}
         testID="timeline-plan-card"
         disableOuterSpacing={disableOuterSpacing}
       />

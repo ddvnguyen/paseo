@@ -171,6 +171,10 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
   },
   desktopScrollContainer: {
+    // Grows only when the card has an explicit `desktopHeight`; a content-sized
+    // card has nothing to grow into. Without it a fixed-height card with short
+    // content leaves the footer stranded in the middle.
+    flexGrow: 1,
     flexShrink: 1,
     minHeight: 0,
     position: "relative",
@@ -449,6 +453,7 @@ export interface AdaptiveModalSheetProps {
   desktopMaxWidth?: number;
   /** Bound an author-owned list without changing content-sized first-party dialogs. */
   desktopHeight?: DimensionValue;
+  /** Whether the host supplies the scroll container. Caller-owned lists still share sheet gestures. */
   scrollable?: boolean;
   presentation?: "push" | "replace";
   /** Full body viewport below the header, including space beyond the content. */
@@ -646,9 +651,6 @@ export function AdaptiveModalSheet({
         onDismiss={handleDismiss}
         backdropComponent={renderBackdrop}
         enablePanDownToClose
-        // A custom scroll owner must also own body gestures. Gorhom otherwise
-        // locks even imperative list offsets until the sheet reaches its top snap.
-        enableContentPanningGesture={scrollable}
         backgroundComponent={SheetBackground}
         handleIndicatorStyle={handleIndicatorStyle}
         keyboardBehavior="extend"

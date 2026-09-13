@@ -1,9 +1,10 @@
+import { resolveDaemonVersion } from "../daemon-version.js";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
 import { z } from "zod";
-import { settingsRpc } from "@getpaseo/plugin/host";
+import { settingsRpc } from "@getpaseo/plugin";
 import { DaemonClient } from "../test-utils/daemon-client.js";
 import { createTestPaseoDaemon } from "../test-utils/paseo-daemon.js";
 
@@ -19,7 +20,10 @@ test("two clients share settings, observe changes, and preserve values through p
   try {
     await writeFile(
       path.join(directory, "paseo-plugin.json"),
-      JSON.stringify({ id: "settings-test" }),
+      JSON.stringify({
+        id: "settings-test",
+        requirements: { paseo: `>=${resolveDaemonVersion(import.meta.url)}` },
+      }),
     );
     await writeFile(
       path.join(directory, "index.server.ts"),
@@ -29,6 +33,7 @@ export default function(server) { server.registerSettings(defineSettings({ id: "
     );
     await first.connect();
     await second.connect();
+    await second.observeEvents(["status.plugin_settings_changed"]).ready;
     second.on("status", (message) => {
       if (message.payload.status === "plugin_settings_changed")
         changed.push(z.string().parse(message.payload.settingsId));

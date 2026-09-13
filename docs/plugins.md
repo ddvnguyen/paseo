@@ -1,7 +1,7 @@
 # Plugins
 
 Local plugins contribute daemon RPCs, native app surfaces, workspace panels, Command Center items,
-client slash commands, timeline items, composer pills, app themes, composer attachment sources, and settings screens.
+client slash commands, timeline items, header buttons, composer pills, app themes, composer attachment sources, and settings screens.
 Paseo executes `index.server.ts` in a subprocess and `index.client.tsx` in every connected app.
 
 > **Trust every plugin you add.** `paseo plugin add` and `paseo plugin install` mean “I trust this codebase.” Plugins are unsandboxed: server code and Git preparation commands run with the daemon user's access on the daemon host, and client contributions run inside Paseo. The repository's dependencies and future updates are part of that trust decision. With `--host`, preparation runs on that remote daemon host.
@@ -41,7 +41,7 @@ runtime-safe: run `paseo reload` after editing `config.json`. Enabling starts ev
 enabled plugin; disabling tears them all down without restarting the daemon. Plugin source entries
 remain lifecycle-owned and do not reload from manual config edits.
 
-The directory contains an identity-only manifest, one optional entry per runtime, runtime-owned
+The directory contains a manifest declaring identity and Paseo requirements, one optional entry per runtime, runtime-owned
 directories, and local typechecking support. At least one entry is required.
 
 ```text
@@ -62,9 +62,14 @@ runtime modules, so consumers do not install these packages when adding the plug
 
 ```json
 {
-  "id": "my-plugin"
+  "id": "my-plugin",
+  "requirements": { "paseo": ">=0.8.0" }
 }
 ```
+
+Declare the supported Paseo range and keep it current when adopting newer APIs. See the
+[requirements contract](../public-docs/plugins/v0.8/reference.md#requirements), including legacy
+manifests and prerelease matching.
 
 The config key is the runtime plugin ID. The manifest ID is the default selected during install;
 `--id` overrides it. Existing configuration is not renamed when the manifest changes, and the
@@ -111,6 +116,7 @@ step:
 ```json
 {
   "id": "review",
+  "requirements": { "paseo": ">=0.8.0" },
   "build": [
     ["npm", "ci"],
     ["npm", "run", "build"]
@@ -152,7 +158,7 @@ Do not put any other code modules in the plugin root.
 
 Shared files import contract helpers and types from `@getpaseo/plugin`. Server handler files import
 `PluginHandlerContext` from `@getpaseo/plugin/server`. Client files import Paseo UI from
-`@getpaseo/plugin/react-native`. Its `Icon` resolves a Lucide name using the client's installed icon
+`@getpaseo/plugin/client/react-native`. Its `Icon` resolves a Lucide name using the client's installed icon
 set; an unknown name renders nothing so it cannot break the plugin surface.
 Its controlled modal keeps presentation metadata on `<Modal title="…" icon={…}>` and body UI in
 `<Modal.Content>`. Body layout, sheet-aware scrolling, and clipboard actions follow the
@@ -161,16 +167,37 @@ Plugin UI runs on desktop and mobile across multiple themes: color every `Text` 
 `theme.colors.foreground` or `theme.colors.foregroundMuted`, and size layout from `layout.compact`.
 See `public-docs/plugins/v0.8/reference.md`.
 
-| Module                          | Use it for                                                                                |
-| ------------------------------- | ----------------------------------------------------------------------------------------- |
-| `@getpaseo/plugin`              | contribution contracts, shared definitions, RPC input/output types, and client data hooks |
-| `@getpaseo/plugin/react-native` | Paseo React Native components and UI hooks                                                |
-| `@getpaseo/plugin/server`       | handler-only types such as `PluginHandlerContext`                                         |
-| `@getpaseo/plugin/provider`     | provider registration, connection, session, input, event, and timeline contracts          |
-| `@getpaseo/plugin/acp`          | command-backed ACP adapter and focused transformer hooks                                  |
+### SDK import boundaries
 
-The compiler rejects a client import of `server/`, a server import of `client/`, and every `node:`
-import reachable from client code. Shared modules cannot import runtime-owned modules. A relative
+Classify every SDK export before adding it. All client entry points and implementations live under
+`client/`; all server entry points and implementations live under `server/`. The package root is shared code: plain data types,
+Zod schemas, and functions that run in both runtimes. A type-only import is still an architectural
+dependency; shared types must not refer to React components, hooks, Node APIs, or server contexts.
+
+| Entry                                                | Owns                                                                       | May depend on          |
+| ---------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------- |
+| `@getpaseo/plugin`                                   | Shared data, schemas, RPC/settings definitions, runtime-neutral helpers    | Shared code only       |
+| `@getpaseo/plugin/server`                            | Server contribution/handler contexts and lifecycle contracts               | Shared and server code |
+| `@getpaseo/plugin/server/provider`, `/server/acp`    | Server provider contracts and adapters                                     | Shared and server code |
+| `@getpaseo/plugin/client`                            | Client contribution contexts, hooks, navigation, and UI contribution types | Shared and client code |
+| `@getpaseo/plugin/client/react-native`, `/client/ui` | Host-provided UI components                                                | Shared and client code |
+| `@getpaseo/plugin/client/host`                       | App-owned rendering integration; not a plugin-author entry                 | Shared and client code |
+
+Server code imports shared helpers from the root and server capabilities from `/server`. Client
+code imports shared helpers from the root and client capabilities from `/client`. Neither runtime
+imports the other. Re-exports follow the same rule; tree shaking does not establish a boundary.
+React, React Native, JSX runtimes, and client hooks must never be reachable from the root or any
+server entry. Node and platform-specific code must never be reachable from the shared root.
+
+The SDK boundary checks and real plugin-subprocess tests enforce these rules. Every SDK change
+must preserve them and update the public reference, migration guide, scaffold, and examples when
+an author-facing import changes. The plugin compiler enforces the same runtime entry rules for
+plugin-authored code. Keep the package export map and host-provided module maps consistent.
+
+The compiler rejects imports across runtime directories or SDK entries, React dependencies in
+server code, and Node imports in client code (including bare names such as `fs`). Shared modules
+cannot import runtime-owned modules. Forbidden imports fail compilation; never replace them with
+empty module stubs. A relative
 import to any other code file in the plugin root is also rejected; move it into `client/`, `server/`,
 or `shared/`. These are compile errors naming the importing file and boundary rule. Top-level React
 Native calls such as `StyleSheet.create` belong in `client/`.
@@ -184,7 +211,7 @@ pattern.
 
 ```ts
 // index.server.ts
-import type { PluginServerContext } from "@getpaseo/plugin";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { createGreeting } from "./server/greeting";
 import { greetRpc } from "./shared/greeting";
 
@@ -196,7 +223,7 @@ export default function contribute(server: PluginServerContext) {
 
 ```tsx
 // index.client.tsx
-import type { PluginClientContext } from "@getpaseo/plugin";
+import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { Greeting } from "./client/greeting";
 
 export default function contribute(client: PluginClientContext) {
@@ -256,14 +283,25 @@ optional client-owned agent and workspace navigation; its absence is the compati
 older clients. Other navigation remains limited to registered global surfaces and workspace panels.
 Plugins do not receive Expo Router or workspace-layout store access.
 
+## Lifecycle hooks
+
+Server entries register lifecycle observers with `server.on()` and request transforms with
+`server.before()`. The [public reference](../public-docs/plugins/v0.8/reference.md#lifecycle-hooks)
+owns callback shapes, ordering, and failure behavior. `plugin-examples/lifecycle-logger` registers all
+eleven hooks; `plugin-examples/lifecycle-actions` demonstrates common automation callbacks.
+
+Emit from the operation owner, not a client subscription. Provider history replay must not trigger
+live hooks. Observers must not be awaited inside agent mutations: a callback can send a prompt or
+answer a permission through its own daemon session. Awaiting it there deadlocks that command.
+
 ## Contribute a provider
 
 Register a provider from `index.server.ts`. The provider connection is callback-based and owns all
 of its sessions; plugin RPC is not part of the provider data path.
 
 ```ts
-import type { PluginServerContext } from "@getpaseo/plugin";
-import type { ProviderRegistration } from "@getpaseo/plugin/provider";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
 import { createProvider } from "./server/provider";
 
 export default function contribute(server: PluginServerContext) {
@@ -271,6 +309,12 @@ export default function contribute(server: PluginServerContext) {
   return () => {};
 }
 ```
+
+Implement optional `ProviderRegistration.getCatalogCacheKey(options)` to share equivalent catalogue
+probes. The callback runs in the plugin process before discovery and receives the actual global or
+workspace target. Return a key covering effective configuration and execution environment, or
+`undefined` for target-specific caching. Ignore `force` when choosing identity. Existing providers
+need no change. See [catalogue ownership](providers.md#provider-snapshot-refresh-contract).
 
 `send()` resolves after acceptance. Publish operation completion, prompt disposition, turn state,
 configuration, permissions, persistence, and complete timeline snapshots through `onEvent()`.
@@ -283,7 +327,7 @@ persistence. Providers re-read credentials, environment, global configuration, a
 `session.open`; there is no provider reload input.
 
 For an ACP command, register `runAcpProvider({ id, label, command })` from
-`@getpaseo/plugin/acp`. Its transformer hooks cover narrow vendor differences; do not translate the
+`@getpaseo/plugin/server/acp`. Its transformer hooks cover narrow vendor differences; do not translate the
 whole provider event stream. The direct and ACP examples live in `plugin-examples/provider-direct`
 and `plugin-examples/provider-acp-transformer`.
 
@@ -300,48 +344,28 @@ external `href` or `xlink:href` references are rejected. Fragment references suc
 allowed. Paseo reads and sanitizes the file when the plugin starts; the string is never an inline
 SVG or URL.
 
-## Contribute composer pills
+## Contribute buttons
 
-Add and remove targeted pills from the client entry lifecycle. `index.client.tsx` runs once per
-plugin installation in each connected app and never runs in the daemon subprocess. It can subscribe
-to the client API, call plugin RPCs, and own arbitrary client state without mounting a panel or
-surface.
+Header buttons and composer pills share the client-only descriptor and registration lifecycle in
+`packages/app/src/plugins/buttons/`. The [public button reference](../public-docs/plugins/v0.8/reference.md#header-buttons)
+owns the author API and placement rules. Keep presentation policy in this module so another
+placement can reuse behavior without copying registration or action state.
 
-```tsx
-export function contributeClient(client: PluginClientContext) {
-  const pills = new Map<string, () => void>();
-  const unsubscribe = client.paseo.agents.subscribe((update) => {
-    if (update.kind !== "upsert" || !update.agent.workspaceId) return;
-    const { id: agentId, workspaceId } = update.agent;
-    pills.get(agentId)?.();
-    pills.set(
-      agentId,
-      client.addComposerPill({
-        id: "review",
-        title: "Open review",
-        workspaceId,
-        agentId,
-        Component: ReviewPill,
-        async onPress() {
-          await client.rpc(refreshReview, { agentId });
-          client.openPanel("review", { workspaceId, agentId });
-        },
-      }),
-    );
-  });
-  return () => {
-    unsubscribe();
-    for (const remove of pills.values()) remove();
-  };
-}
-```
+Native sheets teleport their children. Button surfaces rebuild the installation's SDK, state,
+query, and toast providers inside the surface content, including overflow pages from different
+plugins. Providers only around the trigger do not reach those bodies.
 
-Call `contributeClient(client)` from `index.client.tsx`, or move its body into that entry.
-`addComposerPill` returns an idempotent removal function. A pill appears only in the
-matching workspace and agent track bar alongside Tasks and Subagents. Paseo owns the pressable,
-shared chrome, pending state, error reporting, and placement. The component owns its icon and text;
-the callback is client code by construction. Removing the pill, reloading the plugin, disconnecting
-the host, or unloading the app tears down the contribution.
+Request observation with `client.paseo.agents.list({ subscribe: {} })` and consume the returned
+`subscription` handle. Plain `list()` and agent/workspace directory `.subscribe(handler)` listeners create no daemon
+demand. Provider and project `subscribe()` calls establish their own demand. On capable daemons, each
+list-and-subscribe call has its own server ID, even for the same query. Older daemons retain
+[shared delivery behavior](protocol-compatibility.md#owned-observations). Handle snapshots
+also run after reconnect; replace your view before applying its subsequent updates. The installation
+owns every observation created through its API and releases them on unload, including setup failure.
+Mounted surfaces and command invocations have shorter API lifetimes.
+
+Keep the client entry synchronous: return its cleanup function immediately and start asynchronous
+work inside it. See the maintained [composer pill example](../plugin-examples/local-plugin/client/main.tsx).
 
 ## Contribute timeline items
 
@@ -415,7 +439,7 @@ credentials and vendor API calls stay in the daemon handler.
 
 ```ts
 // index.server.ts
-import type { PluginServerContext } from "@getpaseo/plugin";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { search } from "./server/issues";
 import { searchIssues } from "./shared/issues";
 
@@ -427,7 +451,7 @@ export default function contribute(server: PluginServerContext) {
 
 ```tsx
 // index.client.tsx
-import type { PluginClientContext } from "@getpaseo/plugin";
+import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { issues } from "./shared/issues";
 
 export default function contribute(client: PluginClientContext) {
