@@ -250,7 +250,7 @@ jobs:
       - name: Stamp version and resolve metadata
         working-directory: ${{ steps.locate.outputs.dir }}
         run: |
-          bun scripts/sync-workspace-versions.mjs
+          node scripts/sync-workspace-versions.mjs
           FULL_SHA="${{ steps.ref.outputs.sha }}"
           SHORT_SHA="${FULL_SHA:0:7}"
           APP_VERSION="$(node -p "require('./packages/app/package.json').version")"
