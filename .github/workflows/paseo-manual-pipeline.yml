@@ -340,14 +340,19 @@ jobs:
             exit 1
           fi
           echo "Creating release $TAG for $APK (app_version $APP_VER, sha ${{ steps.ref.outputs.sha }})"
-          gh release create "$TAG" \
+          # Best-effort publish: the APK is already safe as a workflow artifact
+          # and in BUILDS_ROOT. A refused API call (e.g. token scope) must not
+          # fail the build.
+          if gh release create "$TAG" \
             --repo "${{ github.repository }}" \
             --title "Paseo Hub Android $APP_VER" \
             --notes "Automated Android build for commit ${{ steps.ref.outputs.sha }} (branch \`${{ github.ref_name }}\`). Built via Paseo Manual Pipeline.\n\nAPK: hydra-paseo-${{ steps.ref.outputs.sha }}-android.apk" \
             --target "${{ steps.ref.outputs.sha }}" \
-            "$APK"
-          echo "Release $TAG created with APK"
-          echo "## 📦 Release [$TAG](${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG) created" >> "$GITHUB_STEP_SUMMARY"
+            "$APK"; then
+            echo "## 📦 Release [$TAG](${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG) created" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::Release publish failed — APK remains available as workflow artifact and at $APK"
+          fi
 
   # ═══════════════════════════════════════════════════════════════════════
   # Stage 3 — Deploy web UI
