@@ -291,6 +291,7 @@ jobs:
           export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
           ./gradlew assembleRelease \
             -PreactNativeArchitectures=arm64-v8a \
+            --max-workers=8 \
             -x lint -x lintVitalAnalyzeRelease -x lintVitalRelease \
             -x generateReleaseLintModel -x generateReleaseLintVitalModel \
             --no-daemon
