@@ -358,7 +358,7 @@ jobs:
   # Stage 3 — Deploy web UI
   # ═══════════════════════════════════════════════════════════════════════
   deploy-web:
-    if: ${{ inputs.run_deploy_web }}
+    if: ${{ always() && inputs.run_deploy_web }}
     needs: [build-hydra]
     runs-on: [self-hosted, paseo-host]
     steps:
