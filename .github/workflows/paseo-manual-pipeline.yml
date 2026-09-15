@@ -285,6 +285,10 @@ jobs:
         working-directory: ${{ steps.locate.outputs.dir }}/packages/app/android
         run: |
           export GRADLE_USER_HOME="${{ env.GRADLE_USER_HOME }}"
+          # systemd-oomd killed a prior 8-worker build (runner cgroup hit 10G
+          # under user-slice pressure). Cap heap too: with --no-daemon the
+          # client JVM is the build JVM, so GRADLE_OPTS bounds the whole build.
+          export GRADLE_OPTS="-Xmx4g -XX:MaxMetaspaceSize=1g"
           # JAVA_HOME/ANDROID_HOME are set by setup-java/setup-android actions
           echo "JAVA_HOME=$JAVA_HOME"
           echo "ANDROID_HOME=$ANDROID_HOME"
@@ -296,7 +300,7 @@ jobs:
           export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
           ./gradlew assembleRelease \
             -PreactNativeArchitectures=arm64-v8a \
-            --max-workers=8 \
+            --max-workers=4 \
             -x lint -x lintVitalAnalyzeRelease -x lintVitalRelease \
             -x generateReleaseLintModel -x generateReleaseLintVitalModel \
             --no-daemon
