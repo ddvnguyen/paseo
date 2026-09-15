@@ -238,7 +238,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -465,6 +465,27 @@ jobs:
           fi
           echo "## Deploy TEST daemon — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.12.0
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install TEST runtime deps (pnpm frozen, shared store)
+        run: |
+          set -euo pipefail
+          BUILD_DIR="${{ steps.locate.outputs.dir }}"
+          TEST_HOME="${{ env.TEST_HOME }}"
+          echo "pnpm store: $(pnpm store path)"
+          cp "$BUILD_DIR/deploy/paseo-test/package.json" "$TEST_HOME/package.json"
+          cp "$BUILD_DIR/deploy/paseo-test/pnpm-lock.yaml" "$TEST_HOME/pnpm-lock.yaml"
+          pnpm install --frozen-lockfile --prod --ignore-workspace --dir "$TEST_HOME"
+          echo "TEST runtime deps installed (frozen lockfile)"
+
       - name: Deploy server to TEST (pnpm prod deploy)
         run: |
           set -euo pipefail
@@ -479,6 +500,10 @@ jobs:
             fi
           done
           echo "Server + protocol/client deps deployed to TEST via pnpm-built dist"
+      - name: Verify runtime dep closure resolves (TEST)
+        run: |
+          set -euo pipefail
+          bun "${{ steps.locate.outputs.dir }}/deploy/verify-closure.bun.mjs" "${{ env.TEST_HOME }}"
 
       - name: Restart TEST daemon
         run: |
@@ -493,6 +518,7 @@ jobs:
           sleep 2
           HEALTH=$(curl -sf http://127.0.0.1:6868/api/health 2>/dev/null || echo '{"status":"error"}')
           echo "TEST health: $HEALTH"
+          if [ "$HEALTH" = '{"status":"error"}' ]; then echo "::error::TEST health endpoint unreachable after deploy"; exit 1; fi
 
   # ═══════════════════════════════════════════════════════════════════════
   # Stage 5 — Deploy PROD daemon
@@ -535,6 +561,28 @@ jobs:
           fi
           echo "## Deploy PROD daemon — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.12.0
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install PROD runtime deps (pnpm frozen, shared store)
+        run: |
+          set -euo pipefail
+          BUILD_DIR="${{ steps.locate.outputs.dir }}"
+          PROD_HOME="${{ env.PROD_HOME }}"
+          echo "pnpm store: $(pnpm store path)"
+          if [ -f "$PROD_HOME/package.json" ]; then cp "$PROD_HOME/package.json" "$PROD_HOME/package.json.bak"; fi
+          cp "$BUILD_DIR/deploy/paseo-prod/package.json" "$PROD_HOME/package.json"
+          cp "$BUILD_DIR/deploy/paseo-prod/pnpm-lock.yaml" "$PROD_HOME/pnpm-lock.yaml"
+          pnpm install --frozen-lockfile --prod --ignore-workspace --dir "$PROD_HOME"
+          echo "PROD runtime deps installed (frozen lockfile)"
+
       - name: Deploy server to PROD (pnpm prod deploy)
         run: |
           set -euo pipefail
@@ -549,6 +597,10 @@ jobs:
             fi
           done
           echo "Server + protocol/client deps deployed to PROD via pnpm-built dist"
+      - name: Verify runtime dep closure resolves (PROD)
+        run: |
+          set -euo pipefail
+          bun "${{ steps.locate.outputs.dir }}/deploy/verify-closure.bun.mjs" "${{ env.PROD_HOME }}"
 
       - name: Restart PROD daemon
         run: |
@@ -563,3 +615,4 @@ jobs:
           sleep 2
           HEALTH=$(curl -sf http://127.0.0.1:6767/api/health 2>/dev/null || echo '{"status":"error"}')
           echo "PROD health: $HEALTH"
+          if [ "$HEALTH" = '{"status":"error"}' ]; then echo "::error::PROD health endpoint unreachable after deploy"; exit 1; fi
