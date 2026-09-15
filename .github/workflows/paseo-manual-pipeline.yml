@@ -242,6 +242,11 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Action defaults request the long-removed `tools` package and fail
+          # the step. The runner cache already holds platform-tools,
+          # platforms, and build-tools; just accept licenses.
+          packages: platform-tools
 
       - name: Install JS dependencies (pnpm, for expo/metro)
         working-directory: ${{ steps.locate.outputs.dir }}
