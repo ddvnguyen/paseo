@@ -75,7 +75,7 @@ import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
 import { MarkdownFenceBlock } from "@/components/markdown/fence";
 import type { MarkdownPhase } from "@/components/markdown/fence/types";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
-import { useRevealedText } from "@/hooks/use-revealed-text";
+import { StreamingWords, useWordStream } from "@/word-stream";
 import { colorMarkdownLinkChildren } from "@/components/markdown/link-children";
 import { createAssistantMarkdownParser } from "@/utils/assistant-markdown-parser";
 import { formatDuration, formatMessageTimestamp } from "@/utils/time";
@@ -1415,6 +1415,7 @@ function AssistantMessageBlockContainer({
 
 interface MemoizedMarkdownBlockProps {
   text: string;
+  sourceOffset: number;
   rules: RenderRules;
   parser: MarkdownIt;
   onLinkPress: (url: string) => boolean;
@@ -1422,6 +1423,7 @@ interface MemoizedMarkdownBlockProps {
 
 const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
   text,
+  sourceOffset,
   rules,
   parser,
   onLinkPress,
@@ -1436,6 +1438,7 @@ const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
       // separated by a blank line — markdown-it's own block boundaries put the
       // opening tag, the blank-line-separated body, and the closing tag in
       // different chunks — and fail to find the matching close tag.
+      sourceOffset={sourceOffset}
       enableHtmlish={false}
       rules={rules}
       markdownit={parser}
@@ -1447,7 +1450,7 @@ const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
 });
 
 type AssistantRenderUnit =
-  | { kind: "markdown"; key: string; text: string }
+  | { kind: "markdown"; key: string; text: string; sourceOffset: number }
   | { kind: "part"; key: string; part: MarkdownDisplayPart };
 
 function assistantPartIdentity(part: MarkdownDisplayPart): string {
@@ -1470,11 +1473,15 @@ function assistantPartIdentity(part: MarkdownDisplayPart): string {
 function buildAssistantRenderUnits(revealedMessage: string): AssistantRenderUnit[] {
   const units: AssistantRenderUnit[] = [];
   let unitIndex = 0;
+  let cursor = 0;
   for (const part of splitHtmlishMarkdown(revealedMessage)) {
     if (part.kind === "markdown") {
       for (const block of splitMarkdownBlocks(part.text)) {
-        units.push({ kind: "markdown", key: `block:${unitIndex}`, text: block });
+        const found = revealedMessage.indexOf(block, cursor);
+        const sourceOffset = found === -1 ? cursor : found;
+        units.push({ kind: "markdown", key: `block:${unitIndex}`, text: block, sourceOffset });
         unitIndex += 1;
+        cursor = sourceOffset + block.length;
       }
       continue;
     }
@@ -1580,7 +1587,8 @@ export const AssistantMessage = memo(function AssistantMessage({
   const renderedMessage = useMemo(() => capAssistantMessageForRender(message), [message]);
   // Paint a paced prefix while the turn is streaming so text arrives at a steady
   // rate instead of in whatever lumps the daemon's coalescing window produced.
-  const revealedMessage = useRevealedText(renderedMessage.text, phase);
+  const stream = useWordStream(renderedMessage.text, phase);
+  const revealedMessage = stream.text;
   const fullMessageByteLength = useMemo(
     () => (renderedMessage.capped && phase === "complete" ? getUtf8ByteLength(message) : null),
     [message, phase, renderedMessage.capped],
@@ -2054,38 +2062,41 @@ export const AssistantMessage = memo(function AssistantMessage({
   );
 
   return (
-    <View testID="assistant-message" dataSet={revealDataSet} style={assistantContainerStyle}>
-      {renderUnits.map((unit, index) => (
-        <AssistantMessageBlockContainer
-          key={unit.key}
-          block={unit.kind === "markdown" ? unit.text : assistantPartIdentity(unit.part)}
-          hasGap={index < renderUnits.length - 1}
-        >
-          {unit.kind === "markdown" ? (
-            <MemoizedMarkdownBlock
-              text={unit.text}
-              rules={markdownRules}
-              parser={
-                phase === "streaming" && index === renderUnits.length - 1
-                  ? streamingMarkdownParser
-                  : markdownParser
-              }
-              onLinkPress={handleMarkdownLinkPress}
-            />
-          ) : (
-            <MarkdownPart part={unit.part} rendererProps={markdownPartRendererProps} />
-          )}
-        </AssistantMessageBlockContainer>
-      ))}
-      {fullMessageByteLength !== null ? (
-        <Text
-          testID="assistant-message-capped-notice"
-          style={assistantMessageStylesheet.cappedNotice}
-        >
-          {t("agentStream.messageCapped", { bytes: fullMessageByteLength })}
-        </Text>
-      ) : null}
-    </View>
+    <StreamingWords stream={stream}>
+      <View testID="assistant-message" dataSet={revealDataSet} style={assistantContainerStyle}>
+        {renderUnits.map((unit, index) => (
+          <AssistantMessageBlockContainer
+            key={unit.key}
+            block={unit.kind === "markdown" ? unit.text : assistantPartIdentity(unit.part)}
+            hasGap={index < renderUnits.length - 1}
+          >
+            {unit.kind === "markdown" ? (
+              <MemoizedMarkdownBlock
+                text={unit.text}
+                sourceOffset={unit.sourceOffset}
+                rules={markdownRules}
+                parser={
+                  phase === "streaming" && index === renderUnits.length - 1
+                    ? streamingMarkdownParser
+                    : markdownParser
+                }
+                onLinkPress={handleMarkdownLinkPress}
+              />
+            ) : (
+              <MarkdownPart part={unit.part} rendererProps={markdownPartRendererProps} />
+            )}
+          </AssistantMessageBlockContainer>
+        ))}
+        {fullMessageByteLength !== null ? (
+          <Text
+            testID="assistant-message-capped-notice"
+            style={assistantMessageStylesheet.cappedNotice}
+          >
+            {t("agentStream.messageCapped", { bytes: fullMessageByteLength })}
+          </Text>
+        ) : null}
+      </View>
+    </StreamingWords>
   );
 });
 
