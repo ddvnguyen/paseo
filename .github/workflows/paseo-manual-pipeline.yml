@@ -524,7 +524,7 @@ jobs:
   # Stage 5 — Deploy PROD daemon
   # ═══════════════════════════════════════════════════════════════════════
   deploy-prod:
-    if: ${{ inputs.run_deploy_prod }}
+    if: ${{ always() && inputs.run_deploy_prod }}
     needs: [build-hydra]
     runs-on: [self-hosted, paseo-host]
     steps:
