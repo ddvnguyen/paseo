@@ -483,7 +483,10 @@ jobs:
           echo "pnpm store: $(pnpm store path)"
           cp "$BUILD_DIR/deploy/paseo-test/package.json" "$TEST_HOME/package.json"
           cp "$BUILD_DIR/deploy/paseo-test/pnpm-lock.yaml" "$TEST_HOME/pnpm-lock.yaml"
-          pnpm install --frozen-lockfile --prod --ignore-workspace --dir "$TEST_HOME"
+          # --ignore-scripts: daemon trees never run install scripts. esbuild/node-pty postinstalls are
+          # unneeded (prebuilds ship in-package; verified working) and pnpm fails CI on unapproved
+          # ignored scripts otherwise. This reproduces the proven no-scripts runtime state, explicitly.
+          pnpm install --frozen-lockfile --prod --ignore-workspace --ignore-scripts --dir "$TEST_HOME"
           echo "TEST runtime deps installed (frozen lockfile)"
 
       - name: Deploy server to TEST (pnpm prod deploy)
@@ -580,7 +583,8 @@ jobs:
           if [ -f "$PROD_HOME/package.json" ]; then cp "$PROD_HOME/package.json" "$PROD_HOME/package.json.bak"; fi
           cp "$BUILD_DIR/deploy/paseo-prod/package.json" "$PROD_HOME/package.json"
           cp "$BUILD_DIR/deploy/paseo-prod/pnpm-lock.yaml" "$PROD_HOME/pnpm-lock.yaml"
-          pnpm install --frozen-lockfile --prod --ignore-workspace --dir "$PROD_HOME"
+          # --ignore-scripts: see TEST install step — same proven no-scripts runtime state.
+          pnpm install --frozen-lockfile --prod --ignore-workspace --ignore-scripts --dir "$PROD_HOME"
           echo "PROD runtime deps installed (frozen lockfile)"
 
       - name: Deploy server to PROD (pnpm prod deploy)
