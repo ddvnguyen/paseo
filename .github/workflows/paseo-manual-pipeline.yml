@@ -428,7 +428,7 @@ jobs:
   # Stage 4 — Deploy TEST daemon
   # ═══════════════════════════════════════════════════════════════════════
   deploy-test:
-    if: ${{ inputs.run_deploy_test }}
+    if: ${{ always() && inputs.run_deploy_test }}
     needs: [build-hydra]
     runs-on: [self-hosted, paseo-host]
     steps:
