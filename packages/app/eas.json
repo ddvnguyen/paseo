@@ -19,6 +19,20 @@
         "APP_VARIANT": "production"
       }
     },
+    "upstream": {
+      "env": {
+        "APP_VARIANT": "upstream"
+      }
+    },
+    "upstream-apk": {
+      "extends": "upstream",
+      "distribution": "internal",
+      "resourceClass": "large",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease -x lint -x lintVitalAnalyzeRelease -x lintVitalRelease -x generateReleaseLintModel -x generateReleaseLintVitalModel"
+      }
+    },
     "production-apk": {
       "extends": "production",
       "distribution": "internal",

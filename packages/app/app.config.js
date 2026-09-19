@@ -77,6 +77,18 @@ const variants = {
       fallbackRelativePath: "./.secrets/GoogleService-Info.prod.plist",
     }),
   },
+  upstream: {
+    name: "Paseo",
+    packageId: "sh.paseo",
+    googleServicesFile: resolveSecretFile({
+      envKey: "GOOGLE_SERVICES_FILE_UPSTREAM",
+      fallbackRelativePath: "./.secrets/google-services.upstream.json",
+    }),
+    googleServiceInfoPlist: resolveSecretFile({
+      envKey: "GOOGLE_SERVICE_INFO_PLIST_UPSTREAM",
+      fallbackRelativePath: "./.secrets/GoogleService-Info.upstream.plist",
+    }),
+  },
   development: {
     name: "Paseo Debug",
     packageId: "sh.paseo.debug",

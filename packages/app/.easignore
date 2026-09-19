@@ -1,14 +1,6 @@
-# Exclude non-app packages and docs from EAS upload
-packages/cli/
-packages/desktop/
-packages/relay/
-packages/website/
-packages/protocol/
-packages/plugin/
-packages/highlight/
-packages/expo-two-way-audio/
-scripts/
-docs/
+# Slim EAS upload: docs only. NEVER exclude packages/*, scripts/, or
+# patches/ — the monorepo install (postinstall-patches.mjs) and the
+# eas-build-post-install hook (build:app-deps) need them on the builder.
 .github/
 .dev/
 *.md
