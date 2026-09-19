@@ -341,9 +341,14 @@ jobs:
             export ANDROID_HOME="$ANDROID_SDK_ROOT"
           fi
           export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          # kotlin.compiler.execution.strategy=in-process: the Kotlin daemon
+          # (2.6G) + Gradle worker API (2.7G) otherwise eat the runner cgroup
+          # budget alongside hermesc (16G+), re-throttling the build.
           ./gradlew assembleRelease \
             -PreactNativeArchitectures=arm64-v8a \
             --max-workers=2 \
+            -Dkotlin.compiler.execution.strategy=in-process \
+            -Dorg.gradle.workers.max=2 \
             -x lint -x lintVitalAnalyzeRelease -x lintVitalRelease \
             -x generateReleaseLintModel -x generateReleaseLintVitalModel \
             --no-daemon
