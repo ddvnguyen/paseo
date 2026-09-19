@@ -137,4 +137,65 @@ describe("PushService receipts", () => {
     expect(scheduled).toBe(0);
     expect(revoked).toEqual(["ExponentPushToken[gone]"]);
   });
+
+  test("InvalidCredentials ticket keeps the token for credential recovery", async () => {
+    const { logger, errors } = createLogger();
+    const revoked: string[] = [];
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        data: [
+          { status: "error", message: "no FCM key", details: { error: "InvalidCredentials" } },
+        ],
+      }),
+    );
+    let scheduled = 0;
+    const service = new PushService(logger, (token) => revoked.push(token), {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      schedule: () => {
+        scheduled += 1;
+      },
+      receiptDelayMs: 1,
+    });
+
+    await service.sendPush(["ExponentPushToken[fork-nokey]"], { title: "t", body: "b" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(scheduled).toBe(0);
+    expect(revoked).toEqual([]);
+    expect(errors.some((entry) => entry.msg === "Push failed for token")).toBe(true);
+  });
+
+  test("one bad project does not poison the good token", async () => {
+    const { logger } = createLogger();
+    const revoked: string[] = [];
+    const sentTokens: unknown[] = [];
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { to: string };
+      sentTokens.push(body.to);
+      if (body.to === "ExponentPushToken[bad]") {
+        return jsonResponse({
+          data: [
+            { status: "error", message: "no FCM key", details: { error: "InvalidCredentials" } },
+          ],
+        });
+      }
+      return jsonResponse({ data: { status: "ok", id: "receipt-good" } });
+    });
+    const scheduled: (() => void)[] = [];
+    const service = new PushService(logger, (token) => revoked.push(token), {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      schedule: (callback) => {
+        scheduled.push(callback);
+      },
+      receiptDelayMs: 1,
+    });
+
+    await service.sendPush(["ExponentPushToken[bad]", "ExponentPushToken[good]"], {
+      title: "t",
+      body: "b",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sentTokens).toEqual(["ExponentPushToken[bad]", "ExponentPushToken[good]"]);
+    expect(scheduled).toHaveLength(1);
+    expect(revoked).toEqual([]);
+  });
 });

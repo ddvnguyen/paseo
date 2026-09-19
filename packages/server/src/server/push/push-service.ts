@@ -29,7 +29,6 @@ interface ExpoPushReceipt {
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const EXPO_RECEIPT_URL = "https://exp.host/--/api/v2/push/getReceipts";
-const MAX_BATCH_SIZE = 100;
 const MAX_RECEIPT_IDS = 1000;
 // Expo recommends checking receipts ~15 min after send; receipts clear after 24h.
 const DEFAULT_RECEIPT_DELAY_MS = 15 * 60 * 1000;
@@ -42,7 +41,12 @@ export interface PushServiceOptions {
 
 /**
  * Service for sending Expo push notifications.
- * Handles batching, invalid token removal, and delivery-receipt checks.
+ * Handles per-token sends, invalid token removal, and delivery-receipt checks.
+ *
+ * One request per token: tokens may belong to different Expo projects
+ * (fork vs upstream). A mixed-project batch fails the whole request
+ * (HTTP 400), so a bad project would poison delivery to good tokens.
+ * Per-token sends isolate each project's failure to its own ticket.
  *
  * A ticket `ok` only means Expo accepted the message. Delivery to FCM/APNs
  * (e.g. MismatchSenderId when google-services.json and the EAS FCM credential
@@ -83,16 +87,10 @@ export class PushService {
       sound: "default",
     }));
 
-    // Batch tokens (max 100 per request per Expo limits)
-    const batches: ExpoPushMessage[][] = [];
-    for (let i = 0; i < messages.length; i += MAX_BATCH_SIZE) {
-      batches.push(messages.slice(i, i + MAX_BATCH_SIZE));
-    }
-
-    await Promise.all(batches.map((batch) => this.sendBatch(batch)));
+    await Promise.all(messages.map((message) => this.sendSingle(message)));
   }
 
-  private async sendBatch(messages: ExpoPushMessage[]): Promise<void> {
+  private async sendSingle(message: ExpoPushMessage): Promise<void> {
     try {
       const response = await this.fetchImpl(EXPO_PUSH_URL, {
         method: "POST",
@@ -100,12 +98,12 @@ export class PushService {
           "Content-Type": "application/json",
           Accept: "application/json",
         },
-        body: JSON.stringify(messages),
+        body: JSON.stringify(message),
       });
 
       if (!response.ok) {
         this.logger.error(
-          { status: response.status, statusText: response.statusText },
+          { token: message.to, status: response.status, statusText: response.statusText },
           "Expo push API error",
         );
         return;
@@ -116,7 +114,7 @@ export class PushService {
       };
       // Single-message sends return a single ticket object, not an array.
       const tickets = Array.isArray(result.data) ? result.data : [result.data];
-      const pending = this.handleTickets(messages, tickets);
+      const pending = this.handleTickets([message], tickets);
       if (pending.size > 0) {
         const snapshot = new Map(pending);
         this.schedule(() => {
@@ -124,13 +122,18 @@ export class PushService {
         }, this.receiptDelayMs);
       }
     } catch (error) {
-      this.logger.error({ err: error }, "Failed to send push notifications");
+      this.logger.error({ err: error, token: message.to }, "Failed to send push notifications");
     }
   }
 
   /**
    * Logs ticket errors and returns accepted ticket IDs mapped to their token,
    * so the receipt poll can attribute delivery failures per device.
+   *
+   * DeviceNotRegistered revokes (device gone). InvalidCredentials is kept:
+   * it means the Expo project's FCM/APNs credential is missing or revoked,
+   * which is recoverable by uploading a key — deleting the token would force
+   * every device to re-register after the credential fix.
    */
   private handleTickets(
     messages: ExpoPushMessage[],
@@ -148,11 +151,7 @@ export class PushService {
           "Push failed for token",
         );
 
-        // Remove invalid tokens
-        if (
-          ticket.details?.error === "DeviceNotRegistered" ||
-          ticket.details?.error === "InvalidCredentials"
-        ) {
+        if (ticket.details?.error === "DeviceNotRegistered") {
           this.revokeToken(message.to);
         }
       } else if (ticket.id) {
