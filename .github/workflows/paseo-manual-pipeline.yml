@@ -33,6 +33,14 @@ on:
         required: false
         type: string
         default: ""
+      android_variant:
+        description: "Android variant: production (sh.paseo.hub) or upstream (sh.paseo)"
+        required: false
+        type: choice
+        default: production
+        options:
+          - production
+          - upstream
 
       # ── Stage 3: Deploy web UI ────────────────────────────────────────
       run_deploy_web:
@@ -266,10 +274,35 @@ jobs:
       # client/highlight/plugin dist/ are already built and persisted by
       # Stage 1 (build-hydra) — no need to rebuild them here.
 
-      - name: Expo prebuild (production variant)
+      - name: Stage google-services.json for variant (repo secret)
+        working-directory: ${{ steps.locate.outputs.dir }}/packages/app
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          GOOGLE_SERVICES_UPSTREAM_JSON: ${{ secrets.GOOGLE_SERVICES_UPSTREAM_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p .secrets
+          if [ "${{ inputs.android_variant }}" = "upstream" ]; then
+            if [ -z "${GOOGLE_SERVICES_UPSTREAM_JSON:-}" ]; then
+              echo "::warning::GOOGLE_SERVICES_UPSTREAM_JSON secret empty — build continues without FCM config"
+            else
+              printf '%s' "$GOOGLE_SERVICES_UPSTREAM_JSON" > .secrets/google-services.upstream.json
+              echo "Staged upstream google-services.json"
+            fi
+          else
+            if [ -z "${GOOGLE_SERVICES_JSON:-}" ]; then
+              echo "::warning::GOOGLE_SERVICES_JSON secret empty — build continues without FCM config"
+            else
+              printf '%s' "$GOOGLE_SERVICES_JSON" > .secrets/google-services.prod.json
+              echo "Staged production google-services.json"
+            fi
+          fi
+      - name: Expo prebuild (APP_VARIANT from android_variant input)
         working-directory: ${{ steps.locate.outputs.dir }}/packages/app
         run: |
-          npx cross-env APP_VARIANT=production expo prebuild \
+          if [ "${{ inputs.android_variant }}" = "upstream" ]; then VARIANT=upstream; else VARIANT=production; fi
+          echo "Building variant: $VARIANT"
+          npx cross-env APP_VARIANT=$VARIANT expo prebuild \
             --platform android --clean --non-interactive
 
       - name: Clean corrupted gradle cache (journal-1)
@@ -308,19 +341,22 @@ jobs:
       - name: Copy APK to builds
         run: |
           set -euo pipefail
+          if [ "${{ inputs.android_variant }}" = "upstream" ]; then SUFFIX="-upstream"; else SUFFIX=""; fi
           APK_SRC="${{ steps.locate.outputs.dir }}/packages/app/android/app/build/outputs/apk/release/app-release.apk"
-          APK_DEST="${{ env.BUILDS_ROOT }}/android/${{ steps.ref.outputs.sha }}.apk"
+          APK_DEST="${{ env.BUILDS_ROOT }}/android/${{ steps.ref.outputs.sha }}$SUFFIX.apk"
           mkdir -p "${{ env.BUILDS_ROOT }}/android"
           cp "$APK_SRC" "$APK_DEST"
           echo "APK persisted to $APK_DEST"
           ls -lh "$APK_DEST"
+          echo "apk_dest=$APK_DEST" >> "$GITHUB_OUTPUT"
           echo "## APK artifact: \`$APK_DEST\`" >> "$GITHUB_STEP_SUMMARY"
+        id: apk
 
       - name: Upload APK as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hydra-paseo-${{ steps.ref.outputs.sha }}-android.apk
-          path: ${{ env.BUILDS_ROOT }}/android/${{ steps.ref.outputs.sha }}.apk
+          name: hydra-paseo-${{ steps.ref.outputs.sha }}${{ inputs.android_variant == 'upstream' && '-upstream' || '' }}-android.apk
+          path: ${{ steps.apk.outputs.apk_dest }}
           retention-days: 30
 
       - name: Create tag and GitHub Release
@@ -338,12 +374,8 @@ jobs:
             TAG="hub-android-${APP_VER}-${SHORT_SHA}"
           fi
           if [ -z "$APP_VER" ]; then TAG="hub-android-${SHORT_SHA}"; fi
-          echo "Checking for existing release $TAG..."
-          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release $TAG already exists — skipping create"
-            exit 0
-          fi
-          APK="${{ env.BUILDS_ROOT }}/android/${{ steps.ref.outputs.sha }}.apk"
+          if [ "${{ inputs.android_variant }}" = "upstream" ]; then TAG="$TAG-upstream"; fi
+          APK="${{ steps.apk.outputs.apk_dest }}"
           if [ ! -f "$APK" ]; then
             echo "::error::APK not found at $APK"
             exit 1
