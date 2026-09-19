@@ -395,20 +395,14 @@ jobs:
             echo "::error::APK not found at $APK"
             exit 1
           fi
-          echo "Creating release $TAG for $APK (app_version $APP_VER, sha ${{ steps.ref.outputs.sha }})"
-          # Best-effort publish: the APK is already safe as a workflow artifact
-          # and in BUILDS_ROOT. A refused API call (e.g. token scope) must not
-          # fail the build.
-          if gh release create "$TAG" \
-            --repo "${{ github.repository }}" \
-            --title "Paseo Hub Android $APP_VER" \
-            --notes "Automated Android build for commit ${{ steps.ref.outputs.sha }} (branch \`${{ github.ref_name }}\`). Built via Paseo Manual Pipeline.\n\nAPK: hydra-paseo-${{ steps.ref.outputs.sha }}-android.apk" \
-            --target "${{ steps.ref.outputs.sha }}" \
-            "$APK"; then
-            echo "## 📦 Release [$TAG](${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG) created" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::warning::Release publish failed — APK remains available as workflow artifact and at $APK"
-          fi
+          echo "APK built: $APK (app_version $APP_VER, sha ${{ steps.ref.outputs.sha }})"
+          # Release publish runs from your laptop (user PAT), not the runner:
+          # the self-hosted runner's GITHUB_TOKEN is denied releases (403
+          # Resource not accessible by integration, seen 2026-09-19), so this
+          # step only verifies the APK and prints the publish command.
+          # Publish: gh release create "$TAG" --repo "${{ github.repository }}" \
+          #   --title "Paseo Hub Android $APP_VER" --target "${{ steps.ref.outputs.sha }}" "$APK"
+          echo "## 📦 APK ready: \`$APK\` — publish: \`gh release create \"$TAG\" --repo \"${{ github.repository }}\" --target \"${{ steps.ref.outputs.sha }}\" \"$APK\"\`" >> "$GITHUB_STEP_SUMMARY"
 
   # ═══════════════════════════════════════════════════════════════════════
   # Stage 3 — Deploy web UI
