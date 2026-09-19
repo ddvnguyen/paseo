@@ -159,8 +159,10 @@ jobs:
           # Prune old artifacts keep 5 (each 50M, 1 inode) + prune old exploded hydra keep 1 for fast android on same runner
           ls -1t "$ARTIFACTS_DIR"/*.tar.zst 2>/dev/null | tail -n +6 | xargs -r rm -f || true
           ls -1dt "$HYDRA_BUILDS_DIR"/*/ 2>/dev/null | tail -n +2 | xargs -r rm -rf || true
-          # Build a source+dist staging dir for tar (no node_modules, 1 inode as tar.zst)
-          DEST_TMP=$(mktemp -d)
+          # Build a source+dist staging dir for tar (no node_modules, 1 inode as tar.zst).
+          # mktemp honors TMPDIR — the runner default /tmp is a RAM-backed tmpfs
+          # shared with build memory; stage under the workspace disk instead.
+          DEST_TMP=$(mktemp -d -p "${{ github.workspace }}/..")
           mkdir -p "$DEST_TMP"
           rsync -a --delete \
             --exclude '.git' \
@@ -318,10 +320,11 @@ jobs:
         working-directory: ${{ steps.locate.outputs.dir }}/packages/app/android
         run: |
           export GRADLE_USER_HOME="${{ env.GRADLE_USER_HOME }}"
-          # systemd-oomd killed a prior 8-worker build (runner cgroup hit 10G
-          # under user-slice pressure). Cap heap too: with --no-daemon the
-          # client JVM is the build JVM, so GRADLE_OPTS bounds the whole build.
-          export GRADLE_OPTS="-Xmx4g -XX:MaxMetaspaceSize=1g"
+          # hermesc (JS→bytecode, 5925 modules) OOM-killed twice under -Xmx4g
+          # (EAS exit 137 + local 0-byte .hbc stall). Box has 123G RAM / 31G
+          # free — give the build JVM headroom. oomd risk accepted: the old
+          # 8-worker kill was worker-count, not heap (now capped at 2).
+          export GRADLE_OPTS="-Xmx8g -XX:MaxMetaspaceSize=1g"
           # JAVA_HOME/ANDROID_HOME are set by setup-java/setup-android actions
           echo "JAVA_HOME=$JAVA_HOME"
           echo "ANDROID_HOME=$ANDROID_HOME"
