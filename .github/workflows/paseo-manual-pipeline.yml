@@ -205,9 +205,16 @@ jobs:
         id: ref
         run: |
           set -euo pipefail
-          REF="${{ inputs.android_build_ref }}"
-          if [ -z "$REF" ] && [ "${{ needs.build-hydra.result }}" = "success" ]; then
+          # Same-run hydra output wins: an explicit *_build_ref may be a
+          # 7-char short SHA while Hydra persists under the full 40-char
+          # SHA (e.g. 8ee0e1e38 vs 8ee0e1e38fde12...). Prefer the fresh
+          # output when Stage 1 succeeded in this run.
+          REF=""
+          if [ "${{ needs.build-hydra.result }}" = "success" ]; then
             REF="${{ needs.build-hydra.outputs.sha }}"
+          fi
+          if [ -z "$REF" ]; then
+            REF="${{ inputs.android_build_ref }}"
           fi
           if [ -z "$REF" ]; then
             echo "::error::android_build_ref is required when Stage 1 is not selected"
