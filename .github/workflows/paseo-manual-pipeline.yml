@@ -86,7 +86,7 @@ env:
   GRADLE_USER_HOME: /home/ddv/.gradle
   WEB_UI_DEPLOY: /home/ddv/paseo-app/web-ui
   TEST_HOME: /home/ddv/.paseo-test
-  PROD_HOME: /home/ddv/paseo-prod-bun
+  PROD_HOME: /home/ddv/paseo-PROD
 
 jobs:
   # ═══════════════════════════════════════════════════════════════════════
