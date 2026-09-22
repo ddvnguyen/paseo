@@ -544,6 +544,32 @@ For package-runner commands such as `npx -y @google/gemini-cli --acp`, the versi
 
 ACP probes use short timeouts and browser-suppression environment variables so agents that enter an auth/browser flow fail as a diagnostic error instead of hanging the provider screen.
 
+### Example: Freebuff
+
+[Freebuff](https://freebuff.com) is the free coding agent by Codebuff. Its CLI is a terminal UI with no ACP mode, so Paseo ships a dedicated adapter that bridges the Codebuff backend to ACP via `@codebuff/sdk`.
+
+1. Install and log in once: `npm install -g freebuff && freebuff login` (credentials land in `~/.config/manicode/credentials.json`), or set `FREEBUFF_API_KEY` / `CODEBUFF_API_KEY` instead
+2. Add to config.json:
+
+```json
+{
+  "agents": {
+    "providers": {
+      "freebuff": {
+        "extends": "acp",
+        "label": "Freebuff",
+        "description": "The free coding agent (via @codebuff/sdk)",
+        "command": ["npx", "-y", "@getpaseo/freebuff-acp@0.1.0"]
+      }
+    }
+  }
+}
+```
+
+The adapter is also available in Paseo's in-app ACP provider catalog (Settings → Providers → "Freebuff"), which creates the same config. Sessions stream text, thinking, tool calls and results; `session/cancel` aborts the running turn. Model choice lives on Freebuff's backend (the free catalog), so the adapter exposes a single `lite` session mode.
+
+Ref: [`packages/freebuff-acp`](../packages/freebuff-acp) in this repo — the adapter is first-party and works with any ACP host (Zed, etc.).
+
 ### Example: Google Gemini CLI
 
 [Gemini CLI](https://github.com/google-gemini/gemini-cli) supports ACP via the `--acp` flag.
