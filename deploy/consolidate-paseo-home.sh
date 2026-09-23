@@ -56,6 +56,7 @@ if [ -z "$PNPM_BIN" ] && [ -x "$HOME/.local/share/pnpm/bin/pnpm" ]; then
   PNPM_BIN="$HOME/.local/share/pnpm/bin/pnpm"
 fi
 PNPM_CONFIG="$HOME/.config/pnpm/config.yaml"
+CADDYFILE_SRC="$SCRIPT_DIR/caddy/Caddyfile"
 
 DRY_RUN=0
 ASSUME_YES=0
@@ -354,6 +355,29 @@ exec "$HOME/.bun/bin/bun" "$DIST" "$@"
 EOF
     chmod +x "$ROOT/PROD/paseo-bun"
   fi
+
+  # Rewrite the TEST launcher to point at the consolidated tree as well.
+  if [ "$DRY_RUN" -eq 0 ] && [ -d "$ROOT/TEST" ]; then
+    cat > "$ROOT/TEST/paseo-bun" <<'EOF'
+#!/usr/bin/env bash
+# Run the TEST paseo instance under bun 1.4.x with PASEO_HOME=~/paseo/TEST.
+# Consolidated layout (2026-09): runtime + home both live in ~/paseo/TEST.
+set -euo pipefail
+
+TEST_ROOT="$HOME/paseo/TEST"
+PKG="$TEST_ROOT/node_modules/@getpaseo/cli"
+DIST="$PKG/dist/index.js"
+
+export PASEO_HOME="${PASEO_HOME:-$TEST_ROOT}"
+mkdir -p "$PASEO_HOME"
+
+export PASEO_LISTEN="${PASEO_LISTEN:-127.0.0.1:6868}"
+export PASEO_HOSTNAMES="${PASEO_HOSTNAMES:-paseo-test.ddvnguyen.com}"
+
+exec "$HOME/.bun/bin/bun" "$DIST" "$@"
+EOF
+    chmod +x "$ROOT/TEST/paseo-bun"
+  fi
 }
 
 # ── Phase 3: wire-up units + runner env + restart ──────────────────────────
@@ -362,13 +386,22 @@ phase_wireup() {
   run mkdir -p "$UNIT_DST"
 
   local u
-  for u in paseo.service paseo-test.service paseo-prestart.sh; do
+  for u in paseo.service paseo-test.service paseo-app.service paseo-prestart.sh; do
     [ -e "$UNIT_SRC/$u" ] || die "missing template: $UNIT_SRC/$u"
     backup_file "$UNIT_DST/$u"
     log "install unit: $UNIT_SRC/$u -> $UNIT_DST/$u"
     run cp -f "$UNIT_SRC/$u" "$UNIT_DST/$u"
     run chmod +x "$UNIT_DST/$u"
   done
+
+  # Install the updated Caddyfile (its root path moved into ~/paseo/app/web-ui).
+  if [ -e "$CADDYFILE_SRC" ] && [ -d "$ROOT/app" ]; then
+    backup_file "$ROOT/app/Caddyfile"
+    log "install Caddyfile: $CADDYFILE_SRC -> $ROOT/app/Caddyfile"
+    run cp -f "$CADDYFILE_SRC" "$ROOT/app/Caddyfile"
+  elif [ ! -e "$CADDYFILE_SRC" ]; then
+    warn "caddyfile template not found: $CADDYFILE_SRC"
+  fi
 
   # GH runner .env: repoint LD_LIBRARY_PATH at the consolidated PROD tree.
   if [ -e "$RUNNER_ENV" ]; then
