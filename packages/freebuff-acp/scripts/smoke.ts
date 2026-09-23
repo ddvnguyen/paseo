@@ -32,7 +32,7 @@ for (const update of updates) {
   const kind = (update as { update?: { sessionUpdate?: string } }).update?.sessionUpdate;
   if (kind === "agent_message_chunk") {
     const content = (update as { update?: { content?: { text?: string } } }).update?.content;
-    console.log("text:", content?.text?.slice(0, 120));
+    console.log("text:", content?.text?.slice(0, 200));
   } else if (kind === "tool_call") {
     console.log("tool_call:", (update as { update?: { title?: string } }).update?.title);
   }

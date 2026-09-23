@@ -19,12 +19,16 @@ import {
   type NewSessionResponse,
   type PromptRequest,
   type PromptResponse,
+  type ResumeSessionRequest,
+  type ResumeSessionResponse,
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
 import { CodebuffClient } from "@codebuff/sdk";
 
 import { resolveCredentials } from "./auth.js";
+import { resolveRunMcpServers } from "./mcp.js";
 import { DEFAULT_MODE_ID, FREEBUFF_MODES, FREEBUFF_MODE_IDS } from "./modes.js";
+import { loadPersistedSession, savePersistedSession } from "./session-store.js";
 import type { TurnResult } from "./turn.js";
 import { runTurn } from "./turn.js";
 
@@ -37,10 +41,16 @@ interface AdapterSession {
   cwd: string;
   modeId: string;
   client: CodebuffClient;
+  /** Backend auth token for the free-session admission dance. */
+  token: string;
   /** Opaque SDK conversation state used to continue this session across prompts. */
   runState: Record<string, unknown> | null;
   busy: boolean;
   abortController: AbortController | null;
+  /** Host-injected MCP servers from session/new, merged with .agents/mcp.json. */
+  mcpServers: ReturnType<typeof resolveRunMcpServers>;
+  /** ACP mcpServers from resume/load (host-injected only; no mcp.json merge yet). */
+  hostMcpServers?: NewSessionRequest["mcpServers"];
 }
 
 export class FreebuffAcpAgent {
@@ -49,14 +59,21 @@ export class FreebuffAcpAgent {
   private client: CodebuffClient | null = null;
   private readonly conn: ClientApi;
   private readonly env: NodeJS.ProcessEnv;
+  /**
+   * Process-wide turn queue. turn.ts pins a single global hook
+   * (`__freebuffExtraCodebuffMetadata`) around each `client.run()` call, so
+   * two sessions prompting concurrently in this process would bleed instance
+   * ids into each other's run. All turns funnel through this lane so only
+   * one `runTurn` is in flight at a time, regardless of session.
+   */
+  private turnLane: Promise<void> = Promise.resolve();
 
   constructor(conn: ClientApi, env: NodeJS.ProcessEnv = process.env) {
     this.conn = conn;
     this.env = env;
   }
 
-  private ensureClient(cwd: string): CodebuffClient {
-    if (this.client) return this.client;
+  private ensureClient(cwd: string): { client: CodebuffClient; token: string } {
     const credentials = resolveCredentials(this.env);
     if (!credentials) {
       throw new Error(
@@ -64,18 +81,28 @@ export class FreebuffAcpAgent {
           "or set FREEBUFF_API_KEY / CODEBUFF_API_KEY in the provider environment.",
       );
     }
-    this.client = new CodebuffClient({
-      apiKey: credentials.apiKey,
-      cwd,
-    });
-    return this.client;
+    if (!this.client) {
+      this.client = new CodebuffClient({
+        apiKey: credentials.apiKey,
+        cwd,
+      });
+    }
+    return { client: this.client, token: credentials.apiKey };
   }
 
   async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
     return {
       protocolVersion: 1,
       agentCapabilities: {
+        // History replay is not supported (SDK RunState is opaque); hosts that
+        // only need to continue a conversation use session/resume instead.
         loadSession: false,
+        sessionCapabilities: {
+          // Unstable ACP resume: restore context without replaying messages.
+          // Paseo prefers loadSession when present, else this path — so open
+          // sessions are not blocked after an adapter restart.
+          resume: {},
+        },
         promptCapabilities: {
           audio: false,
           embeddedContext: false,
@@ -109,17 +136,32 @@ export class FreebuffAcpAgent {
   }
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-    const client = this.ensureClient(params.cwd);
+    const { client, token } = this.ensureClient(params.cwd);
     const sessionId = `freebuff-${++this.sessionCounter}-${Date.now().toString(36)}`;
+    const hostMcpServers = params.mcpServers;
     this.sessions.set(sessionId, {
       id: sessionId,
       cwd: params.cwd,
       modeId: DEFAULT_MODE_ID,
       client,
+      token,
       runState: null,
       busy: false,
       abortController: null,
+      // Host mcpServers (Paseo injects `paseo`, etc.) + session cwd mcp.json.
+      mcpServers: resolveRunMcpServers(hostMcpServers, params.cwd),
+      hostMcpServers,
     });
+    savePersistedSession(
+      {
+        sessionId,
+        cwd: params.cwd,
+        modeId: DEFAULT_MODE_ID,
+        runState: null,
+        updatedAt: new Date().toISOString(),
+      },
+      this.env,
+    );
     return {
       sessionId,
       modes: {
@@ -129,11 +171,83 @@ export class FreebuffAcpAgent {
     };
   }
 
-  async loadSession(_params: LoadSessionRequest): Promise<LoadSessionResponse> {
-    // Freebuff conversations live server-side and are only resumable through an
-    // in-process RunState, which does not survive adapter restarts. The
-    // capability is not advertised, so hosts should never call this.
-    throw new Error("loadSession is not supported by freebuff-acp");
+  async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+    // History replay is intentionally unsupported (opaque RunState). Advertise
+    // session/resume instead; if a host still calls loadSession, restore
+    // context without emitting past messages so resume never hard-fails.
+    const session = await this.restoreSession(
+      params.sessionId,
+      params.cwd,
+      params.mcpServers ?? [],
+    );
+    return this.modeState(session.modeId);
+  }
+
+  /**
+   * Restore an open conversation after an adapter restart (ACP session/resume).
+   * Rehydrates RunState from the on-disk session store so the next prompt
+   * continues the same thread instead of erroring on an unknown sessionId.
+   */
+  async unstable_resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
+    const session = await this.restoreSession(
+      params.sessionId,
+      params.cwd,
+      params.mcpServers ?? [],
+    );
+    return this.modeState(session.modeId);
+  }
+
+  private async restoreSession(
+    sessionId: string,
+    cwd: string,
+    hostMcpServers: NewSessionRequest["mcpServers"] | undefined,
+  ): Promise<AdapterSession> {
+    const existing = this.sessions.get(sessionId);
+    if (existing) {
+      return existing;
+    }
+    const { client, token } = this.ensureClient(cwd);
+    const persisted = loadPersistedSession(sessionId, this.env);
+    const modeId =
+      persisted?.modeId && FREEBUFF_MODE_IDS.has(persisted.modeId)
+        ? persisted.modeId
+        : DEFAULT_MODE_ID;
+    const sessionCwd = persisted?.cwd || cwd;
+    const session: AdapterSession = {
+      id: sessionId,
+      cwd: sessionCwd,
+      modeId,
+      client,
+      token,
+      runState: persisted?.runState ?? null,
+      busy: false,
+      abortController: null,
+      mcpServers: resolveRunMcpServers(hostMcpServers ?? [], sessionCwd),
+      hostMcpServers,
+    };
+    this.sessions.set(sessionId, session);
+    savePersistedSession(
+      {
+        sessionId,
+        cwd: sessionCwd,
+        modeId,
+        runState: session.runState,
+        updatedAt: new Date().toISOString(),
+      },
+      this.env,
+    );
+    return session;
+  }
+
+  private modeState(modeId: string): {
+    modes: { availableModes: typeof FREEBUFF_MODES; currentModeId: string };
+  } {
+    return {
+      modes: {
+        availableModes: FREEBUFF_MODES,
+        currentModeId: FREEBUFF_MODE_IDS.has(modeId) ? modeId : DEFAULT_MODE_ID,
+      },
+    };
   }
 
   async setSessionMode(params: { sessionId: string; modeId: string }): Promise<void> {
@@ -143,6 +257,16 @@ export class FreebuffAcpAgent {
       throw new Error(`Unknown mode: ${params.modeId}`);
     }
     session.modeId = params.modeId;
+    savePersistedSession(
+      {
+        sessionId: session.id,
+        cwd: session.cwd,
+        modeId: session.modeId,
+        runState: session.runState,
+        updatedAt: new Date().toISOString(),
+      },
+      this.env,
+    );
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -158,21 +282,52 @@ export class FreebuffAcpAgent {
     session.abortController = abortController;
 
     try {
-      const result: TurnResult = await runTurn({
-        client: session.client,
-        cwd: session.cwd,
-        prompt: promptText,
-        previousRun: session.runState,
-        signal: abortController.signal,
-        emit: (update) => {
-          void this.conn
-            .sessionUpdate({ sessionId: session.id, update } as unknown as SessionNotification)
-            .catch(() => {
-              // Stream updates are best-effort; the prompt result carries the outcome.
-            });
-        },
+      // Queue this turn onto the process-wide lane instead of running it
+      // immediately: only one runTurn (and its global metadata hook) may be
+      // in flight across all sessions at once.
+      const task = this.turnLane.then((): Promise<TurnResult> | TurnResult => {
+        if (abortController.signal.aborted) {
+          // Cancelled while queued: never start admission for a turn the
+          // caller already gave up on.
+          return { stopReason: "cancelled", runState: session.runState };
+        }
+        return runTurn({
+          client: session.client,
+          cwd: session.cwd,
+          prompt: promptText,
+          previousRun: session.runState,
+          signal: abortController.signal,
+          token: session.token,
+          model: this.env.FREEBUFF_MODEL?.trim() || undefined,
+          mcpServers: session.mcpServers,
+          emit: (update) => {
+            void this.conn
+              .sessionUpdate({ sessionId: session.id, update } as unknown as SessionNotification)
+              .catch(() => {
+                // Stream updates are best-effort; the prompt result carries the outcome.
+              });
+          },
+        });
       });
+      // Advance the lane past this turn regardless of outcome, so a
+      // rejected turn never wedges the queue for every session after it.
+      this.turnLane = task.then(
+        () => undefined,
+        () => undefined,
+      );
+
+      const result: TurnResult = await task;
       session.runState = result.runState;
+      savePersistedSession(
+        {
+          sessionId: session.id,
+          cwd: session.cwd,
+          modeId: session.modeId,
+          runState: session.runState,
+          updatedAt: new Date().toISOString(),
+        },
+        this.env,
+      );
       return { stopReason: result.stopReason };
     } finally {
       session.busy = false;

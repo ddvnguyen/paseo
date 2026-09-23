@@ -40,18 +40,32 @@ adapter advertises an auth method pointing at `freebuff login`.
 
 ## Session behavior
 
-- `newSession` creates an in-memory conversation backed by an SDK `RunState`.
+- `newSession` creates an in-memory conversation backed by an SDK `RunState`
+  and writes a resume snapshot under `FREEBUFF_ACP_STATE_DIR`
+  (default `~/.local/state/freebuff-acp/sessions`).
 - `session/prompt` runs a turn and streams `agent_message_chunk`,
   `agent_thought_chunk`, `tool_call`, and `tool_call_update` updates.
 - `session/cancel` aborts the in-flight turn via `AbortSignal`.
 - Modes: exposes a single `lite` mode (the Freebuff default).
-- `loadSession` is not supported (the SDK's conversation state is
-  process-local), and the capability is not advertised.
+- `session/resume` (ACP unstable resume) rehydrates `RunState` from disk after
+  an adapter restart so hosts (Paseo) can continue open sessions without
+  blocking. History replay via `session/load` is not advertised; if a host
+  still calls it, the adapter restores context without emitting past messages.
+- An already-open Freebuff free-session slot is reused (including when it is
+  bound to a different catalog model); the run adopts that slot’s model
+  instead of waiting on admission.
+- `FREEBUFF_MODEL` requests a catalog model at admission time (default GLM
+  5.3 Flash). It only takes effect when admission actually POSTs a new slot —
+  an already-open reused slot's model always wins, since the run must match
+  the slot it holds.
 
 ## Scope and limits
 
 - Images/audio and embedded context blocks in prompts are not advertised.
-- MCP servers passed by the host are not forwarded (the SDK manages its own
-  tool surface); Paseo injects its host tools through the provider config.
-- Freebuff model selection happens on the backend (the free tier's catalog);
-  the adapter does not expose model switching.
+- Host MCP servers (`session/new`) and `.agents/mcp.json` (session cwd →
+  parent → home) are merged into every root agent definition; the `skill`
+  tool is enabled and loads skills from `~/.agents/skills` and
+  `{cwd}/.agents/skills` via the SDK.
+- Freebuff model selection happens on the backend (the free tier's catalog).
+  `FREEBUFF_MODEL` requests a model at admission time, but the adapter does
+  not switch models mid-session — a reused open slot keeps its own model.

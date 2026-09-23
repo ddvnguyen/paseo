@@ -12,35 +12,31 @@ import type { PrintModeEvent } from "@codebuff/sdk";
  * Map Codebuff tool names to ACP tool kinds so hosts can pick icons and
  * treatment. Unknown tools default to "other".
  */
+const TOOL_KIND_BY_NAME: Record<string, ToolKind> = {
+  read_files: "read",
+  read_subtree: "read",
+  read_docs: "read",
+  code_search: "search",
+  find_files: "search",
+  glob: "search",
+  list_directory: "search",
+  run_terminal_command: "execute",
+  str_replace: "edit",
+  propose_str_replace: "edit",
+  write_file: "edit",
+  propose_write_file: "edit",
+  apply_patch: "edit",
+  browser_logs: "fetch",
+  web_search: "fetch",
+  read_url: "fetch",
+  think_deeply: "think",
+  add_subgoal: "think",
+  update_subgoal: "think",
+  skill: "think",
+};
+
 export function toolKindFor(toolName: string): ToolKind {
-  switch (toolName) {
-    case "read_files":
-    case "read_subtree":
-    case "read_docs":
-      return "read";
-    case "code_search":
-    case "find_files":
-    case "glob":
-    case "list_directory":
-      return "search";
-    case "run_terminal_command":
-      return "execute";
-    case "str_replace":
-    case "propose_str_replace":
-    case "write_file":
-    case "propose_write_file":
-    case "apply_patch":
-      return "edit";
-    case "browser_logs":
-    case "web_search":
-      return "fetch";
-    case "think_deeply":
-    case "add_subgoal":
-    case "update_subgoal":
-      return "think";
-    default:
-      return "other";
-  }
+  return TOOL_KIND_BY_NAME[toolName] ?? "other";
 }
 
 function humanizeToolName(toolName: string): string {
