@@ -49,6 +49,14 @@ UNIT_SRC="$SCRIPT_DIR/systemd"
 UNIT_DST="$HOME/.config/systemd/user"
 RUNNER_ENV="$HOME/actions-runners/paseo/.env"
 
+# Locate pnpm: it is often not on the non-interactive PATH of a systemd/hook
+# shell, so fall back to the standalone install location.
+PNPM_BIN="$(command -v pnpm 2>/dev/null || true)"
+if [ -z "$PNPM_BIN" ] && [ -x "$HOME/.local/share/pnpm/bin/pnpm" ]; then
+  PNPM_BIN="$HOME/.local/share/pnpm/bin/pnpm"
+fi
+PNPM_CONFIG="$HOME/.config/pnpm/config.yaml"
+
 DRY_RUN=0
 ASSUME_YES=0
 RECLAIM_ONLY=0
@@ -151,8 +159,14 @@ phase_reclaim() {
 
   # Legacy pnpm store: only safe once pnpm's configured store is the active one.
   if [ -d "$LEGACY_STORE" ]; then
-    local configured
-    configured="$(pnpm config get store-dir 2>/dev/null || true)"
+    local configured=""
+    if [ -n "$PNPM_BIN" ]; then
+      configured="$("$PNPM_BIN" config get store-dir 2>/dev/null || true)"
+    fi
+    if [ -z "$configured" ] && [ -f "$PNPM_CONFIG" ]; then
+      configured="$(grep -E '^[[:space:]]*storeDir:' "$PNPM_CONFIG" 2>/dev/null | head -1 | awk '{print $2}')"
+    fi
+    [ -n "$configured" ] || configured="$ACTIVE_STORE"
     case "$configured" in
       *".pnpm-store"*)
         log "remove legacy pnpm store (configured store is $configured): $LEGACY_STORE"
@@ -192,9 +206,17 @@ phase_reclaim() {
     run rm -rf "$d"
   done
 
-  if [ -d "$ACTIVE_STORE" ]; then
+  if [ -d "$ACTIVE_STORE" ] && [ -n "$PNPM_BIN" ]; then
     log "prune active pnpm store: $ACTIVE_STORE"
-    run pnpm store prune
+    if [ "$DRY_RUN" -eq 1 ]; then
+      printf '[dry-run] %s store prune\n' "$PNPM_BIN"
+    elif ! "$PNPM_BIN" store prune; then
+      warn "pnpm store prune failed (pnpm may be broken) — continuing"
+    fi
+  elif [ ! -d "$ACTIVE_STORE" ]; then
+    warn "active pnpm store not found: $ACTIVE_STORE"
+  else
+    warn "pnpm not found — skipping store prune"
   fi
 }
 
@@ -394,7 +416,7 @@ phase_verify() {
   printf '[consolidate] TEST  health: %s\n' "$(curl -sf http://127.0.0.1:6868/api/health 2>/dev/null || echo unreachable)"
   printf '[consolidate] PROD  health: %s\n' "$(curl -sf http://127.0.0.1:6767/api/health 2>/dev/null || echo unreachable)"
   printf '[consolidate] app   HTTP:   %s\n' "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:6969/ 2>/dev/null || echo unreachable)"
-  printf '[consolidate] pnpm store: %s\n' "$(pnpm store path 2>/dev/null || echo unknown)"
+  printf '[consolidate] pnpm store: %s\n' "$( [ -n "$PNPM_BIN" ] && "$PNPM_BIN" store path 2>/dev/null || echo unknown)"
   du -sh "$ROOT" 2>/dev/null || true
 }
 
