@@ -44,6 +44,11 @@ const patchedPackages = [
     cwd: "packages/server",
   },
   {
+    nodeModulesPath: "packages/freebuff-acp/node_modules/@codebuff/sdk",
+    patchPrefix: "@codebuff+sdk+",
+    cwd: "packages/freebuff-acp",
+  },
+  {
     // Bun hoists workspace deps to the root node_modules; without this entry
     // the OpenCode SDK SSE crash patch silently never applies on bun installs.
     nodeModulesPath: "node_modules/@opencode-ai/sdk",
