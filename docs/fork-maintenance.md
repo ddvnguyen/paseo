@@ -233,8 +233,8 @@ config.json:
 }
 ```
 
-**TEST:** edit `~/.paseo-test/config.json`.
-**PROD:** edit `~/paseo-prod-bun/config.json` (or wherever `PASEO_HOME` points).
+**TEST:** edit `~/paseo/TEST/config.json`.
+**PROD:** edit `~/paseo/PROD/config.json` (or wherever `PASEO_HOME` points).
 
 TODO(ddv): replace `http://localhost:6969` with the real paseo-app origin once
 the static file server is deployed to a persistent host (e.g.
@@ -257,6 +257,41 @@ automatically (localhost variants matching the listen port are in
 | `scripts/build-web-ui.mjs`         | Standalone web UI build → `dist/web-ui/` |
 | `deploy/caddy/Caddyfile`           | Static file server config (port 6969)    |
 | `deploy/systemd/paseo-app.service` | Caddy systemd unit for paseo-app         |
+
+## Consolidated host layout (2026-09)
+
+All paseo runtime artifacts live under a single root, `$HOME/paseo/`, with
+consistent `PROD`/`TEST` naming:
+
+```
+~/paseo/
+├── PROD/    # PROD PASEO_HOME + runtime (node_modules, package.json, paseo-bun, paseo.pid)
+├── TEST/    # TEST PASEO_HOME + runtime
+├── app/     # Caddyfile + web-ui (+ test-branding/)
+├── builds/  # android/, artifacts/, hydra/
+└── dev/     # pointer to the workspace dev checkout
+```
+
+| Env  | PASEO_HOME     | Runtime / launcher        | Port | Unit                |
+| ---- | -------------- | ------------------------- | ---- | ------------------- |
+| PROD | `~/paseo/PROD` | `~/paseo/PROD/paseo-bun`  | 6767 | `paseo.service`     |
+| TEST | `~/paseo/TEST` | `~/paseo/TEST/paseo-bun`  | 6868 | `paseo-test.service`|
+| app  | —              | `~/paseo/app/web-ui`      | 6969 | `paseo-app.service` |
+
+Runtime node_modules are installed by the pipeline into `PROD_HOME`/`TEST_HOME`
+(see the workflow `env:` block). All pnpm installs on the host share one
+content-addressable store, `~/.pnpm-store`.
+
+**Migration / rollback** (idempotent, same-filesystem `mv`):
+
+```bash
+deploy/consolidate-paseo-home.sh --dry-run      # print the plan
+deploy/consolidate-paseo-home.sh --yes          # reclaim caches + relocate
+deploy/rollback-paseo-home.sh   --yes           # reverse the relocation
+```
+
+The consolidation stops and restarts the daemons; the PROD restart drops active
+agent sessions.
 
 ## Deployment
 
@@ -283,7 +318,7 @@ node scripts/build-web-ui.mjs
 2. Copy to the deploy target:
 
 ```bash
-rsync -a --delete dist/web-ui/ ~/paseo-app/web-ui/
+rsync -a --delete dist/web-ui/ ~/paseo/app/web-ui/
 ```
 
 3. Apply TEST branding if needed (see "TEST branding preservation" below).
@@ -307,19 +342,19 @@ npm run build --workspace=@getpaseo/server
 
 ```bash
 # TEST
-rsync -a --delete packages/server/dist/ ~/.paseo-test/node_modules/@getpaseo/server/dist/
+rsync -a --delete packages/server/dist/ ~/paseo/TEST/node_modules/@getpaseo/server/dist/
 
 # PROD
-rsync -a --delete packages/server/dist/ ~/paseo-prod/node_modules/@getpaseo/server/dist/
+rsync -a --delete packages/server/dist/ ~/paseo/PROD/node_modules/@getpaseo/server/dist/
 ```
 
 3. Copy stamped package.json:
 
 ```bash
 # TEST
-cp packages/server/package.json ~/.paseo-test/node_modules/@getpaseo/server/package.json
+cp packages/server/package.json ~/paseo/TEST/node_modules/@getpaseo/server/package.json
 # PROD
-cp packages/server/package.json ~/paseo-prod/node_modules/@getpaseo/server/package.json
+cp packages/server/package.json ~/paseo/PROD/node_modules/@getpaseo/server/package.json
 ```
 
 4. Restart the affected daemon (drops active sessions):
@@ -341,23 +376,23 @@ the UI reload is zero-downtime.
 
 With the single paseo-app instance, the static web UI bundle is shared. Hub
 branding (tinted icons, "Paseo Hub" manifest name) is applied to the web-ui
-files at `~/paseo-app/web-ui/` before each deploy.
+files at `~/paseo/app/web-ui/` before each deploy.
 
-TEST branding lives durably at `~/.paseo-test-branding/` (survives full
-rebuilds). After every web UI deploy, overlay these files onto `~/paseo-app/web-ui/`:
+TEST branding lives durably at `~/paseo/app/test-branding/` (survives full
+rebuilds). After every web UI deploy, overlay these files onto `~/paseo/app/web-ui/`:
 
-1. **PWA icons** — copy from `~/.paseo-test-branding/`:
+1. **PWA icons** — copy from `~/paseo/app/test-branding/`:
    - `favicon.ico`
    - `apple-touch-icon.png`
    - `pwa-icon-192.png`
    - `pwa-icon-512.png`
 
-   Over the corresponding files in `~/paseo-app/web-ui/`.
+   Over the corresponding files in `~/paseo/app/web-ui/`.
 
-2. **Status favicons** — copy from `~/.paseo-test-branding/status-icons/`:
-   - `none.png` → `~/paseo-app/web-ui/assets/assets/images/favicon-dark.png`
-   - `running.png` → `~/paseo-app/web-ui/assets/assets/images/favicon-dark-running.png`
-   - `attention.png` → `~/paseo-app/web-ui/assets/assets/images/favicon-dark-attention.png`
+2. **Status favicons** — copy from `~/paseo/app/test-branding/status-icons/`:
+   - `none.png` → `~/paseo/app/web-ui/assets/assets/images/favicon-dark.png`
+   - `running.png` → `~/paseo/app/web-ui/assets/assets/images/favicon-dark-running.png`
+   - `attention.png` → `~/paseo/app/web-ui/assets/assets/images/favicon-dark-attention.png`
    - Same for `light` variants.
 
    These override the tab favicon that `useFaviconStatus()` sets on every
@@ -371,7 +406,11 @@ rebuilds). After every web UI deploy, overlay these files onto `~/paseo-app/web-
 
 ### Systemd Service Configuration
 
-#### Daemon units (existing, must add `--no-web-ui`)
+#### Daemon units (must add `--no-web-ui`)
+
+Templates: `deploy/systemd/paseo.service`, `deploy/systemd/paseo-test.service`,
+and the shared `deploy/systemd/paseo-prestart.sh` (port/pid-file parameterised
+via `PASEO_PRESTART_PORT` / `PASEO_PID_FILE`).
 
 | Unit                 | Location                                    | Port |
 | -------------------- | ------------------------------------------- | ---- |
@@ -409,11 +448,11 @@ After deployment, verify:
 - Check Caddy is installed: `which caddy`
 - Check logs: `journalctl --user -u paseo-app.service --since "5 minutes ago"`
 - Check port availability: `ss -tlnp | grep 6969`
-- Validate config: `caddy validate --config ~/paseo-app/Caddyfile --adapter caddyfile`
+- Validate config: `caddy validate --config ~/paseo/app/Caddyfile --adapter caddyfile`
 
 **Web UI returns 404:**
 
-- Verify `~/paseo-app/web-ui/index.html` exists
+- Verify `~/paseo/app/web-ui/index.html` exists
 - Rebuild: `node scripts/build-web-ui.mjs`
 - Copy to deploy target and reload Caddy
 
@@ -473,9 +512,9 @@ Or use the GitHub Actions UI — tick whichever stages you need.
 | ---------------- | ------------------- | ------------------------------------------------------------------------------------------------ |
 | 1. Build hydra   | `run_build_hydra`   | Checkout, `npm ci`, build server + web UI, persist to `builds/hydra/<sha>/`                      |
 | 2. Android APK   | `run_build_android` | Expo prebuild + `gradlew assembleRelease` (JDK 17, local SDK), output `builds/android/<sha>.apk` |
-| 3. Deploy web UI | `run_deploy_web`    | Build web UI from SHA, rsync to `~/paseo-app/web-ui/`, reload Caddy on `:6969`                   |
-| 4. Deploy TEST   | `run_deploy_test`   | Rsync server dist to `~/.paseo-test/`, restart `paseo-test.service` (`:6868`)                    |
-| 5. Deploy PROD   | `run_deploy_prod`   | Rsync server dist to `~/paseo-prod-bun/`, restart `paseo.service` (`:6767`) ⚠️                   |
+| 3. Deploy web UI | `run_deploy_web`    | Build web UI from SHA, rsync to `~/paseo/app/web-ui/`, reload Caddy on `:6969`                   |
+| 4. Deploy TEST   | `run_deploy_test`   | Rsync server dist to `~/paseo/TEST/`, restart `paseo-test.service` (`:6868`)                    |
+| 5. Deploy PROD   | `run_deploy_prod`   | Rsync server dist to `~/paseo/PROD/`, restart `paseo.service` (`:6767`) ⚠️                   |
 
 Stage 1 must run first (or a valid `*_build_ref` SHA must be supplied) for
 stages 2–5. When both selected in one run, stages 2–5 wait for stage 1 via
@@ -487,7 +526,7 @@ Only tick it when you have explicit permission.
 ### Persisted builds
 
 ```
-/mnt/WorkDisk/actions-runners/paseo/builds/
+/home/ddv/paseo/builds/
 ├── hydra/<full-sha>/    # Complete repo tree with built artifacts
 └── android/<sha>.apk   # Release APK
 ```
@@ -511,11 +550,11 @@ retained for reference during the transition period.
 
 1. `node scripts/sync-workspace-versions.mjs` → workspaces become `{upstream-version}-hydra-<shorthash>-<yyMMDDhhmm>`
 2. If app code changed: `CI=1 npm run build:daemon-web-ui` (purge /tmp/metro-cache first)
-3. Deploy to `~/.paseo-test/node_modules/@getpaseo/`, **in this order** (web-ui
+3. Deploy to `~/paseo/TEST/node_modules/@getpaseo/`, **in this order** (web-ui
    branding must be the LAST thing touched under `dist/server/web-ui/`, or a
    later blanket dist rsync will silently overwrite it — see below):
    - if server code changed: replace server dist first —
-     `rsync -a --delete packages/server/dist/ ~/.paseo-test/node_modules/@getpaseo/server/dist/`
+     `rsync -a --delete packages/server/dist/ ~/paseo/TEST/node_modules/@getpaseo/server/dist/`
      (this also wipes `dist/server/web-ui`, which is expected; branding is
      restored in the next step)
    - overlay fresh `packages/server/dist/server/web-ui`

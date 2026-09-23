@@ -8,6 +8,8 @@
 #   cp deploy/systemd/paseo-app.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now paseo-app.service
+#
+# Consolidation (2026-09): the app now lives at $HOME/paseo/app.
 
 [Unit]
 Description=Paseo — Static web UI server (Caddy)
@@ -15,8 +17,8 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/caddy run --config /home/ddv/paseo-app/Caddyfile --adapter caddyfile
-ExecReload=/usr/bin/caddy reload --config /home/ddv/paseo-app/Caddyfile --adapter caddyfile
+ExecStart=/home/ddv/.local/bin/caddy run --config /home/ddv/paseo/app/Caddyfile --adapter caddyfile
+ExecReload=/home/ddv/.local/bin/caddy reload --config /home/ddv/paseo/app/Caddyfile --adapter caddyfile
 Restart=on-failure
 RestartSec=2
 
