@@ -712,11 +712,9 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
+          # Full checkout: sparse-checkout persists in the shared self-hosted
+          # workspace and would strip scripts/ from the next build job.
           ref: ${{ steps.ref.outputs.sha }}
-          sparse-checkout: |
-            plugins/freebuff
-            packages/freebuff-acp/src
-          sparse-checkout-cone-mode: false
 
       - uses: actions/setup-node@v4
         with:
