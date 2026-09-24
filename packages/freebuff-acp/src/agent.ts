@@ -30,6 +30,7 @@ import { resolveCredentials } from "./auth.js";
 import type { SessionOpenInfo } from "./freebuff-session.js";
 import { resolveRunMcpServers } from "./mcp.js";
 import { DEFAULT_MODE_ID, FREEBUFF_MODES, FREEBUFF_MODE_IDS } from "./modes.js";
+import { nextConversationState } from "./run-state.js";
 import { loadPersistedSession, savePersistedSession } from "./session-store.js";
 import type { TurnResult } from "./turn.js";
 import { runTurn } from "./turn.js";
@@ -328,7 +329,7 @@ export class FreebuffAcpAgent {
       );
 
       const result: TurnResult = await task;
-      session.runState = result.runState;
+      session.runState = nextConversationState(session.runState, result.runState, result.stopReason);
       savePersistedSession(
         {
           sessionId: session.id,

@@ -127,6 +127,12 @@ function resolveAdmittedAgent(
   return { runModel, agentId: envAgentId || agentIdForModel(runModel) };
 }
 
+/** Best-effort human-readable text for an SDK run error. */
+function describeRunError(output: unknown): string {
+  const message = (output as { message?: unknown } | null)?.message;
+  return typeof message === "string" && message.trim() ? message.trim() : "unknown error";
+}
+
 /** Map a finished run's state to a TurnResult (run error → refusal, cancel honored). */
 function turnResultFromRunState(runState: RunState, cancelled: boolean): TurnResult {
   const sessionState = (runState.sessionState ?? null) as Record<string, unknown> | null;
@@ -289,7 +295,18 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
         signal,
       } as Parameters<CodebuffClient["run"]>[0]);
 
-      return turnResultFromRunState(runState, cancelled);
+      const result = turnResultFromRunState(runState, cancelled);
+      if (runState.output?.type === "error" && !cancelled && !signal.aborted) {
+        // Never end a failed run silently: the host would show an idle agent
+        // with no clue why.
+        const reason = describeRunError(runState.output);
+        process.stderr.write(`freebuff-acp: run failed: ${reason}\n`);
+        emit({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: `Freebuff run failed: ${reason}` },
+        });
+      }
+      return result;
     } finally {
       const globalWithHook = globalThis as typeof globalThis & {
         __freebuffExtraCodebuffMetadata?: Record<string, string>;
