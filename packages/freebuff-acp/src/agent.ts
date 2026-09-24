@@ -64,7 +64,7 @@ import {
   type AccountStatus,
   type ConfirmOpenMode,
 } from "./account.js";
-import type { SessionOpenInfo } from "./freebuff-session.js";
+import type { ModelSwitchInfo, SessionOpenInfo } from "./freebuff-session.js";
 import { resolveRunMcpServers } from "./mcp.js";
 import { DEFAULT_MODE_ID, FREEBUFF_MODES, FREEBUFF_MODE_IDS } from "./modes.js";
 import { FREEBUFF_MODEL_IDS, initialModelId, modelState } from "./models.js";
@@ -636,6 +636,8 @@ export class FreebuffAcpAgent {
               session.confirmOpen === "auto"
                 ? undefined
                 : (info) => this.confirmSessionOpen(session.id, info),
+            // Ending the shared seat can cut another agent's run: always ask.
+            confirmModelSwitch: (info) => this.confirmModelSwitch(session.id, info),
             emit,
           });
         } finally {
@@ -808,6 +810,50 @@ export class FreebuffAcpAgent {
       ],
     });
     return response.outcome.outcome === "selected" && response.outcome.optionId === "open-session";
+  }
+
+  /**
+   * The account has one seat and it is held on another model (by another
+   * agent or a Freebuff CLI). Keep it by default; switching ends it.
+   */
+  private async confirmModelSwitch(sessionId: string, info: ModelSwitchInfo): Promise<boolean> {
+    const cost = info.priceFreebucks != null ? `${info.priceFreebucks} Freebucks` : "Freebucks";
+    const response = await this.conn.requestPermission({
+      sessionId,
+      _meta: { "paseo/requireApproval": true },
+      toolCall: {
+        toolCallId: `freebuff-switch-${crypto.randomUUID()}`,
+        title: "Switch the account's Freebuff model?",
+        kind: "other",
+        status: "pending",
+        content: [
+          {
+            type: "content",
+            content: {
+              type: "text",
+              text:
+                `This account already has an open Freebuff session on ${info.currentModel} ` +
+                `(one session per account, shared with other agents and CLIs). ` +
+                `Switching to ${info.requestedModel} ends it, which can interrupt another agent, ` +
+                `and opens a new one (${cost}, 1 hour).`,
+            },
+          },
+        ],
+      },
+      options: [
+        {
+          optionId: "keep-session",
+          name: `Keep ${info.currentModel} (no change)`,
+          kind: "reject_once",
+        },
+        {
+          optionId: "switch-model",
+          name: `Switch to ${info.requestedModel} — ${cost}`,
+          kind: "allow_once",
+        },
+      ],
+    });
+    return response.outcome.outcome === "selected" && response.outcome.optionId === "switch-model";
   }
 
   async cancel(params: { sessionId: string }): Promise<void> {

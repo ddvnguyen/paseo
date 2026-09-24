@@ -13,6 +13,7 @@ import {
 import {
   admitFreebuffSession,
   releaseFreebuffSession,
+  type ModelSwitchInfo,
   type SessionOpenInfo,
 } from "./freebuff-session.js";
 
@@ -47,6 +48,11 @@ export interface RunTurnOptions {
    * Omitted = auto-open; live-session reuse probes never consult it.
    */
   confirmSessionOpen?: (info: SessionOpenInfo) => Promise<boolean>;
+  /**
+   * Asked when the account's single seat is held on another model. Approve =
+   * end it and open the requested model; omitted/declined = run on the held one.
+   */
+  confirmModelSwitch?: (info: ModelSwitchInfo) => Promise<boolean>;
 }
 
 export interface TurnResult {
@@ -260,6 +266,7 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
     model,
     mcpServers,
     confirmSessionOpen,
+    confirmModelSwitch,
   } = options;
 
   // A stopped turn must go quiet: an orphaned run may still stream events
@@ -321,6 +328,7 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
       model,
       signal,
       confirmOpen: confirmSessionOpen,
+      confirmSwitch: confirmModelSwitch,
     });
     if (!admission.ok) {
       return admissionRefusal(admission, previousRun, emit);

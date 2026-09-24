@@ -923,8 +923,10 @@ describe("FreebuffAcpAgent", () => {
       return method === "POST" || method === "DELETE";
     });
     expect(mutating).toHaveLength(0);
-    // Reuse never consults the open-session confirm — no permission prompt.
-    expect(conn.requestPermission).not.toHaveBeenCalled();
+    // Reuse never consults the open-session confirm; the only prompt is the
+    // model-switch question, and the default answer keeps the held seat.
+    expect(conn.requestPermission).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(conn.requestPermission.mock.calls[0])).toContain("keep-session");
   });
 
   it("writes persisted session files with 0600 permissions", () => {
