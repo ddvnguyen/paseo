@@ -782,6 +782,8 @@ export class FreebuffAcpAgent {
       info.dailyRemaining != null ? ` — ${info.dailyRemaining} Freebucks left today` : "";
     const response = await this.conn.requestPermission({
       sessionId,
+      // Spends credit: hosts with auto-accept must still ask a person.
+      _meta: { "paseo/requireApproval": true },
       toolCall: {
         toolCallId: `freebuff-open-${crypto.randomUUID()}`,
         title: "Open new Freebuff session",

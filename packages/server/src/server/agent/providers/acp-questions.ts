@@ -11,9 +11,20 @@
  */
 export const ACP_QUESTIONS_META_KEY = "paseo/questions";
 export const ACP_ANSWERS_META_KEY = "paseo/answers";
+/**
+ * An agent sets `_meta["paseo/requireApproval"] = true` on a permission request
+ * that spends the user's money or credit. The host never auto-accepts it, even
+ * with the `auto_accept` feature on; a person has to choose.
+ */
+export const ACP_REQUIRE_APPROVAL_META_KEY = "paseo/requireApproval";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Whether the request must be approved by a person, never auto-accepted. */
+export function requiresExplicitApproval(meta: unknown): boolean {
+  return isRecord(meta) && meta[ACP_REQUIRE_APPROVAL_META_KEY] === true;
 }
 
 /** Questions from a permission request's `_meta`, or null when absent/malformed. */
