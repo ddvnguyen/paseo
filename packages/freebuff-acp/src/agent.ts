@@ -25,6 +25,8 @@ import {
   type ResumeSessionRequest,
   type ResumeSessionResponse,
   type SessionNotification,
+  type CloseSessionRequest,
+  type CloseSessionResponse,
   type SetSessionConfigOptionRequest,
   type SetSessionConfigOptionResponse,
   type SetSessionModelRequest,
@@ -45,6 +47,7 @@ import {
 import {
   ACCOUNT_CONFIG_ID,
   CONFIRM_OPEN_CONFIG_ID,
+  MODEL_CONFIG_ID,
   buildConfigOptions,
   fetchAccountStatus,
   initialConfirmOpenMode,
@@ -167,9 +170,11 @@ export class FreebuffAcpAgent {
     return {
       protocolVersion: 1,
       agentCapabilities: {
-        // History replay is not supported (SDK RunState is opaque); hosts that
-        // only need to continue a conversation use session/resume instead.
-        loadSession: false,
+        // History replay is not supported (SDK RunState is opaque).
+        // Soft load: restores the RunState from disk without replaying history.
+        // Hosts that only resume via session/load (Paseo's plugin ACP shim)
+        // need this true; session/resume below serves hosts that prefer it.
+        loadSession: true,
         sessionCapabilities: {
           // Unstable ACP resume: restore context without replaying messages.
           // Paseo prefers loadSession when present, else this path — so open
@@ -177,6 +182,7 @@ export class FreebuffAcpAgent {
           resume: {},
           // Lets hosts list/import sessions persisted by this adapter.
           list: {},
+          close: {},
         },
         promptCapabilities: {
           audio: false,
@@ -349,6 +355,7 @@ export class FreebuffAcpAgent {
       accountName: session.accountName,
       status: session.status,
       confirmOpen: session.confirmOpen,
+      models: modelState(session.modelId, session.status),
     });
   }
 
@@ -380,6 +387,9 @@ export class FreebuffAcpAgent {
     if (!session) throw new Error(`Unknown session: ${params.sessionId}`);
     const value = String((params as { value: unknown }).value);
     switch (params.configId) {
+      case MODEL_CONFIG_ID:
+        await this.unstable_setSessionModel({ sessionId: params.sessionId, modelId: value });
+        break;
       case CONFIRM_OPEN_CONFIG_ID:
         if (!isConfirmOpenMode(value)) throw new Error(`Unknown session-open mode: ${value}`);
         session.confirmOpen = value;
@@ -428,6 +438,17 @@ export class FreebuffAcpAgent {
     }
     session.modelId = params.modelId;
     this.persist(session);
+    return {};
+  }
+
+  /** Host is done with the session: stop any turn and drop it from memory (state stays on disk). */
+  async unstable_closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+    const session = this.sessions.get(params.sessionId);
+    if (session) {
+      await this.stopRunningTurn(session);
+      this.persist(session);
+      this.sessions.delete(params.sessionId);
+    }
     return {};
   }
 

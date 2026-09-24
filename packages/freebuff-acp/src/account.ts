@@ -1,4 +1,4 @@
-import type { SessionConfigOption } from "@agentclientprotocol/sdk";
+import type { ModelInfo, SessionConfigOption } from "@agentclientprotocol/sdk";
 
 import { probeOpenSession } from "./freebuff-session.js";
 
@@ -11,6 +11,7 @@ import { probeOpenSession } from "./freebuff-session.js";
 
 export const ACCOUNT_CONFIG_ID = "account";
 export const CONFIRM_OPEN_CONFIG_ID = "confirm_open";
+export const MODEL_CONFIG_ID = "model";
 
 export type ConfirmOpenMode = "ask" | "auto";
 
@@ -66,12 +67,34 @@ export function buildConfigOptions(input: {
   accountName: string;
   status: AccountStatus | null;
   confirmOpen: ConfirmOpenMode;
+  /**
+   * Model picker as a `model`-category config option, for hosts that build
+   * their catalog from config options rather than ACP's `models` state.
+   */
+  models?: { currentModelId: string; availableModels: ModelInfo[] };
 }): SessionConfigOption[] {
   const summary = formatAccountSummary(input.accountName, input.status);
   const resetNote = input.status?.resetAt
     ? `Daily Freebucks reset at ${input.status.resetAt}.`
     : undefined;
+  const modelOption = input.models
+    ? [
+        {
+          id: MODEL_CONFIG_ID,
+          name: "Model",
+          category: "model",
+          type: "select",
+          currentValue: input.models.currentModelId,
+          options: input.models.availableModels.map((model) => ({
+            value: model.modelId,
+            name: model.name,
+            ...(model.description ? { description: model.description } : {}),
+          })),
+        },
+      ]
+    : [];
   return [
+    ...modelOption,
     {
       id: ACCOUNT_CONFIG_ID,
       name: "Account",

@@ -1,6 +1,7 @@
 import type { StopReason } from "@agentclientprotocol/sdk";
 import type { CodebuffClient, MessageContent, PrintModeEvent, RunState } from "@codebuff/sdk";
 
+import { toPreviousRun } from "./run-state.js";
 import { todosToPlan } from "./plan.js";
 import { mapToolCallEvent, mapToolResultEvent } from "./tools.js";
 import type { CodebuffMcpConfig } from "./mcp.js";
@@ -393,7 +394,7 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
         extraCodebuffMetadata: process.env.FREEBUFF_DISABLE_ADMISSION
           ? {}
           : { freebuff_instance_id: admission.instanceId },
-        ...(previousRun ? { previousRun: previousRun as unknown as RunState } : {}),
+        ...(previousRun ? { previousRun: toPreviousRun(previousRun) as unknown as RunState } : {}),
         signal,
       } as Parameters<CodebuffClient["run"]>[0]);
 

@@ -115,14 +115,14 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
 }
 
 describe("FreebuffAcpAgent", () => {
-  it("initializes with session/resume enabled and an auth method", async () => {
+  it("initializes with session/load + resume enabled and an auth method", async () => {
     const agent = new FreebuffAcpAgent(makeConn(), testEnv());
     const response = await agent.initialize({
       protocolVersion: 1,
       clientCapabilities: {},
     } as never);
     expect(response.protocolVersion).toBe(1);
-    expect(response.agentCapabilities?.loadSession).toBe(false);
+    expect(response.agentCapabilities?.loadSession).toBe(true);
     expect(response.agentCapabilities?.sessionCapabilities?.resume).toEqual({});
     expect(response.authMethods?.[0]?.id).toBe("freebuff-login");
   });
@@ -1019,5 +1019,73 @@ describe("account, quota and session-open switch", () => {
         value: "bogus",
       } as never),
     ).rejects.toThrow(/Unknown session-open mode/);
+  });
+});
+
+describe("plugin-shim compatibility (session/load, close, model option)", () => {
+  it("advertises load + close so hosts resuming via session/load can continue a thread", async () => {
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    const response = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: {},
+    } as never);
+    expect(response.agentCapabilities?.loadSession).toBe(true);
+    expect(response.agentCapabilities?.sessionCapabilities?.close).toEqual({});
+  });
+
+  it("exposes the model picker as a model-category config option and switches through it", async () => {
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const model = session.configOptions?.find((option) => option.id === "model");
+    expect(model).toMatchObject({ category: "model", type: "select" });
+    const response = await agent.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: "model",
+      value: "stealth/space-bunny-alpha",
+    } as never);
+    expect(response.configOptions.find((option) => option.id === "model")?.currentValue).toBe(
+      "stealth/space-bunny-alpha",
+    );
+    expect(loadPersistedSession(session.sessionId, testEnv())?.modelId).toBe(
+      "stealth/space-bunny-alpha",
+    );
+  });
+
+  it("continues a conversation through session/load after a restart, then closes cleanly", async () => {
+    const first = new FreebuffAcpAgent(makeConn(), testEnv());
+    stubClient(first, makeClient({ type: "success" }));
+    const session = await first.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    await first.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "hi" }],
+    } as never);
+
+    const second = new FreebuffAcpAgent(makeConn(), testEnv());
+    const client = makeClient({ type: "success" });
+    stubClient(second, client);
+    const loaded = await second.loadSession({
+      sessionId: session.sessionId,
+      cwd: "/tmp",
+      mcpServers: [],
+    } as never);
+    expect(loaded.configOptions?.some((option) => option.id === "account")).toBe(true);
+    await second.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "again" }],
+    } as never);
+    const previous = (
+      client.run.mock.calls[0]![0] as { previousRun?: { sessionState?: { marker?: number } } }
+    ).previousRun;
+    // The SDK continues from previousRun.sessionState; a bare state would start fresh.
+    expect(previous?.sessionState?.marker).toBe(1);
+
+    await second.unstable_closeSession({ sessionId: session.sessionId } as never);
+    await expect(
+      second.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "x" }],
+      } as never),
+    ).rejects.toThrow(/Unknown session/);
   });
 });
