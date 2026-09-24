@@ -1238,6 +1238,59 @@ describe("ACPAgentSession Zed parity", () => {
     });
   });
 
+  test("maps _meta paseo/questions to a question permission and returns typed answers", async () => {
+    const session = createSessionWithConfig({
+      provider: "generic-acp",
+      featureValues: { auto_accept: true },
+    });
+    const events: AgentStreamEvent[] = [];
+
+    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
+    session.subscribe((event) => events.push(event));
+
+    const questions = [
+      {
+        question: "Which targets?",
+        header: "Targets",
+        options: [{ label: "web" }, { label: "ios" }],
+        multiSelect: true,
+        allowOther: true,
+      },
+    ];
+    const permission = session.requestPermission({
+      sessionId: "session-1",
+      toolCall: { toolCallId: "ask-1", title: "Which targets?", status: "pending" },
+      options: [
+        { optionId: "ask-user-0-0", name: "web", kind: "allow_once" },
+        { optionId: "ask-user-submit", name: "Submit answers", kind: "allow_once" },
+        { optionId: "ask-user-skip", name: "Skip", kind: "reject_once" },
+      ],
+      _meta: { "paseo/questions": questions },
+    } satisfies RequestPermissionRequest);
+
+    await Promise.resolve();
+
+    // A question is never auto-accepted, even with auto_accept on.
+    const requested = events.find((event) => event.type === "permission_requested");
+    expect(requested).toMatchObject({
+      type: "permission_requested",
+      request: { kind: "question", input: { questions } },
+    });
+    if (requested?.type !== "permission_requested") {
+      throw new Error("Expected permission request");
+    }
+
+    await session.respondToPermission(requested.request.id, {
+      behavior: "allow",
+      selectedActionId: "ask-user-submit",
+      updatedInput: { answers: { Targets: "web, ios, watchOS" } },
+    });
+    await expect(permission).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "ask-user-submit" },
+      _meta: { "paseo/answers": { Targets: "web, ios, watchOS" } },
+    });
+  });
+
   test("preserves ACP permission requests after invalid selected actions", async () => {
     const session = createSessionWithConfig({ provider: "generic-acp" });
     const events: AgentStreamEvent[] = [];

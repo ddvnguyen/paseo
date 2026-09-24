@@ -1,7 +1,10 @@
+import path from "node:path";
+
 import type {
   ContentBlock,
   SessionUpdate,
   ToolCallContent,
+  ToolCallLocation,
   ToolCallStatus,
   ToolCallUpdate,
   ToolKind,
@@ -87,13 +90,71 @@ interface ToolResultEventLike {
   >;
 }
 
-/** Build the initial ACP tool_call session update from a Codebuff tool_call event. */
-export function mapToolCallEvent(event: ToolCallEventLike): SessionUpdate {
+function absolutePath(candidate: string, cwd: string | undefined): string {
+  return path.isAbsolute(candidate) ? candidate : path.resolve(cwd ?? process.cwd(), candidate);
+}
+
+function stringField(input: Record<string, unknown>, key: string): string | undefined {
+  const value = input[key];
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/** Files a tool touches, so hosts can render path chips / open the file. */
+function locationsFor(
+  toolName: string,
+  input: Record<string, unknown>,
+  cwd: string | undefined,
+): ToolCallLocation[] {
+  if (toolName === "read_files" && Array.isArray(input.paths)) {
+    return input.paths
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => ({ path: absolutePath(entry, cwd) }));
+  }
+  const single = stringField(input, "path");
+  return single ? [{ path: absolutePath(single, cwd) }] : [];
+}
+
+/** Diff content for edit tools so hosts render a real diff instead of raw JSON. */
+function diffContentFor(
+  toolName: string,
+  input: Record<string, unknown>,
+  cwd: string | undefined,
+): ToolCallContent[] {
+  const target = stringField(input, "path");
+  if (!target) return [];
+  const filePath = absolutePath(target, cwd);
+  if (toolName === "write_file" && typeof input.content === "string") {
+    return [{ type: "diff", path: filePath, oldText: null, newText: input.content }];
+  }
+  if (toolName === "str_replace" && Array.isArray(input.replacements)) {
+    const diffs: ToolCallContent[] = [];
+    for (const replacement of input.replacements) {
+      if (typeof replacement !== "object" || replacement === null) continue;
+      const { old, new: next } = replacement as { old?: unknown; new?: unknown };
+      if (typeof old === "string" && typeof next === "string") {
+        diffs.push({ type: "diff", path: filePath, oldText: old, newText: next });
+      }
+    }
+    return diffs;
+  }
+  return [];
+}
+
+/**
+ * Build the initial ACP tool_call session update from a Codebuff tool_call
+ * event. `cwd` resolves relative tool paths into absolute locations.
+ */
+export function mapToolCallEvent(event: ToolCallEventLike, cwd?: string): SessionUpdate {
+  const locations = locationsFor(event.toolName, event.input, cwd);
+  const content = diffContentFor(event.toolName, event.input, cwd);
   const toolCall: ToolCallUpdate = {
     toolCallId: event.toolCallId,
     title: `${humanizeToolName(event.toolName)}${summarizeInput(event.input)}`,
     kind: toolKindFor(event.toolName),
     status: "in_progress",
+    rawInput: event.input,
+    ...(locations.length > 0 ? { locations } : {}),
+    ...(content.length > 0 ? { content } : {}),
   };
   return { sessionUpdate: "tool_call", ...toolCall } as SessionUpdate;
 }
@@ -115,14 +176,26 @@ export function mapToolResultEvent(event: ToolResultEventLike): SessionUpdate {
         content.push({ type: "content", content: { type: "text", text } satisfies ContentBlock });
       }
     }
-    // Media outputs (images) are dropped: the adapter does not advertise image support.
+    if (item.type === "media" && item.mediaType.startsWith("image/")) {
+      content.push({
+        type: "content",
+        content: { type: "image", data: item.data, mimeType: item.mediaType } satisfies ContentBlock,
+      });
+    }
   }
   const update: ToolCallUpdate = {
     toolCallId: event.toolCallId,
     status: (failed ? "failed" : "completed") satisfies ToolCallStatus,
+    rawOutput: rawOutputFor(event.output),
     ...(content.length > 0 ? { content } : {}),
   };
   return { sessionUpdate: "tool_call_update", ...update } as SessionUpdate;
+}
+
+/** Structured result for hosts: the lone JSON value, else the list of JSON values. */
+function rawOutputFor(output: ToolResultEventLike["output"]): unknown {
+  const values = output.flatMap((item) => (item.type === "json" ? [item.value] : []));
+  return values.length === 1 ? values[0] : values;
 }
 
 function safeJsonText(value: unknown): string | null {

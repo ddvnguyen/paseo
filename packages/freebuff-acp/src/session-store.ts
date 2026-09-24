@@ -23,6 +23,10 @@ export interface PersistedFreebuffSession {
   sessionId: string;
   cwd: string;
   modeId: string;
+  /** Catalog model the session last ran on (absent in files from older builds). */
+  modelId?: string;
+  /** Short conversation title derived from the first prompt. */
+  title?: string;
   runState: Record<string, unknown> | null;
   updatedAt: string;
 }
@@ -83,6 +87,8 @@ export function loadPersistedSession(
       sessionId: record.sessionId,
       cwd: record.cwd,
       modeId: typeof record.modeId === "string" ? record.modeId : "lite",
+      ...(typeof record.modelId === "string" ? { modelId: record.modelId } : {}),
+      ...(typeof record.title === "string" ? { title: record.title } : {}),
       runState:
         record.runState && typeof record.runState === "object"
           ? (record.runState as Record<string, unknown>)
@@ -91,5 +97,29 @@ export function loadPersistedSession(
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Persisted sessions, newest first, optionally limited to one workspace.
+ * Feeds ACP `session/list` so hosts can offer to resume/import past sessions.
+ */
+export function listPersistedSessions(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd?: string | null,
+): PersistedFreebuffSession[] {
+  try {
+    const dir = sessionsStateDir(env);
+    if (!fs.existsSync(dir)) return [];
+    const sessions: PersistedFreebuffSession[] = [];
+    for (const entry of fs.readdirSync(dir)) {
+      if (!entry.endsWith(".json")) continue;
+      const sessionId = entry.slice(0, -".json".length);
+      const session = loadPersistedSession(sessionId, env);
+      if (session && (!cwd || session.cwd === cwd)) sessions.push(session);
+    }
+    return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  } catch {
+    return [];
   }
 }
