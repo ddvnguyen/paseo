@@ -750,5 +750,5 @@ jobs:
             mv -Tf "$ROOT/current.new" "$ROOT/current"
             echo "## freebuff-acp $SHA -> $ROOT/current/plugins/freebuff/dist/entry.js" >> "$GITHUB_STEP_SUMMARY"
             # Keep the 3 newest releases (never the one `current` points to).
-            (cd "$ROOT/releases" && ls -1t | tail -n +4 | grep -vx "$SHA" | xargs -r rm -rf)
+            (cd "$ROOT/releases" && ls -1t | tail -n +4 | { grep -vx "$SHA" || true; } | xargs -r rm -rf)
           done
