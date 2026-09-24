@@ -167,7 +167,42 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
   };
   signal.addEventListener("abort", onAbort, { once: true });
 
-  const handleEvent = (event: PrintModeEvent) => dispatchTurnEvent(event, emit);
+  // The SDK splits live output across two callbacks: text deltas arrive as
+  // strings on handleStreamChunk (reasoning as reasoning_chunk objects), while
+  // handleEvent only receives that same text later, flushed as one {type:"text"}
+  // event at tool boundaries / message end — which is why replies rendered in
+  // one late block. Stream deltas immediately, remember what was streamed, and
+  // drop a flush that repeats already-sent text so nothing renders twice. A
+  // run with no deltas keeps the flush path unchanged.
+  let streamedText = "";
+  const handleEvent = (event: PrintModeEvent) => {
+    if (event.type === "text" && event.text && streamedText.endsWith(event.text)) {
+      return;
+    }
+    dispatchTurnEvent(event, emit);
+  };
+  const handleStreamChunk = (
+    chunk: Parameters<NonNullable<Parameters<CodebuffClient["run"]>[0]["handleStreamChunk"]>>[0],
+  ) => {
+    if (typeof chunk === "string") {
+      if (chunk) {
+        streamedText += chunk;
+        emit({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: chunk },
+        });
+      }
+      return;
+    }
+    if (chunk.type === "reasoning_chunk" && chunk.chunk) {
+      emit({
+        sessionUpdate: "agent_thought_chunk",
+        content: { type: "text", text: chunk.chunk },
+      });
+      return;
+    }
+    // subagent_chunk: subagents have no ACP surface; keep the pre-existing drop.
+  };
 
   try {
     // The CLI's free-mode protocol: hold a session slot BEFORE running.
@@ -245,6 +280,7 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
         // 'free' = 0 credits charged for allowlisted Freebuff agents.
         costMode: "free",
         handleEvent,
+        handleStreamChunk,
         // Official option on newer SDKs; 0.10.7 also reads the globalThis hook.
         extraCodebuffMetadata: process.env.FREEBUFF_DISABLE_ADMISSION
           ? {}

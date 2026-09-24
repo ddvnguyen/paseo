@@ -344,6 +344,49 @@ describe("FreebuffAcpAgent", () => {
     });
   });
 
+  it("streams live text and reasoning deltas and drops the duplicate flush", async () => {
+    const conn = makeConn();
+    const agent = new FreebuffAcpAgent(conn, testEnv());
+    stubClient(agent, {
+      run: vi.fn(async (options: Record<string, unknown>) => {
+        const stream = options.handleStreamChunk as ((chunk: unknown) => void) | undefined;
+        const event = options.handleEvent as ((evt: unknown) => void) | undefined;
+        stream?.("Hello ");
+        stream?.("world");
+        stream?.({
+          type: "reasoning_chunk",
+          agentId: "run-1",
+          ancestorRunIds: [],
+          chunk: "thinking hard",
+        });
+        stream?.({ type: "subagent_chunk", agentId: "sub", agentType: "helper", chunk: "ignored" });
+        // The SDK flushes the same text later as one {type:"text"} event; it
+        // must not render a second time.
+        event?.({ type: "text", text: "Hello world" });
+        return { sessionState: { marker: 1 }, output: { type: "success" } };
+      }),
+    });
+
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const response = await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "hi" }],
+    } as never);
+
+    expect(response.stopReason).toBe("end_turn");
+    const chunkTexts = conn.sessionUpdate.mock.calls
+      .map(([params]) => params?.update)
+      .filter(
+        (update) =>
+          update?.sessionUpdate === "agent_message_chunk" ||
+          update?.sessionUpdate === "agent_thought_chunk",
+      )
+      .map((update) => update.content?.text);
+    // Two deltas + one reasoning chunk, in order; no subagent passthrough, no
+    // duplicated flush.
+    expect(chunkTexts).toEqual(["Hello ", "world", "thinking hard"]);
+  });
+
   it("rejects an unknown mode", async () => {
     const agent = new FreebuffAcpAgent(makeConn(), testEnv());
     stubClient(agent, makeClient({ type: "success" }));
