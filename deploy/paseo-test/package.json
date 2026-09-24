@@ -44,6 +44,7 @@
     "fast-deep-equal": "^3.1.3",
     "lezer-elixir": "^1.1.2",
     "lru-cache": "^11.5.1",
+    "markdown-it": "^10.0.0",
     "mime-types": "^2.1.35",
     "mnemonic-id": "^3.2.7",
     "node-pty": "1.2.0-beta.15",
