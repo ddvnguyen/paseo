@@ -433,11 +433,8 @@ describe("FreebuffAcpAgent", () => {
     const pending: Array<() => void> = [];
     const capturedHooks: Array<Record<string, string> | undefined> = [];
     const client = {
-      run: vi.fn(async () => {
-        capturedHooks.push(
-          (globalThis as { __freebuffExtraCodebuffMetadata?: Record<string, string> })
-            .__freebuffExtraCodebuffMetadata,
-        );
+      run: vi.fn(async (options: { extraCodebuffMetadata?: Record<string, string> }) => {
+        capturedHooks.push(options.extraCodebuffMetadata);
         const gate = Promise.withResolvers<{
           sessionState: { marker: number };
           output: { type: string };

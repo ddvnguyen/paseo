@@ -4,7 +4,7 @@
 //    the same repository) so tsc resolves dependencies from this dir's
 //    node_modules.
 // 2. Compile it to dist/ (type errors are the adapter package's own gate).
-// 3. Patch @codebuff/sdk so the adapter can inject `freebuff_instance_id`.
+// 3. Verify the vendored @codebuff/sdk fork supports per-run `extraCodebuffMetadata`.
 // 4. Generate server/generated.ts with the absolute path of dist/entry.js,
 //    because the server bundle does not know where the plugin dir is.
 import { spawnSync } from "node:child_process";
@@ -40,19 +40,14 @@ const compiled = spawnSync(
 if (compiled.status !== 0) fail("tsc failed");
 fs.writeFileSync(path.join(distDir, "package.json"), '{"type":"module"}\n');
 
-const MARKER = "__freebuffExtraCodebuffMetadata";
-const PATTERN = /(codebuff_metadata: \{\n)(\s*)(run_id: runId,)/;
+// The fork SDK (vendor/) carries the official per-run `extraCodebuffMetadata`
+// option; fail the build if a swapped-in SDK does not, instead of patching it.
 for (const file of ["index.mjs", "index.cjs"]) {
   const target = path.join(pluginDir, "node_modules", "@codebuff", "sdk", "dist", file);
   if (!fs.existsSync(target)) fail(`SDK file missing: ${target}`);
-  const text = fs.readFileSync(target, "utf8");
-  if (text.includes(MARKER)) continue;
-  if (!PATTERN.test(text)) {
-    fail(
-      `${file}: codebuff_metadata pattern not found; @codebuff/sdk changed, re-derive the patch`,
-    );
+  if (!fs.readFileSync(target, "utf8").includes("extraCodebuffMetadata")) {
+    fail(`${file}: @codebuff/sdk lacks extraCodebuffMetadata; use the vendored fork build`);
   }
-  fs.writeFileSync(target, text.replace(PATTERN, `$1$2...globalThis.${MARKER},\n$2$3`));
 }
 
 const entry = path.join(distDir, "entry.js");

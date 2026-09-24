@@ -11,7 +11,7 @@ paseo plugin reload freebuff
 ```
 
 The build step (`paseo-plugin.json`) runs `npm install --omit=dev` and `scripts/build.mjs`, which
-compiles the adapter into `dist/`, patches `@codebuff/sdk` (metadata hook the adapter needs), and
+compiles the adapter into `dist/`, checks the vendored `@codebuff/sdk` fork build (`vendor/`, rebuilt by `sdk-fork/pack.sh`) supports per-run `extraCodebuffMetadata`, and
 writes `server/generated.ts` with the absolute adapter path. Requires plugins to be enabled
 (`pluginsEnabled`), and Freebuff credentials (`freebuff login`) for the daemon user.
 

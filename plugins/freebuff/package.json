@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.17.1",
-    "@codebuff/sdk": "0.10.7",
+    "@codebuff/sdk": "file:vendor/codebuff-sdk-0.10.7-paseo.1.tgz",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.3",
     "zod": "4.4.3"
@@ -23,7 +23,6 @@
     "react-native": ">=0.81.5"
   },
   "overrides": {
-    "@ai-sdk/gateway": "2.0.1",
-    "ai": "5.0.78"
+    "zod": "4.4.3"
   }
 }

@@ -133,11 +133,11 @@ export class FreebuffAcpAgent {
   private readonly conn: ClientApi;
   private readonly env: NodeJS.ProcessEnv;
   /**
-   * Process-wide turn queue. turn.ts pins a single global hook
-   * (`__freebuffExtraCodebuffMetadata`) around each `client.run()` call, so
-   * two sessions prompting concurrently in this process would bleed instance
-   * ids into each other's run. All turns funnel through this lane so only
-   * one `runTurn` is in flight at a time, regardless of session.
+   * Process-wide turn queue. The instance id now travels per run
+   * (`extraCodebuffMetadata`), so nothing is shared between runs; the lane
+   * stays because Freebuff grants one seat per account and admission/release
+   * ordering across sessions is not yet safe to interleave. All turns funnel
+   * through it so only one `runTurn` is in flight at a time.
    */
   private turnLane: Promise<void> = Promise.resolve();
   /**
@@ -601,7 +601,7 @@ export class FreebuffAcpAgent {
     try {
       this.maybePublishTitle(session, rawText);
       // Queue this turn onto the process-wide lane instead of running it
-      // immediately: only one runTurn (and its global metadata hook) may be
+      // immediately: only one runTurn may be
       // in flight across all sessions at once.
       const task = this.turnLane.then(async (): Promise<TurnResult> => {
         if (abortController.signal.aborted) {
