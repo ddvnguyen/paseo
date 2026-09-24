@@ -602,9 +602,8 @@ function DebugSection() {
     setTestState("sending");
     setTestError(null);
     try {
-      const { sendDebugTestNotification } = await import(
-        "@/push-notifications/debug-test-notification"
-      );
+      const { sendDebugTestNotification } =
+        await import("@/push-notifications/debug-test-notification");
       const result = await sendDebugTestNotification();
       if (result.ok) {
         setTestState("success");

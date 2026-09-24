@@ -14,7 +14,9 @@ describe("readAcpQuestions", () => {
     expect(readAcpQuestions({})).toBeNull();
     expect(readAcpQuestions({ "paseo/questions": [] })).toBeNull();
     expect(readAcpQuestions({ "paseo/questions": "nope" })).toBeNull();
-    expect(readAcpQuestions({ "paseo/questions": [{ question: "no header", options: [] }] })).toBeNull();
+    expect(
+      readAcpQuestions({ "paseo/questions": [{ question: "no header", options: [] }] }),
+    ).toBeNull();
     expect(readAcpQuestions({ "paseo/questions": [question, 3] })).toBeNull();
   });
 });

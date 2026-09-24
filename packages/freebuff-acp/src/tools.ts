@@ -179,7 +179,11 @@ export function mapToolResultEvent(event: ToolResultEventLike): SessionUpdate {
     if (item.type === "media" && item.mediaType.startsWith("image/")) {
       content.push({
         type: "content",
-        content: { type: "image", data: item.data, mimeType: item.mediaType } satisfies ContentBlock,
+        content: {
+          type: "image",
+          data: item.data,
+          mimeType: item.mediaType,
+        } satisfies ContentBlock,
       });
     }
   }

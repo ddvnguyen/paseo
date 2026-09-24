@@ -97,7 +97,10 @@ for (const workspacePath of workspacePaths) {
   // stays stable across version stamps. The stamped version is only for the
   // package's own "version" field; deps stay as workspace:* for frozen installs.
   const internalDepRange = "workspace:*";
-  const isAlreadyStamped = (v) => typeof v === "string" && v.includes(`-${FORK_IDENTIFIER}-`) && v !== `${rootVersion}-${FORK_IDENTIFIER}`;
+  const isAlreadyStamped = (v) =>
+    typeof v === "string" &&
+    v.includes(`-${FORK_IDENTIFIER}-`) &&
+    v !== `${rootVersion}-${FORK_IDENTIFIER}`;
 
   for (const section of dependencySections) {
     const deps = pkg[section];

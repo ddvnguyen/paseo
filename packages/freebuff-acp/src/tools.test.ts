@@ -54,12 +54,24 @@ describe("mapToolCallEvent", () => {
 
   it("renders write_file as a diff against nothing and read_files as locations", () => {
     const write = mapToolCallEvent(
-      { type: "tool_call", toolCallId: "w1", toolName: "write_file", input: { path: "/x/n.ts", content: "hi" } },
+      {
+        type: "tool_call",
+        toolCallId: "w1",
+        toolName: "write_file",
+        input: { path: "/x/n.ts", content: "hi" },
+      },
       "/work",
     );
-    expect(write).toMatchObject({ content: [{ type: "diff", path: "/x/n.ts", oldText: null, newText: "hi" }] });
+    expect(write).toMatchObject({
+      content: [{ type: "diff", path: "/x/n.ts", oldText: null, newText: "hi" }],
+    });
     const read = mapToolCallEvent(
-      { type: "tool_call", toolCallId: "r1", toolName: "read_files", input: { paths: ["a.ts", "/abs/b.ts"] } },
+      {
+        type: "tool_call",
+        toolCallId: "r1",
+        toolName: "read_files",
+        input: { paths: ["a.ts", "/abs/b.ts"] },
+      },
       "/work",
     );
     expect(read).toMatchObject({ locations: [{ path: "/work/a.ts" }, { path: "/abs/b.ts" }] });

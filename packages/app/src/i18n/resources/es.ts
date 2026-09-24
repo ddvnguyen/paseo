@@ -2,6 +2,30 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const es: TranslationResources = {
+  paneFind: {
+    connectionFailure:
+      "No se pudo buscar en este chat. Comprueba la conexión con el host y vuelve a intentarlo.",
+    historyChangedFailure: "El chat cambió durante la búsqueda. Vuelve a buscar.",
+    revealFailure: "No se pudo mostrar esta coincidencia. Vuelve a intentarlo.",
+    searching: "Buscando…",
+    loading: "Cargando…",
+    failed: "Error",
+    retry: "Reintentar",
+
+    title: "Buscar",
+    placeholder: "Buscar en el panel",
+    close: "Cerrar búsqueda",
+    matches: "Coincidencias",
+    previous: "Coincidencia anterior",
+    next: "Siguiente coincidencia",
+    toggleReplace: "Mostrar reemplazo",
+    replaceWith: "Reemplazar con",
+    replace: "Reemplazar",
+    replaceAll: "Reemplazar todo",
+    noMatches: "Sin coincidencias",
+    position: "{{current}} de {{total}}",
+    total: "{{total}} coincidencias",
+  },
   common: {
     back: "Atrás",
     loading: "Cargando...",

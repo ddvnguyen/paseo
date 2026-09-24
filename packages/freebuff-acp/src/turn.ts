@@ -211,7 +211,10 @@ const RELEASE_TIMEOUT_MS = 3_000;
  * CANCEL_GRACE_MS to return its own (partial) state, else report `null`.
  * The orphaned run keeps going in the background; its result is discarded.
  */
-async function awaitRunOrAbort(run: Promise<RunState>, signal: AbortSignal): Promise<RunState | null> {
+async function awaitRunOrAbort(
+  run: Promise<RunState>,
+  signal: AbortSignal,
+): Promise<RunState | null> {
   // Never leave an orphaned run's rejection unhandled.
   run.catch(() => undefined);
   if (signal.aborted) {

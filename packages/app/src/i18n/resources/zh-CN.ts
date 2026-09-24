@@ -2,6 +2,29 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
+  paneFind: {
+    connectionFailure: "无法搜索此聊天。请检查主机连接后重试。",
+    historyChangedFailure: "搜索期间聊天已更改。请重新搜索。",
+    revealFailure: "无法显示此匹配项。请重试。",
+    searching: "搜索中…",
+    loading: "加载中…",
+    failed: "失败",
+    retry: "重试",
+
+    title: "查找",
+    placeholder: "在窗格中查找",
+    close: "关闭查找",
+    matches: "查找结果",
+    previous: "上一个匹配项",
+    next: "下一个匹配项",
+    toggleReplace: "切换替换",
+    replaceWith: "替换为",
+    replace: "替换",
+    replaceAll: "全部替换",
+    noMatches: "无匹配项",
+    position: "{{current}} / {{total}}",
+    total: "{{total}} 个匹配项",
+  },
   common: {
     back: "返回",
     loading: "加载中...",

@@ -10,7 +10,10 @@ const questions = [
   },
 ];
 
-type Response = { outcome: { outcome: string; optionId?: string }; _meta?: unknown };
+interface Response {
+  outcome: { outcome: string; optionId?: string };
+  _meta?: unknown;
+}
 
 function run(tool: ReturnType<typeof createAskUserTool>, input: unknown = { questions }) {
   return tool(input as never) as Promise<Array<{ value: unknown }>>;
@@ -140,7 +143,9 @@ describe("createAskUserTool", () => {
     expect((await run(cancelled))[0]?.value).toEqual({ skipped: true });
     const skipped = createAskUserTool(() => ({
       sessionId: "s",
-      requestPermission: async () => ({ outcome: { outcome: "selected", optionId: "ask-user-skip" } }),
+      requestPermission: async () => ({
+        outcome: { outcome: "selected", optionId: "ask-user-skip" },
+      }),
     }));
     expect((await run(skipped))[0]?.value).toEqual({ skipped: true });
     expect((await run(createAskUserTool(() => null)))[0]?.value).toEqual({ skipped: true });

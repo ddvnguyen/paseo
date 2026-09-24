@@ -65,6 +65,8 @@ export function modelState(
 ): SessionModelState {
   return {
     availableModels: status ? catalogModels(status) : FREEBUFF_MODELS,
-    currentModelId: FREEBUFF_MODEL_IDS.has(currentModelId) ? currentModelId : DEFAULT_FREEBUFF_MODEL,
+    currentModelId: FREEBUFF_MODEL_IDS.has(currentModelId)
+      ? currentModelId
+      : DEFAULT_FREEBUFF_MODEL,
   };
 }

@@ -108,6 +108,12 @@ function stubClient(agent: FreebuffAcpAgent, client: ReturnType<typeof makeClien
   });
 }
 
+function waitForAbort(signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+}
+
 describe("FreebuffAcpAgent", () => {
   it("initializes with session/resume enabled and an auth method", async () => {
     const agent = new FreebuffAcpAgent(makeConn(), testEnv());
@@ -476,9 +482,7 @@ describe("FreebuffAcpAgent", () => {
     const agent = new FreebuffAcpAgent(makeConn(), testEnv());
     const client = {
       run: vi.fn(async (options: { signal: AbortSignal }) => {
-        await new Promise<void>((resolve) =>
-          options.signal.addEventListener("abort", () => resolve(), { once: true }),
-        );
+        await waitForAbort(options.signal);
         return { sessionState: { marker: 7 }, output: { type: "error", message: "Aborted" } };
       }),
     };
@@ -556,9 +560,7 @@ describe("FreebuffAcpAgent", () => {
       run: vi.fn(async (options: { prompt: string; signal: AbortSignal }) => {
         prompts.push(options.prompt);
         if (prompts.length === 1) {
-          await new Promise<void>((resolve) =>
-            options.signal.addEventListener("abort", () => resolve(), { once: true }),
-          );
+          await waitForAbort(options.signal);
           return { sessionState: { marker: 1 }, output: { type: "error", message: "Aborted" } };
         }
         return { sessionState: { marker: 2 }, output: { type: "success" } };
@@ -597,7 +599,7 @@ describe("FreebuffAcpAgent", () => {
     // Admission grants whatever model was requested (a fresh slot).
     fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
       if (hrefOf(url).includes("/session/admission")) {
-        const requested = (init?.headers as Record<string, string>)["x-freebuff-model"];
+        const requested = ((init?.headers ?? {}) as Record<string, string>)["x-freebuff-model"];
         return new Response(
           JSON.stringify({ status: "active", instanceId: "inst-1", model: requested }),
           { status: 200, headers: { "content-type": "application/json" } },
@@ -627,7 +629,8 @@ describe("FreebuffAcpAgent", () => {
     const admission = fetchMock.mock.calls.find(([url]) =>
       hrefOf(url).includes("/session/admission"),
     );
-    const headers = (admission?.[1] as { headers: Record<string, string> }).headers;
+    expect(admission).toBeDefined();
+    const headers = (admission![1] as { headers: Record<string, string> }).headers;
     expect(headers["x-freebuff-model"]).toBe("deepseek/deepseek-v4-flash");
 
     const resumed = new FreebuffAcpAgent(makeConn(), testEnv());
@@ -733,7 +736,10 @@ describe("FreebuffAcpAgent", () => {
           displayName: "Explorer",
           onlyChild: true,
         });
-        return { sessionState: { mainAgentState: { contextTokenCount: 1234 } }, output: { type: "success" } };
+        return {
+          sessionState: { mainAgentState: { contextTokenCount: 1234 } },
+          output: { type: "success" },
+        };
       }),
     };
     stubClient(agent, client as unknown as ReturnType<typeof makeClient>);

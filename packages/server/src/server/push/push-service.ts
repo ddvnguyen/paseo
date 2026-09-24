@@ -68,9 +68,11 @@ export class PushService {
     this.logger = logger.child({ component: "push-service" });
     this.revokeToken = revokeToken;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.schedule = options.schedule ?? ((callback, delayMs) => {
-      setTimeout(() => callback(), delayMs);
-    });
+    this.schedule =
+      options.schedule ??
+      ((callback, delayMs) => {
+        setTimeout(() => callback(), delayMs);
+      });
     this.receiptDelayMs = options.receiptDelayMs ?? DEFAULT_RECEIPT_DELAY_MS;
   }
 

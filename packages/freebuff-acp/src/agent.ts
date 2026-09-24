@@ -561,7 +561,11 @@ export class FreebuffAcpAgent {
       );
 
       const result: TurnResult = await task;
-      session.runState = nextConversationState(session.runState, result.runState, result.stopReason);
+      session.runState = nextConversationState(
+        session.runState,
+        result.runState,
+        result.stopReason,
+      );
       this.adoptAdmittedModel(session, result.admittedModel);
       this.persist(session);
       return {

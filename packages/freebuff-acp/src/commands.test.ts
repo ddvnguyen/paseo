@@ -16,7 +16,11 @@ describe("slash commands", () => {
   });
 
   it("parses built-ins, skill commands with args, and ignores everything else", () => {
-    expect(parseSlashCommand("/clear", skills)).toEqual({ kind: "builtin", name: "clear", args: "" });
+    expect(parseSlashCommand("/clear", skills)).toEqual({
+      kind: "builtin",
+      name: "clear",
+      args: "",
+    });
     expect(parseSlashCommand("/deploy to staging", skills)).toEqual({
       kind: "skill",
       name: "deploy",

@@ -97,7 +97,7 @@ The adapter reports two ACP session config options (`session/new` response and
 `config_option_update` after every turn):
 
 - `account` — read-only; its single option reads `<name> · <remaining>/<limit>
-  Freebucks left today`. The name comes from `credentials.json` (`name`, else
+Freebucks left today`. The name comes from `credentials.json` (`name`, else
   `email`); quota comes from `GET /api/v1/freebuff/session`. Never the token.
 - `confirm_open` — `ask` (default) or `auto`. `ask` requests host approval
   before a new credit-spending free session opens; `auto` opens it without

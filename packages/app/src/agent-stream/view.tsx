@@ -1,3 +1,4 @@
+import { ChatFind, ChatFindExpansion } from "@/agent-stream/chat-find";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import React, {
   forwardRef,
@@ -51,7 +52,7 @@ import type {
 } from "@getpaseo/protocol/agent-types";
 import type { AgentScreenAgent } from "@/hooks/use-agent-screen-state-machine";
 import { useSessionStore } from "@/stores/session-store";
-import { StreamingWords, useWordStream } from "@/word-stream";
+import { useRevealedText } from "@/hooks/use-revealed-text";
 import { useFileExplorerActions } from "@/hooks/use-file-explorer-actions";
 import { useLoadOlderAgentHistory } from "@/hooks/use-load-older-agent-history";
 import { useSettings } from "@/hooks/use-settings";
@@ -62,7 +63,7 @@ import { ToolCallDetailsContent } from "@/components/tool-call-details";
 import { QuestionFormCard } from "@/components/question-form-card";
 import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
-import { createStreamPresentation } from "./presentation";
+import { createStreamPresentation, getStreamItemMessageId } from "./presentation";
 import { OverviewToolCallGroupView } from "@/tool-calls/detail-level/overview/view";
 import { type AgentStreamRenderModel, buildAgentStreamRenderModel } from "./model";
 import { resolveStreamRenderStrategy } from "./strategy-resolver";
@@ -613,10 +614,14 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const handleTimelineHistoryLoadError = useCallback(() => {
       toast?.error(t("agentStream.historyLoadFailed"));
     }, [t, toast]);
-    const visibleHistoryItemIds = useMemo(
+    // Chat find and the chat outline address messages, and an assistant message is a
+    // group of block rows, so this is a set of message ids and never of row ids.
+    const visibleMessageIds = useMemo(
       () =>
         new Set(
-          [...baseRenderModel.history, ...baseRenderModel.segments.liveHead].map((item) => item.id),
+          [...baseRenderModel.history, ...baseRenderModel.segments.liveHead].map(
+            getStreamItemMessageId,
+          ),
         ),
       [baseRenderModel.history, baseRenderModel.segments.liveHead],
     );
@@ -629,8 +634,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       enabled: supportsChatOutline && chatOutlineEnabled,
       viewportRef,
       onJumpError: handleTimelineHistoryLoadError,
-      visibleItemIds: visibleHistoryItemIds,
-      revealLoadedItem: revealLoadedHistory,
+      visibleMessageIds,
+      revealLoadedMessage: revealLoadedHistory,
     });
 
     useImperativeHandle(
@@ -726,16 +731,21 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             onOpenWorkspaceFile={handleInlinePathPress}
             toast={toast}
           >
-            <AssistantMessage
-              occurrenceKey={createAssistantImageOccurrenceKey({ agentId, itemId: item.id })}
-              message={item.text}
-              timestamp={item.timestamp.getTime()}
-              workspaceRoot={workspaceRoot}
-              serverId={resolvedServerId}
-              client={client}
-              spacing={layoutItem.assistantSpacing}
-              phase={layoutItem.phase}
-            />
+            <ChatFindExpansion messageId={getStreamItemMessageId(item)}>
+              {(renderFullContent) => (
+                <AssistantMessage
+                  renderFullContent={renderFullContent}
+                  occurrenceKey={createAssistantImageOccurrenceKey({ agentId, itemId: item.id })}
+                  message={item.text}
+                  timestamp={item.timestamp.getTime()}
+                  workspaceRoot={workspaceRoot}
+                  serverId={resolvedServerId}
+                  client={client}
+                  spacing={layoutItem.assistantSpacing}
+                  phase={layoutItem.phase}
+                />
+              )}
+            </ChatFindExpansion>
           </AssistantFileLinkResolverProvider>
         );
       },
@@ -1090,55 +1100,69 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       [expandedToolCallGroupIds, isMobile, presentation.historyGroupUpdatesByHostId],
     );
 
+    const findItems = useMemo(
+      () => [...effectiveStreamItems, ...(effectiveStreamHead ?? [])],
+      [effectiveStreamItems, effectiveStreamHead],
+    );
     return (
-      <ToolCallSheetProvider>
-        <AssistantSelectionCopySurface style={stylesheet.container}>
-          <MessageOuterSpacingProvider disableOuterSpacing>
-            {streamRenderStrategy.render({
-              agentId,
-              segments: renderModel.segments,
-              historyRowRevision,
-              liveHeadRowRevision: expandedToolCallGroupIds,
-              boundary,
-              renderers,
-              listEmptyComponent,
-              viewportRef,
-              routeBottomAnchorRequest,
-              isAuthoritativeHistoryReady,
-              onNearBottomChange: setIsNearBottom,
-              onReadingPositionChange: handleReadingPositionChange,
-              onNearHistoryStart: loadOlder,
-              isLoadingOlderHistory: isLoadingOlder,
-              hasOlderHistory: hasOlder,
-              olderHistoryProgressKey: progressKey,
-              scrollEnabled: streamScrollEnabled,
-              listStyle: stylesheet.list,
-              baseListContentContainerStyle: stylesheet.listContentContainer,
-              forwardListContentContainerStyle: stylesheet.forwardListContentContainer,
-            })}
-          </MessageOuterSpacingProvider>
-          <ChatOutlineRail
-            prompts={chatOutline.prompts}
-            activePrompt={chatOutline.activePrompt}
-            onJumpToPrompt={chatOutline.jumpToPrompt}
-          />
-          {(!isNearBottom || isTimelineDetached) && (
-            <View style={scrollToBottomContainerStyle} pointerEvents="box-none">
-              <Animated.View entering={scrollIndicatorFadeIn} exiting={scrollIndicatorFadeOut}>
-                <Pressable
-                  style={stylesheet.scrollToBottomButton}
-                  onPress={scrollToBottom}
-                  accessibilityRole="button"
-                  accessibilityLabel={t("agentStream.scrollToBottom")}
-                  testID="scroll-to-bottom-button"
-                >
-                  <ChevronDown size={24} color={stylesheet.scrollToBottomIcon.color} />
-                </Pressable>
-              </Animated.View>
-            </View>
-          )}
-        </AssistantSelectionCopySurface>
-      </ToolCallSheetProvider>
+      <ChatFind
+        agentId={agentId}
+        serverId={resolvedServerId}
+        epoch={timelineEpoch}
+        items={findItems}
+        viewportRef={viewportRef}
+        revealLoadedMessage={revealLoadedHistory}
+        visibleMessageIds={visibleMessageIds}
+      >
+        <ToolCallSheetProvider>
+          <AssistantSelectionCopySurface style={stylesheet.container}>
+            <MessageOuterSpacingProvider disableOuterSpacing>
+              {streamRenderStrategy.render({
+                agentId,
+                segments: renderModel.segments,
+                historyRowRevision,
+                liveHeadRowRevision: expandedToolCallGroupIds,
+                boundary,
+                renderers,
+                listEmptyComponent,
+                viewportRef,
+                routeBottomAnchorRequest,
+                isAuthoritativeHistoryReady,
+                onNearBottomChange: setIsNearBottom,
+                onReadingPositionChange: handleReadingPositionChange,
+                onNearHistoryStart: loadOlder,
+                isLoadingOlderHistory: isLoadingOlder,
+                hasOlderHistory: hasOlder,
+                olderHistoryProgressKey: progressKey,
+                scrollEnabled: streamScrollEnabled,
+                listStyle: stylesheet.list,
+                baseListContentContainerStyle: stylesheet.listContentContainer,
+                forwardListContentContainerStyle: stylesheet.forwardListContentContainer,
+              })}
+            </MessageOuterSpacingProvider>
+            <ChatOutlineRail
+              prompts={chatOutline.prompts}
+              activePrompt={chatOutline.activePrompt}
+              onJumpToPrompt={chatOutline.jumpToPrompt}
+            />
+            {(!isNearBottom || isTimelineDetached) && (
+              <View style={scrollToBottomContainerStyle} pointerEvents="box-none">
+                <Animated.View entering={scrollIndicatorFadeIn} exiting={scrollIndicatorFadeOut}>
+                  <Pressable
+                    style={stylesheet.scrollToBottomButton}
+                    onPress={scrollToBottom}
+                    accessibilityRole="button"
+                    accessibilityLabel={t("agentStream.scrollToBottom")}
+                    testID="scroll-to-bottom-button"
+                  >
+                    <ChevronDown size={24} color={stylesheet.scrollToBottomIcon.color} />
+                  </Pressable>
+                </Animated.View>
+              </View>
+            )}
+          </AssistantSelectionCopySurface>
+        </ToolCallSheetProvider>
+      </ChatFind>
     );
   },
 );
@@ -1283,7 +1307,7 @@ interface ThoughtSlotProps {
   defaultExpanded: boolean;
 }
 
-// Reasoning text is paced the same way assistant text is; see @/word-stream.
+// Reasoning text is paced the same way assistant text is; see @/hooks/use-revealed-text.
 function ThoughtSlot({
   itemId,
   onInlineDetailsExpandedChangeByItemId,
@@ -1292,21 +1316,18 @@ function ThoughtSlot({
   isLastInSequence,
   defaultExpanded,
 }: ThoughtSlotProps) {
-  const stream = useWordStream(text, status === "ready" ? "complete" : "streaming");
-  const revealedText = stream.text;
+  const revealedText = useRevealedText(text, status === "ready" ? "complete" : "streaming");
   return (
-    <StreamingWords stream={stream}>
-      <ToolCallSlot
-        itemId={itemId}
-        onInlineDetailsExpandedChangeByItemId={onInlineDetailsExpandedChangeByItemId}
-        toolName="thinking"
-        args={revealedText}
-        status={status === "ready" ? "completed" : "executing"}
-        isLastInSequence={isLastInSequence}
-        defaultExpanded={defaultExpanded}
-        forceInline={defaultExpanded}
-      />
-    </StreamingWords>
+    <ToolCallSlot
+      itemId={itemId}
+      onInlineDetailsExpandedChangeByItemId={onInlineDetailsExpandedChangeByItemId}
+      toolName="thinking"
+      args={revealedText}
+      status={status === "ready" ? "completed" : "executing"}
+      isLastInSequence={isLastInSequence}
+      defaultExpanded={defaultExpanded}
+      forceInline={defaultExpanded}
+    />
   );
 }
 
@@ -1825,8 +1846,7 @@ interface StreamItemWrapperProps {
 
 function StreamItemWrapper({ gapBelow, isToolBlock, children }: StreamItemWrapperProps) {
   const debugSpacing = useSettings((settings) => settings.debugConversationSpacing);
-  const spacingFactor =
-    debugSpacing === "compact" ? 0.5 : debugSpacing === "spacious" ? 1.5 : 1;
+  const spacingFactor = debugSpacing === "compact" ? 0.5 : debugSpacing === "spacious" ? 1.5 : 1;
   const scaledGap = gapBelow * spacingFactor;
   const wrapperStyle = useMemo(
     () => [stylesheet.streamItemWrapper, { marginBottom: scaledGap }],
