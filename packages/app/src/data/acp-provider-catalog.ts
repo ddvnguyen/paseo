@@ -179,6 +179,16 @@ const CATALOG_DATA = [
     command: ["uvx", "--from", "fast-agent-acp==0.9.22", "fast-agent-acp", "-x"],
   },
   {
+    id: "freebuff",
+    title: "Freebuff",
+    description:
+      "The free coding agent. Adapter bridges @codebuff/sdk to ACP: streaming text, tool calls, cancellation. Uses the freebuff CLI login or FREEBUFF_API_KEY/CODEBUFF_API_KEY.",
+    version: "0.1.0",
+    iconId: "freebuff",
+    installLink: "https://freebuff.com/cli",
+    command: ["npx", "-y", "@getpaseo/freebuff-acp@0.1.0"],
+  },
+  {
     id: "gemini",
     title: "Gemini CLI",
     description: "Google's official CLI for Gemini",
