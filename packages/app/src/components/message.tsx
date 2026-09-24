@@ -75,7 +75,7 @@ import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
 import { MarkdownFenceBlock } from "@/components/markdown/fence";
 import type { MarkdownPhase } from "@/components/markdown/fence/types";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
-import { StreamingWords, useWordStream } from "@/word-stream";
+import { useRevealedText } from "@/hooks/use-revealed-text";
 import { colorMarkdownLinkChildren } from "@/components/markdown/link-children";
 import { createAssistantMarkdownParser } from "@/utils/assistant-markdown-parser";
 import { formatDuration, formatMessageTimestamp } from "@/utils/time";
@@ -427,6 +427,8 @@ function UserMessageImagePill({ image, onOpen, accessibilityLabel }: UserMessage
   );
 }
 
+const MESSAGE_TEXT_DATASET = { messageText: "true" };
+
 export const UserMessage = memo(function UserMessage({
   serverId,
   agentId,
@@ -546,7 +548,7 @@ export const UserMessage = memo(function UserMessage({
             </View>
           ) : null}
           {hasText ? (
-            <Text selectable style={userMessageStylesheet.text}>
+            <Text selectable style={userMessageStylesheet.text} dataSet={MESSAGE_TEXT_DATASET}>
               {message}
             </Text>
           ) : null}
@@ -752,6 +754,7 @@ export const LiveElapsed = memo(function LiveElapsed({
 });
 
 interface AssistantMessageProps {
+  renderFullContent?: boolean;
   occurrenceKey: string;
   message: string;
   timestamp: number;
@@ -1415,7 +1418,6 @@ function AssistantMessageBlockContainer({
 
 interface MemoizedMarkdownBlockProps {
   text: string;
-  sourceOffset: number;
   rules: RenderRules;
   parser: MarkdownIt;
   onLinkPress: (url: string) => boolean;
@@ -1423,7 +1425,6 @@ interface MemoizedMarkdownBlockProps {
 
 const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
   text,
-  sourceOffset,
   rules,
   parser,
   onLinkPress,
@@ -1431,14 +1432,6 @@ const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
   return (
     <MarkdownRenderer
       text={text}
-      // html-ish parsing already ran once over the whole revealed message in
-      // AssistantMessage (see `buildAssistantRenderUnits`), before this text was
-      // chunked by splitMarkdownBlocks. Re-running it per chunk here would see
-      // only a fragment of e.g. a <details>...</details> block whose body is
-      // separated by a blank line — markdown-it's own block boundaries put the
-      // opening tag, the blank-line-separated body, and the closing tag in
-      // different chunks — and fail to find the matching close tag.
-      sourceOffset={sourceOffset}
       enableHtmlish={false}
       rules={rules}
       markdownit={parser}
@@ -1450,7 +1443,7 @@ const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
 });
 
 type AssistantRenderUnit =
-  | { kind: "markdown"; key: string; text: string; sourceOffset: number }
+  | { kind: "markdown"; key: string; text: string }
   | { kind: "part"; key: string; part: MarkdownDisplayPart };
 
 function assistantPartIdentity(part: MarkdownDisplayPart): string {
@@ -1467,21 +1460,18 @@ function assistantPartIdentity(part: MarkdownDisplayPart): string {
 // resulting plain-markdown segments with splitMarkdownBlocks — the block-level
 // memoization/height-caching scheme AssistantMessage already relies on.
 // Structured parts (details, inline images) become their own render unit so
-// they're never split across a markdown-block boundary. See the note on
-// MemoizedMarkdownBlock's enableHtmlish prop above for why per-block html-ish
-// parsing isn't used instead.
+// they're never split across a markdown-block boundary. MemoizedMarkdownBlock
+// renders with enableHtmlish={false}: per-block html-ish parsing would only see
+// a fragment of e.g. a <details>...</details> block (its blank-line-separated
+// body lands in a different chunk) and fail to find the matching close tag.
 function buildAssistantRenderUnits(revealedMessage: string): AssistantRenderUnit[] {
   const units: AssistantRenderUnit[] = [];
   let unitIndex = 0;
-  let cursor = 0;
   for (const part of splitHtmlishMarkdown(revealedMessage)) {
     if (part.kind === "markdown") {
       for (const block of splitMarkdownBlocks(part.text)) {
-        const found = revealedMessage.indexOf(block, cursor);
-        const sourceOffset = found === -1 ? cursor : found;
-        units.push({ kind: "markdown", key: `block:${unitIndex}`, text: block, sourceOffset });
+        units.push({ kind: "markdown", key: `block:${unitIndex}`, text: block });
         unitIndex += 1;
-        cursor = sourceOffset + block.length;
       }
       continue;
     }
@@ -1569,6 +1559,7 @@ function MarkdownListView({
 }
 
 export const AssistantMessage = memo(function AssistantMessage({
+  renderFullContent = false,
   occurrenceKey,
   message,
   timestamp: _timestamp,
@@ -1584,11 +1575,13 @@ export const AssistantMessage = memo(function AssistantMessage({
     () => createAssistantMarkdownParser({ streaming: true }),
     [],
   );
-  const renderedMessage = useMemo(() => capAssistantMessageForRender(message), [message]);
-  // Paint a paced prefix while the turn is streaming so text arrives at a steady
-  // rate instead of in whatever lumps the daemon's coalescing window produced.
-  const stream = useWordStream(renderedMessage.text, phase);
-  const revealedMessage = stream.text;
+  const renderedMessage = useMemo(
+    () =>
+      renderFullContent ? { text: message, capped: false } : capAssistantMessageForRender(message),
+    [message, renderFullContent],
+  );
+  const revealedText = useRevealedText(renderedMessage.text, phase);
+  const revealedMessage = renderFullContent ? renderedMessage.text : revealedText;
   const fullMessageByteLength = useMemo(
     () => (renderedMessage.capped && phase === "complete" ? getUtf8ByteLength(message) : null),
     [message, phase, renderedMessage.capped],
@@ -2056,47 +2049,48 @@ export const AssistantMessage = memo(function AssistantMessage({
   const revealDataSet = useMemo(
     () =>
       isRenderProfileEnabled()
-        ? { revealKey: occurrenceKey, revealLength: String(revealedMessage.length) }
-        : undefined,
+        ? {
+            ...MESSAGE_TEXT_DATASET,
+            revealKey: occurrenceKey,
+            revealLength: String(revealedMessage.length),
+          }
+        : MESSAGE_TEXT_DATASET,
     [occurrenceKey, revealedMessage.length],
   );
 
   return (
-    <StreamingWords stream={stream}>
-      <View testID="assistant-message" dataSet={revealDataSet} style={assistantContainerStyle}>
-        {renderUnits.map((unit, index) => (
-          <AssistantMessageBlockContainer
-            key={unit.key}
-            block={unit.kind === "markdown" ? unit.text : assistantPartIdentity(unit.part)}
-            hasGap={index < renderUnits.length - 1}
-          >
-            {unit.kind === "markdown" ? (
-              <MemoizedMarkdownBlock
-                text={unit.text}
-                sourceOffset={unit.sourceOffset}
-                rules={markdownRules}
-                parser={
-                  phase === "streaming" && index === renderUnits.length - 1
-                    ? streamingMarkdownParser
-                    : markdownParser
-                }
-                onLinkPress={handleMarkdownLinkPress}
-              />
-            ) : (
-              <MarkdownPart part={unit.part} rendererProps={markdownPartRendererProps} />
-            )}
-          </AssistantMessageBlockContainer>
-        ))}
-        {fullMessageByteLength !== null ? (
-          <Text
-            testID="assistant-message-capped-notice"
-            style={assistantMessageStylesheet.cappedNotice}
-          >
-            {t("agentStream.messageCapped", { bytes: fullMessageByteLength })}
-          </Text>
-        ) : null}
-      </View>
-    </StreamingWords>
+    <View testID="assistant-message" dataSet={revealDataSet} style={assistantContainerStyle}>
+      {renderUnits.map((unit, index) => (
+        <AssistantMessageBlockContainer
+          key={unit.key}
+          block={unit.kind === "markdown" ? unit.text : assistantPartIdentity(unit.part)}
+          hasGap={index < renderUnits.length - 1}
+        >
+          {unit.kind === "markdown" ? (
+            <MemoizedMarkdownBlock
+              text={unit.text}
+              rules={markdownRules}
+              parser={
+                phase === "streaming" && index === renderUnits.length - 1
+                  ? streamingMarkdownParser
+                  : markdownParser
+              }
+              onLinkPress={handleMarkdownLinkPress}
+            />
+          ) : (
+            <MarkdownPart part={unit.part} rendererProps={markdownPartRendererProps} />
+          )}
+        </AssistantMessageBlockContainer>
+      ))}
+      {fullMessageByteLength !== null ? (
+        <Text
+          testID="assistant-message-capped-notice"
+          style={assistantMessageStylesheet.cappedNotice}
+        >
+          {t("agentStream.messageCapped", { bytes: fullMessageByteLength })}
+        </Text>
+      ) : null}
+    </View>
   );
 });
 
