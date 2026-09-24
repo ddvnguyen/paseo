@@ -10,7 +10,7 @@
 # deployed to a persistent host (e.g. "https://app.ddvnguyen.com").
 
 :6969 {
-	root * /home/ddv/paseo-app/web-ui
+	root * /home/ddv/paseo/app/web-ui
 	file_server {
 		precompressed br gzip
 	}
