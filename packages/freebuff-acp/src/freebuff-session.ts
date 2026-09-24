@@ -47,6 +47,15 @@ export type AdmissionResult =
   | { ok: false; waitingRoom: true; message?: string }
   | { ok: false; terminal: true; message: string };
 
+/** What the host approves before a credit-spending session open. */
+export interface SessionOpenInfo {
+  model: string;
+  /** Catalog price of one hour on `model`, when the probe reported it. */
+  priceFreebucks?: number;
+  /** Freebucks left in the daily pool, when the probe reported it. */
+  dailyRemaining?: number;
+}
+
 function baseHeaders(token: string): Record<string, string> {
   return {
     Authorization: `Bearer ${token}`,
@@ -130,6 +139,8 @@ export async function admitFreebuffSession(opts: {
   token: string;
   model?: string;
   signal?: AbortSignal;
+  /** Host consent hook; asked only when no live slot exists (POST = credit spend). */
+  confirmOpen?: (info: SessionOpenInfo) => Promise<boolean>;
 }): Promise<AdmissionResult> {
   const model = opts.model?.trim() || DEFAULT_MODEL_FALLBACK;
 
@@ -149,7 +160,32 @@ export async function admitFreebuffSession(opts: {
     };
   }
 
-  // 2. Admission POST.
+  // 2. Nothing live: the POST below opens a NEW 1-hour slot that costs
+  // credit. Ask the host first — decline (or an unanswerable request) means
+  // no spend. Reused slots above never reach this gate.
+  if (opts.confirmOpen) {
+    const freebucks = probe?.freebucks;
+    let openConfirmed = false;
+    try {
+      openConfirmed = await opts.confirmOpen({
+        model,
+        priceFreebucks: freebucks?.prices?.[model],
+        dailyRemaining: freebucks?.daily?.remaining,
+      });
+    } catch {
+      // Fail closed: never spend credit when consent cannot be obtained.
+      openConfirmed = false;
+    }
+    if (!openConfirmed) {
+      return {
+        ok: false,
+        terminal: true,
+        message: "New free-session open was declined in the host — no credit spent.",
+      };
+    }
+  }
+
+  // 3. Admission POST.
   const headers: Record<string, string> = {
     ...baseHeaders(opts.token),
     [MODEL_HEADER]: model,

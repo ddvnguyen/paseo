@@ -10,6 +10,12 @@ export interface FreebuffSessionServerResponse {
   instanceId?: string;
   model?: string;
   accessTier?: string;
+  /** Wallet/quota block on GET /session; feeds the open-session confirm dialog. */
+  freebucks?: {
+    balance?: number;
+    daily?: { limit?: number; spent?: number; remaining?: number; resetAt?: string };
+    prices?: Record<string, number>;
+  };
 }
 
 export interface FreebuffCredentials {

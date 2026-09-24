@@ -72,7 +72,17 @@ function testEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
 }
 
 function makeConn() {
-  return { sessionUpdate: vi.fn(async () => {}) };
+  return {
+    sessionUpdate: vi.fn(async () => {}),
+    // Auto-accept the open-session confirm so the suite's default POST-path
+    // tests keep their admission behavior; individual tests override via
+    // mockResolvedValueOnce to exercise the decline path.
+    requestPermission: vi.fn(
+      async (): Promise<{ outcome: { outcome: string; optionId?: string } }> => ({
+        outcome: { outcome: "selected", optionId: "open-session" },
+      }),
+    ),
+  };
 }
 
 /** Minimal fake of the CodebuffClient surface the adapter touches. */
@@ -290,6 +300,48 @@ describe("FreebuffAcpAgent", () => {
       prompt: [{ type: "text", text: "hi" }],
     } as never);
     expect(response.stopReason).toBe("refusal");
+  });
+
+  it("asks before opening a new paid session and refuses when declined", async () => {
+    // Suite default probe (GET /session → none); track any admission POST so
+    // a regression that skips the confirm gate spends credit visibly here.
+    const admitted: string[] = [];
+    fetchMock.mockImplementation(async (url: string | URL | Request) => {
+      const href = hrefOf(url);
+      if (href.includes("/session/admission")) {
+        admitted.push(href);
+        return new Response(
+          JSON.stringify({ status: "active", instanceId: "inst-x", model: "z-ai/glm-5.3-flash" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "none" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const conn = makeConn();
+    conn.requestPermission.mockResolvedValueOnce({ outcome: { outcome: "cancelled" } });
+    const agent = new FreebuffAcpAgent(conn, testEnv());
+    stubClient(agent, makeClient({ type: "success" }));
+
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const response = await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "hi" }],
+    } as never);
+
+    expect(response.stopReason).toBe("refusal");
+    expect(conn.requestPermission).toHaveBeenCalledTimes(1);
+    // A declined confirm must never spend credit: no admission POST, no run.
+    expect(admitted).toHaveLength(0);
+    expect(conn.sessionUpdate).toHaveBeenCalledWith({
+      sessionId: expect.any(String),
+      update: expect.objectContaining({
+        sessionUpdate: "agent_message_chunk",
+        content: expect.objectContaining({ text: expect.stringContaining("declined") }),
+      }),
+    });
   });
 
   it("rejects an unknown mode", async () => {
@@ -512,6 +564,8 @@ describe("FreebuffAcpAgent", () => {
       return method === "POST" || method === "DELETE";
     });
     expect(mutating).toHaveLength(0);
+    // Reuse never consults the open-session confirm — no permission prompt.
+    expect(conn.requestPermission).not.toHaveBeenCalled();
   });
 
   it("writes persisted session files with 0600 permissions", () => {

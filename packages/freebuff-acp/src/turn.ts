@@ -8,7 +8,11 @@ import {
   DEFAULT_FREEBUFF_MODEL,
   FREEBUFF_ROOT_DEFINITIONS,
 } from "./freebuff-agent.js";
-import { admitFreebuffSession, releaseFreebuffSession } from "./freebuff-session.js";
+import {
+  admitFreebuffSession,
+  releaseFreebuffSession,
+  type SessionOpenInfo,
+} from "./freebuff-session.js";
 
 /**
  * Default free-mode model (env `FREEBUFF_MODEL`, default GLM 5.3 Flash).
@@ -34,6 +38,11 @@ export interface RunTurnOptions {
   model?: string;
   /** Host + mcp.json MCP servers to attach to the root agent definitions. */
   mcpServers?: Record<string, CodebuffMcpConfig>;
+  /**
+   * Asked before the admission POST opens a NEW session (spends credit).
+   * Omitted = auto-open; live-session reuse probes never consult it.
+   */
+  confirmSessionOpen?: (info: SessionOpenInfo) => Promise<boolean>;
 }
 
 export interface TurnResult {
@@ -139,7 +148,18 @@ function turnResultFromRunState(runState: RunState, cancelled: boolean): TurnRes
  * continue the same conversation.
  */
 export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
-  const { client, cwd, prompt, previousRun, signal, emit, token, model, mcpServers } = options;
+  const {
+    client,
+    cwd,
+    prompt,
+    previousRun,
+    signal,
+    emit,
+    token,
+    model,
+    mcpServers,
+    confirmSessionOpen,
+  } = options;
 
   let cancelled = false;
   const onAbort = () => {
@@ -153,7 +173,12 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
     // The CLI's free-mode protocol: hold a session slot BEFORE running.
     // Without the admitted instanceId the backend answers with
     // `waiting_room_required` even when a slot was available.
-    const admission = await admitFreebuffSession({ token, model, signal });
+    const admission = await admitFreebuffSession({
+      token,
+      model,
+      signal,
+      confirmOpen: confirmSessionOpen,
+    });
     if (!admission.ok) {
       return admissionRefusal(admission, previousRun, emit);
     }

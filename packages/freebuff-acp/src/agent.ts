@@ -19,6 +19,7 @@ import {
   type NewSessionResponse,
   type PromptRequest,
   type PromptResponse,
+  type RequestPermissionRequest,
   type ResumeSessionRequest,
   type ResumeSessionResponse,
   type SessionNotification,
@@ -26,6 +27,7 @@ import {
 import { CodebuffClient } from "@codebuff/sdk";
 
 import { resolveCredentials } from "./auth.js";
+import type { SessionOpenInfo } from "./freebuff-session.js";
 import { resolveRunMcpServers } from "./mcp.js";
 import { DEFAULT_MODE_ID, FREEBUFF_MODES, FREEBUFF_MODE_IDS } from "./modes.js";
 import { loadPersistedSession, savePersistedSession } from "./session-store.js";
@@ -34,6 +36,14 @@ import { runTurn } from "./turn.js";
 
 interface ClientApi {
   sessionUpdate(params: SessionNotification): Promise<void>;
+  /**
+   * Ask the host to approve an action (ACP session/request_permission).
+   * Return typed loosely: the schema narrows `outcome`, but the adapter only
+   * discriminates on it, and the loose shape keeps test fakes assignable.
+   */
+  requestPermission(
+    params: RequestPermissionRequest,
+  ): Promise<{ outcome: { outcome: string; optionId?: string } }>;
 }
 
 interface AdapterSession {
@@ -300,6 +310,7 @@ export class FreebuffAcpAgent {
           token: session.token,
           model: this.env.FREEBUFF_MODEL?.trim() || undefined,
           mcpServers: session.mcpServers,
+          confirmSessionOpen: (info) => this.confirmSessionOpen(session.id, info),
           emit: (update) => {
             void this.conn
               .sessionUpdate({ sessionId: session.id, update } as unknown as SessionNotification)
@@ -333,6 +344,43 @@ export class FreebuffAcpAgent {
       session.busy = false;
       session.abortController = null;
     }
+  }
+
+  /**
+   * Ask the host to approve opening a NEW free session before the admission
+   * POST spends credit (one slot = 1 hour). Fails closed: a thrown request
+   * or any selection other than `open-session` declines the spend.
+   */
+  private async confirmSessionOpen(sessionId: string, info: SessionOpenInfo): Promise<boolean> {
+    const cost = info.priceFreebucks != null ? `${info.priceFreebucks} Freebucks` : "Freebucks";
+    const left =
+      info.dailyRemaining != null ? ` — ${info.dailyRemaining} Freebucks left today` : "";
+    const response = await this.conn.requestPermission({
+      sessionId,
+      toolCall: {
+        toolCallId: `freebuff-open-${crypto.randomUUID()}`,
+        title: "Open new Freebuff session",
+        status: "pending",
+        content: [
+          {
+            type: "content",
+            content: {
+              type: "text",
+              text: `No active Freebuff session. Opening one for ${info.model} costs ${cost} and lasts 1 hour${left}.`,
+            },
+          },
+        ],
+      },
+      options: [
+        {
+          optionId: "open-session",
+          name: `Open session — ${cost}, valid 1 hour`,
+          kind: "allow_once",
+        },
+        { optionId: "cancel-open", name: "Cancel (no credit spent)", kind: "reject_once" },
+      ],
+    });
+    return response.outcome.outcome === "selected" && response.outcome.optionId === "open-session";
   }
 
   async cancel(params: { sessionId: string }): Promise<void> {
