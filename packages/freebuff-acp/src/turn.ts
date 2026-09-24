@@ -1,6 +1,7 @@
 import type { StopReason } from "@agentclientprotocol/sdk";
-import type { CodebuffClient, PrintModeEvent, RunState } from "@codebuff/sdk";
+import type { CodebuffClient, MessageContent, PrintModeEvent, RunState } from "@codebuff/sdk";
 
+import { todosToPlan } from "./plan.js";
 import { mapToolCallEvent, mapToolResultEvent } from "./tools.js";
 import type { CodebuffMcpConfig } from "./mcp.js";
 import {
@@ -29,6 +30,8 @@ export interface RunTurnOptions {
   client: CodebuffClient;
   cwd: string;
   prompt: string;
+  /** Multimodal prompt content (text + images); `prompt` stays the text fallback. */
+  content?: MessageContent[];
   previousRun: Record<string, unknown> | null;
   signal: AbortSignal;
   emit: SessionUpdateEmitter;
@@ -48,13 +51,24 @@ export interface RunTurnOptions {
 export interface TurnResult {
   stopReason: StopReason;
   runState: Record<string, unknown> | null;
+  /** Model the admitted slot actually ran (may differ from the requested one). */
+  admittedModel?: string;
+  /** Conversation size in tokens after the turn, when the SDK reported it. */
+  contextTokens?: number;
+  /** Credits the turn consumed (0 for free-tier agents). */
+  creditsUsed?: number;
 }
 
 /**
  * Translate the SDK print-mode event stream into ACP session updates.
  * Lives at module scope so `runTurn` keeps its lint complexity budget.
  */
-function dispatchTurnEvent(event: PrintModeEvent, emit: SessionUpdateEmitter): void {
+function dispatchTurnEvent(
+  event: PrintModeEvent,
+  emit: SessionUpdateEmitter,
+  cwd: string,
+  turnStats: { creditsUsed: number },
+): void {
   switch (event.type) {
     case "text": {
       if (event.text) {
@@ -76,8 +90,39 @@ function dispatchTurnEvent(event: PrintModeEvent, emit: SessionUpdateEmitter): v
     }
     case "tool_call": {
       emit(
-        mapToolCallEvent(event) as unknown as Record<string, unknown> & { sessionUpdate: string },
+        mapToolCallEvent(event, cwd) as unknown as Record<string, unknown> & {
+          sessionUpdate: string;
+        },
       );
+      if (event.toolName === "write_todos") {
+        const plan = todosToPlan(event.input);
+        if (plan) emit({ sessionUpdate: "plan", ...plan });
+      }
+      break;
+    }
+    case "subagent_start": {
+      // Subagents have no dedicated ACP surface; show each as a thinking-style
+      // tool call so hosts render a card that completes when it finishes.
+      emit({
+        sessionUpdate: "tool_call",
+        toolCallId: `subagent-${event.agentId}`,
+        title: `Subagent: ${event.displayName}`,
+        kind: "think",
+        status: "in_progress",
+        ...(event.prompt ? { rawInput: { prompt: event.prompt } } : {}),
+      });
+      break;
+    }
+    case "subagent_finish": {
+      emit({
+        sessionUpdate: "tool_call_update",
+        toolCallId: `subagent-${event.agentId}`,
+        status: "completed",
+      });
+      break;
+    }
+    case "finish": {
+      turnStats.creditsUsed += event.totalCost;
       break;
     }
     case "tool_result": {
@@ -136,14 +181,62 @@ function describeRunError(output: unknown): string {
 /** Map a finished run's state to a TurnResult (run error → refusal, cancel honored). */
 function turnResultFromRunState(runState: RunState, cancelled: boolean): TurnResult {
   const sessionState = (runState.sessionState ?? null) as Record<string, unknown> | null;
+  const contextTokens = runState.sessionState?.mainAgentState?.contextTokenCount;
+  const usage = typeof contextTokens === "number" ? { contextTokens } : {};
+  // Cancel wins over error: the SDK reports an aborted run as
+  // `output.type === "error"`, which must surface as a user stop (host
+  // `turn_canceled`), not as a refused/completed turn.
+  if (cancelled) {
+    return { stopReason: "cancelled", runState: sessionState, ...usage };
+  }
   if (runState.output?.type === "error") {
     // Preserve conversation state so the user can retry within the session.
-    return { stopReason: "refusal", runState: sessionState };
+    return { stopReason: "refusal", runState: sessionState, ...usage };
   }
-  if (cancelled) {
-    return { stopReason: "cancelled", runState: sessionState };
+  return { stopReason: "end_turn", runState: sessionState, ...usage };
+}
+
+/**
+ * How long a cancelled turn waits for the SDK run to unwind on its own (so
+ * partial conversation state is kept) before the turn is settled anyway. The
+ * SDK does not abort every in-flight tool, so an unbounded wait would leave
+ * the host's stop/steer hanging and wedge the process-wide turn lane.
+ */
+const CANCEL_GRACE_MS = 1_500;
+/** Upper bound for the best-effort slot release so it never stalls a cancel. */
+const RELEASE_TIMEOUT_MS = 3_000;
+
+/**
+ * Await `run`, but settle promptly once `signal` aborts: give the run
+ * CANCEL_GRACE_MS to return its own (partial) state, else report `null`.
+ * The orphaned run keeps going in the background; its result is discarded.
+ */
+async function awaitRunOrAbort(
+  run: Promise<RunState>,
+  signal: AbortSignal,
+): Promise<RunState | null> {
+  // Never leave an orphaned run's rejection unhandled.
+  run.catch(() => undefined);
+  if (signal.aborted) {
+    return raceGrace(run);
   }
-  return { stopReason: "end_turn", runState: sessionState };
+  const abortedFirst = new Promise<"aborted">((resolve) => {
+    signal.addEventListener("abort", () => resolve("aborted"), { once: true });
+  });
+  const first = await Promise.race([run, abortedFirst]);
+  return first === "aborted" ? raceGrace(run) : first;
+}
+
+async function raceGrace(run: Promise<RunState>): Promise<RunState | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const grace = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), CANCEL_GRACE_MS);
+  });
+  try {
+    return await Promise.race([run.catch(() => null), grace]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -158,14 +251,21 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
     client,
     cwd,
     prompt,
+    content,
     previousRun,
     signal,
-    emit,
+    emit: rawEmit,
     token,
     model,
     mcpServers,
     confirmSessionOpen,
   } = options;
+
+  // A stopped turn must go quiet: an orphaned run may still stream events
+  // after the host has already been told the turn was cancelled.
+  const emit: SessionUpdateEmitter = (update) => {
+    if (!signal.aborted) rawEmit(update);
+  };
 
   let cancelled = false;
   const onAbort = () => {
@@ -181,11 +281,12 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
   // drop a flush that repeats already-sent text so nothing renders twice. A
   // run with no deltas keeps the flush path unchanged.
   let streamedText = "";
+  const turnStats = { creditsUsed: 0 };
   const handleEvent = (event: PrintModeEvent) => {
     if (event.type === "text" && event.text && streamedText.endsWith(event.text)) {
       return;
     }
-    dispatchTurnEvent(event, emit);
+    dispatchTurnEvent(event, emit, cwd, turnStats);
   };
   const handleStreamChunk = (
     chunk: Parameters<NonNullable<Parameters<CodebuffClient["run"]>[0]["handleStreamChunk"]>>[0],
@@ -278,10 +379,11 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
           : FREEBUFF_ROOT_DEFINITIONS
       ) as Parameters<CodebuffClient["run"]>[0]["agentDefinitions"];
 
-      const runState: RunState = await client.run({
+      const run = client.run({
         agent: agentId,
         agentDefinitions,
         prompt,
+        ...(content && content.length > 0 ? { content } : {}),
         cwd,
         // 'free' = 0 credits charged for allowlisted Freebuff agents.
         costMode: "free",
@@ -295,7 +397,12 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
         signal,
       } as Parameters<CodebuffClient["run"]>[0]);
 
-      const result = turnResultFromRunState(runState, cancelled);
+      const runState = await awaitRunOrAbort(run, signal);
+      if (!runState) {
+        // Stopped and the SDK did not unwind in time (e.g. a tool that ignores
+        // the signal): settle now with the pre-turn conversation state.
+        return { stopReason: "cancelled", runState: previousRun };
+      }
       if (runState.output?.type === "error" && !cancelled && !signal.aborted) {
         // Never end a failed run silently: the host would show an idle agent
         // with no clue why.
@@ -306,7 +413,11 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
           content: { type: "text", text: `Freebuff run failed: ${reason}` },
         });
       }
-      return result;
+      return {
+        ...turnResultFromRunState(runState, cancelled || signal.aborted),
+        admittedModel: runModel,
+        creditsUsed: turnStats.creditsUsed,
+      };
     } finally {
       const globalWithHook = globalThis as typeof globalThis & {
         __freebuffExtraCodebuffMetadata?: Record<string, string>;
@@ -319,7 +430,11 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
         // Await so the DELETE completes before the lane hands the next
         // queued turn the global metadata hook — keeps the next turn's GET
         // probe deterministic instead of racing this turn's release.
-        await releaseFreebuffSession({ token, instanceId: admission.instanceId });
+        await releaseFreebuffSession({
+          token,
+          instanceId: admission.instanceId,
+          signal: AbortSignal.timeout(RELEASE_TIMEOUT_MS),
+        });
       }
     }
   } catch (error) {

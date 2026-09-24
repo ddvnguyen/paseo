@@ -14,7 +14,10 @@ export interface FreebuffSessionServerResponse {
   freebucks?: {
     balance?: number;
     daily?: { limit?: number; spent?: number; remaining?: number; resetAt?: string };
+    wallet?: { balance?: number; monthlyBonus?: number };
     prices?: Record<string, number>;
+    /** Human notes on a model's price (peak/off-peak, trials). */
+    priceNotices?: Record<string, string>;
   };
 }
 

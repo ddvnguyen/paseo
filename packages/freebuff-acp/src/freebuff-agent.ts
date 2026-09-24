@@ -30,6 +30,11 @@ export const FREEBUFF_AGENT_ID_BY_MODEL: Record<string, string> = {
   "upstage/solar-pro4": "base3-free-solar-pro4",
   "google/gemini-3.8-flash": "base3-free-gemini-3-8-flash",
   "meta/muse-spark-1.3-contributor": "base3-free-muse-spark-1-3",
+  "meta/muse-spark-1.2-contributor": "base3-free-muse-spark",
+  "openai/gpt-6-luna": "base3-free-luna-6",
+  "upstage/solar-mini4": "base3-free-solar-mini4",
+  "stealth/ox-alpha": "base3-free-ox-alpha",
+  "stealth/space-bunny-alpha": "base3-free-space-bunny-alpha",
 };
 
 export const DEFAULT_FREEBUFF_MODEL = FREEBUFF_GLM_53_FLASH_MODEL_ID;

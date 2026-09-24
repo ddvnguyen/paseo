@@ -108,6 +108,12 @@ function stubClient(agent: FreebuffAcpAgent, client: ReturnType<typeof makeClien
   });
 }
 
+function waitForAbort(signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+}
+
 describe("FreebuffAcpAgent", () => {
   it("initializes with session/resume enabled and an auth method", async () => {
     const agent = new FreebuffAcpAgent(makeConn(), testEnv());
@@ -472,6 +478,316 @@ describe("FreebuffAcpAgent", () => {
     expect(capturedHooks[1]).toEqual({ freebuff_instance_id: "inst-2" });
   });
 
+  it("reports an SDK-aborted run (output.type=error) as cancelled, not refusal", async () => {
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    const client = {
+      run: vi.fn(async (options: { signal: AbortSignal }) => {
+        await waitForAbort(options.signal);
+        return { sessionState: { marker: 7 }, output: { type: "error", message: "Aborted" } };
+      }),
+    };
+    stubClient(agent, client as unknown as ReturnType<typeof makeClient>);
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+
+    const pending = agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "hi" }],
+    } as never);
+    await vi.waitFor(() => expect(client.run).toHaveBeenCalledTimes(1));
+    await agent.cancel({ sessionId: session.sessionId });
+
+    await expect(pending).resolves.toMatchObject({ stopReason: "cancelled" });
+  });
+
+  it("settles a cancelled turn even when the SDK run never unwinds (tool ignores the signal)", async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+      const client = { run: vi.fn(() => new Promise(() => undefined)) };
+      stubClient(agent, client as unknown as ReturnType<typeof makeClient>);
+      const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+
+      const pending = agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "hi" }],
+      } as never);
+      await vi.waitFor(() => expect(client.run).toHaveBeenCalledTimes(1));
+      await agent.cancel({ sessionId: session.sessionId });
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      await expect(pending).resolves.toMatchObject({ stopReason: "cancelled" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops session updates emitted after the turn was cancelled", async () => {
+    const conn = makeConn();
+    const agent = new FreebuffAcpAgent(conn, testEnv());
+    let lateEmit: ((event: unknown) => void) | undefined;
+    const client = {
+      run: vi.fn((options: { handleEvent: (event: unknown) => void; signal: AbortSignal }) => {
+        lateEmit = options.handleEvent;
+        return new Promise(() => undefined);
+      }),
+    };
+    stubClient(agent, client as unknown as ReturnType<typeof makeClient>);
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+
+    const pending = agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "hi" }],
+    } as never);
+    await vi.waitFor(() => expect(client.run).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers();
+    try {
+      await agent.cancel({ sessionId: session.sessionId });
+      await vi.advanceTimersByTimeAsync(2_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    await pending;
+    lateEmit?.({ type: "text", text: "zombie output" });
+
+    const texts = conn.sessionUpdate.mock.calls.map((call) => JSON.stringify(call));
+    expect(texts.some((entry) => entry.includes("zombie output"))).toBe(false);
+  });
+
+  it("steers: a prompt sent mid-turn cancels the running turn and then runs, instead of failing as busy", async () => {
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    const prompts: string[] = [];
+    const client = {
+      run: vi.fn(async (options: { prompt: string; signal: AbortSignal }) => {
+        prompts.push(options.prompt);
+        if (prompts.length === 1) {
+          await waitForAbort(options.signal);
+          return { sessionState: { marker: 1 }, output: { type: "error", message: "Aborted" } };
+        }
+        return { sessionState: { marker: 2 }, output: { type: "success" } };
+      }),
+    };
+    stubClient(agent, client as unknown as ReturnType<typeof makeClient>);
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+
+    const first = agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "long task" }],
+    } as never);
+    await vi.waitFor(() => expect(client.run).toHaveBeenCalledTimes(1));
+    const second = agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "actually do this instead" }],
+    } as never);
+
+    await expect(first).resolves.toMatchObject({ stopReason: "cancelled" });
+    await expect(second).resolves.toMatchObject({ stopReason: "end_turn" });
+    expect(prompts).toEqual(["long task", "actually do this instead"]);
+  });
+
+  it("advertises image prompts, session listing, and the model catalog", async () => {
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    const init = await agent.initialize({ protocolVersion: 1, clientCapabilities: {} } as never);
+    expect(init.agentCapabilities?.promptCapabilities?.image).toBe(true);
+    expect(init.agentCapabilities?.sessionCapabilities?.list).toEqual({});
+
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    expect(session.models?.currentModelId).toBe("z-ai/glm-5.3-flash");
+    expect(session.models?.availableModels.length).toBeGreaterThan(5);
+  });
+
+  it("switches model per session, persists it, and requests it at admission", async () => {
+    // Admission grants whatever model was requested (a fresh slot).
+    fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+      if (hrefOf(url).includes("/session/admission")) {
+        const requested = ((init?.headers ?? {}) as Record<string, string>)["x-freebuff-model"];
+        return new Response(
+          JSON.stringify({ status: "active", instanceId: "inst-1", model: requested }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "none" }), { status: 200 });
+    });
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+
+    await expect(
+      agent.unstable_setSessionModel({ sessionId: session.sessionId, modelId: "nope" } as never),
+    ).rejects.toThrow(/unknown model/i);
+    await agent.unstable_setSessionModel({
+      sessionId: session.sessionId,
+      modelId: "deepseek/deepseek-v4-flash",
+    } as never);
+    expect(loadPersistedSession(session.sessionId, testEnv())?.modelId).toBe(
+      "deepseek/deepseek-v4-flash",
+    );
+
+    await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "hi" }],
+    } as never);
+    const admission = fetchMock.mock.calls.find(([url]) =>
+      hrefOf(url).includes("/session/admission"),
+    );
+    expect(admission).toBeDefined();
+    const headers = (admission![1] as { headers: Record<string, string> }).headers;
+    expect(headers["x-freebuff-model"]).toBe("deepseek/deepseek-v4-flash");
+
+    const resumed = new FreebuffAcpAgent(makeConn(), testEnv());
+    const restored = await resumed.unstable_resumeSession({
+      sessionId: session.sessionId,
+      cwd: "/tmp",
+      mcpServers: [],
+    } as never);
+    expect(restored.models?.currentModelId).toBe("deepseek/deepseek-v4-flash");
+  });
+
+  it("lists persisted sessions, newest first, filtered by cwd, with titles", async () => {
+    const conn = makeConn();
+    const agent = new FreebuffAcpAgent(conn, testEnv());
+    stubClient(agent, makeClient({ type: "success" }));
+    const a = await agent.newSession({ cwd: "/work/a", mcpServers: [] } as never);
+    await agent.newSession({ cwd: "/work/b", mcpServers: [] } as never);
+    await agent.prompt({
+      sessionId: a.sessionId,
+      prompt: [{ type: "text", text: "fix the flaky login test" }],
+    } as never);
+
+    const all = await agent.listSessions({} as never);
+    expect(all.sessions).toHaveLength(2);
+    const onlyA = await agent.listSessions({ cwd: "/work/a" } as never);
+    expect(onlyA.sessions).toEqual([
+      expect.objectContaining({ sessionId: a.sessionId, title: "fix the flaky login test" }),
+    ]);
+    expect(JSON.stringify(conn.sessionUpdate.mock.calls)).toContain("session_info_update");
+  });
+
+  it("announces slash commands and handles built-ins without running a turn", async () => {
+    const conn = makeConn();
+    const agent = new FreebuffAcpAgent(conn, testEnv());
+    const client = makeClient({ type: "success" });
+    stubClient(agent, client);
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    await vi.waitFor(() =>
+      expect(JSON.stringify(conn.sessionUpdate.mock.calls)).toContain("available_commands_update"),
+    );
+
+    await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "remember AXIOM" }],
+    } as never);
+    expect(client.run).toHaveBeenCalledTimes(1);
+
+    const status = await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "/status" }],
+    } as never);
+    expect(status.stopReason).toBe("end_turn");
+    const cleared = await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "/clear" }],
+    } as never);
+    expect(cleared.stopReason).toBe("end_turn");
+    expect(client.run).toHaveBeenCalledTimes(1);
+    expect(loadPersistedSession(session.sessionId, testEnv())?.runState).toBeNull();
+  });
+
+  it("forwards image blocks to the run as multimodal content", async () => {
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    const client = makeClient({ type: "success" });
+    stubClient(agent, client);
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [
+        { type: "text", text: "what is this?" },
+        { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+      ],
+    } as never);
+    const options = client.run.mock.calls[0]?.[0] as { content?: unknown };
+    expect(options.content).toEqual([
+      { type: "text", text: "what is this?" },
+      { type: "image", image: "aGVsbG8=", mediaType: "image/png" },
+    ]);
+  });
+
+  it("maps write_todos to a plan and subagents to cards", async () => {
+    const conn = makeConn();
+    const agent = new FreebuffAcpAgent(conn, testEnv());
+    const client = {
+      run: vi.fn(async (options: { handleEvent: (event: unknown) => void }) => {
+        options.handleEvent({
+          type: "tool_call",
+          toolCallId: "t1",
+          toolName: "write_todos",
+          input: { todos: [{ task: "step one", completed: false }] },
+        });
+        options.handleEvent({
+          type: "subagent_start",
+          agentId: "a1",
+          agentType: "x",
+          displayName: "Explorer",
+          onlyChild: true,
+        });
+        options.handleEvent({
+          type: "subagent_finish",
+          agentId: "a1",
+          agentType: "x",
+          displayName: "Explorer",
+          onlyChild: true,
+        });
+        return {
+          sessionState: { mainAgentState: { contextTokenCount: 1234 } },
+          output: { type: "success" },
+        };
+      }),
+    };
+    stubClient(agent, client as unknown as ReturnType<typeof makeClient>);
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const response = await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "go" }],
+    } as never);
+
+    const updates = conn.sessionUpdate.mock.calls.map(
+      (call) => (call as unknown as [{ update: Record<string, unknown> }])[0].update,
+    );
+    expect(updates).toContainEqual(
+      expect.objectContaining({
+        sessionUpdate: "plan",
+        entries: [expect.objectContaining({ content: "step one", status: "in_progress" })],
+      }),
+    );
+    expect(updates).toContainEqual(
+      expect.objectContaining({ sessionUpdate: "tool_call", title: "Subagent: Explorer" }),
+    );
+    expect(updates).toContainEqual(
+      expect.objectContaining({ sessionUpdate: "tool_call_update", toolCallId: "subagent-a1" }),
+    );
+    expect(response._meta).toMatchObject({ freebuff: { contextTokens: 1234 } });
+  });
+
+  it("tells the user when a locked slot ran a different model than requested", async () => {
+    const conn = makeConn();
+    const agent = new FreebuffAcpAgent(conn, testEnv());
+    fetchMock.mockImplementation(async (url: string | URL | Request) =>
+      hrefOf(url).includes("/session/admission")
+        ? new Response("{}", { status: 500 })
+        : new Response(
+            JSON.stringify({ status: "active", instanceId: "held", model: "z-ai/glm-5.2" }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+    );
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    await agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "hi" }],
+    } as never);
+    expect(JSON.stringify(conn.sessionUpdate.mock.calls)).toContain("locked to z-ai/glm-5.2");
+    expect(loadPersistedSession(session.sessionId, testEnv())?.modelId).toBe("z-ai/glm-5.2");
+  });
+
   it("returns cancelled for a queued turn cancelled before its lane slot, issuing no admission request", async () => {
     const agent = new FreebuffAcpAgent(makeConn(), testEnv());
 
@@ -646,5 +962,62 @@ describe("FreebuffAcpAgent", () => {
     const init = admissionCall?.[1] as RequestInit | undefined;
     const headers = init?.headers as Record<string, string> | undefined;
     expect(headers?.["x-freebuff-model"]).toBe("mimo/mimo-v2.5");
+  });
+});
+
+describe("account, quota and session-open switch", () => {
+  function statusResponse() {
+    return new Response(
+      JSON.stringify({
+        status: "none",
+        freebucks: {
+          daily: { limit: 25, spent: 5, remaining: 20 },
+          wallet: { balance: 0 },
+          prices: { "z-ai/glm-5.3-flash": 5, "stealth/space-bunny-alpha": 0 },
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }
+
+  it("shows the account and remaining quota, and prices on the models", async () => {
+    fetchMock.mockImplementation(async () => statusResponse());
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const account = session.configOptions?.find((option) => option.id === "account");
+    expect(account).toMatchObject({ type: "select" });
+    expect(JSON.stringify(account)).toContain("20/25 Freebucks left today");
+    const bunny = session.models?.availableModels.find(
+      (model) => model.modelId === "stealth/space-bunny-alpha",
+    );
+    expect(bunny?.name).toBe("Space Bunny Alpha");
+    expect(bunny?.description).toContain("Free");
+    const glm = session.models?.availableModels.find(
+      (model) => model.modelId === "z-ai/glm-5.3-flash",
+    );
+    expect(glm?.description).toContain("5 Freebucks/hour");
+  });
+
+  it("toggles session-open confirmation and persists it", async () => {
+    fetchMock.mockImplementation(async () => statusResponse());
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const response = await agent.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: "confirm_open",
+      value: "auto",
+    } as never);
+    const option = response.configOptions.find((entry) => entry.id === "confirm_open");
+    expect(option?.currentValue).toBe("auto");
+    expect(loadPersistedSession(session.sessionId, testEnv())?.confirmOpen).toBe("auto");
+    await expect(
+      agent.setSessionConfigOption({
+        sessionId: session.sessionId,
+        configId: "confirm_open",
+        value: "bogus",
+      } as never),
+    ).rejects.toThrow(/Unknown session-open mode/);
   });
 });

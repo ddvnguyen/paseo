@@ -47,6 +47,27 @@ adapter advertises an auth method pointing at `freebuff login`.
   `agent_thought_chunk`, `tool_call`, and `tool_call_update` updates.
 - `session/cancel` aborts the in-flight turn via `AbortSignal`.
 - Modes: exposes a single `lite` mode (the Freebuff default).
+- Models: `session/new` returns the bundled free-tier catalog; the host can
+  switch per session with `session/set_model`. The choice is requested at
+  admission time and persisted. A reused open slot keeps its own model — the
+  turn adopts it and says so in the reply.
+- Slash commands (`available_commands_update`): `/help`, `/status`, `/clear`,
+  `/skills` are handled locally; each skill in `~/.agents/skills` and
+  `{cwd}/.agents/skills` is exposed as `/<skill> [request]`.
+- Plans: `write_todos` calls are mirrored as ACP `plan` updates.
+- Images: image prompt blocks are sent to the model as multimodal content.
+- Sessions: `session/list` lists persisted sessions (newest first, optional
+  cwd filter); titles come from the first prompt (`session_info_update`).
+- Tool detail: tool calls carry `rawInput`, absolute `locations` and diffs for
+  edits so hosts render rich cards; subagents appear as tool-call cards.
+- `ask_user`: questions are put to the host as permission requests (single
+  choice per question; multi-select and free text are not expressible).
+- Usage: the prompt response `_meta.freebuff` carries `model`, `contextTokens`
+  and `creditsUsed`. The SDK exposes no input/output token split.
+- Stop / steer: `session/cancel` (and a prompt sent mid-turn, which supersedes
+  the running turn) aborts promptly — shell commands are killed by process
+  group, and a turn whose SDK run does not unwind settles as `cancelled`
+  after a short grace period.
 - `session/resume` (ACP unstable resume) rehydrates `RunState` from disk after
   an adapter restart so hosts (Paseo) can continue open sessions without
   blocking. History replay via `session/load` is not advertised; if a host
@@ -69,3 +90,19 @@ adapter advertises an auth method pointing at `freebuff login`.
 - Freebuff model selection happens on the backend (the free tier's catalog).
   `FREEBUFF_MODEL` requests a model at admission time, but the adapter does
   not switch models mid-session — a reused open slot keeps its own model.
+
+## Account, quota and session-open switch
+
+The adapter reports two ACP session config options (`session/new` response and
+`config_option_update` after every turn):
+
+- `account` — read-only; its single option reads `<name> · <remaining>/<limit>
+Freebucks left today`. The name comes from `credentials.json` (`name`, else
+  `email`); quota comes from `GET /api/v1/freebuff/session`. Never the token.
+- `confirm_open` — `ask` (default) or `auto`. `ask` requests host approval
+  before a new credit-spending free session opens; `auto` opens it without
+  asking. Default can be set with `FREEBUFF_CONFIRM_OPEN=auto`.
+
+Model names/taglines mirror the Freebuff CLI catalog; prices are merged in from
+the server's live `freebucks.prices` (they change at peak/off-peak).
+Paseo renders both options as features via `FreebuffACPAgentClient`.

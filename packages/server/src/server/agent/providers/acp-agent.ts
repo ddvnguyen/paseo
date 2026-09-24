@@ -113,6 +113,7 @@ import {
   type ProviderRuntimeSettings,
 } from "../provider-launch-config.js";
 import { renderPromptAttachmentAsText } from "../prompt-attachments.js";
+import { acpAnswersResponseMeta, readAcpQuestions } from "./acp-questions.js";
 import { appendOrReplaceGrowingAssistantMessage, runProviderTurn } from "./provider-runner.js";
 import {
   buildStringCommandShellInvocation,
@@ -2357,6 +2358,10 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     }
 
     this.pendingPermissions.delete(requestId);
+    const answersMeta =
+      pending.request.kind === "question" && response.behavior === "allow"
+        ? acpAnswersResponseMeta(response.updatedInput)
+        : {};
     pending.resolve(
       selectedOption
         ? {
@@ -2364,6 +2369,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
               outcome: "selected",
               optionId: selectedOption.optionId,
             },
+            ...answersMeta,
           }
         : { outcome: { outcome: "cancelled" } },
     );
@@ -2462,7 +2468,9 @@ export class ACPAgentSession implements AgentSession, ACPClient {
 
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     const canAutoAccept =
-      isACPAutoAcceptEnabled(this.config) && !isACPChooserRequest(params.options);
+      isACPAutoAcceptEnabled(this.config) &&
+      !isACPChooserRequest(params.options) &&
+      !readAcpQuestions(params._meta);
     if (canAutoAccept) {
       const allowOption = selectPermissionOption(params.options, { behavior: "allow" });
       if (allowOption) {
@@ -3805,7 +3813,11 @@ function mapPermissionRequest(
   params: RequestPermissionRequest,
   snapshot: ACPToolSnapshot,
 ): AgentPermissionRequest {
-  const kind: AgentPermissionRequestKind = snapshot.kind === "switch_mode" ? "mode" : "tool";
+  const questions = readAcpQuestions(params._meta);
+  let kind: AgentPermissionRequestKind = snapshot.kind === "switch_mode" ? "mode" : "tool";
+  if (questions) {
+    kind = "question";
+  }
   const chooserText = isACPChooserRequest(params.options)
     ? extractToolText(params.toolCall.content)
     : undefined;
@@ -3815,6 +3827,7 @@ function mapPermissionRequest(
     name: snapshot.kind ?? snapshot.title,
     kind,
     title: params.toolCall.title ?? snapshot.title,
+    ...(questions ? { input: { questions } } : {}),
     detail: chooserText
       ? {
           type: "plain_text",

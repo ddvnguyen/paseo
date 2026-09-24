@@ -74,6 +74,7 @@
     "@xterm/addon-web-links": "^0.13.0-beta.213",
     "@xterm/addon-webgl": "^0.20.0-beta.212",
     "@xterm/xterm": "^6.1.0-beta.213",
+    "babel-preset-expo": "~54.0.10",
     "buffer": "^6.0.3",
     "expo": "^54.0.18",
     "expo-asset": "~12.0.12",
@@ -105,6 +106,7 @@
     "lucide-react-native": "^0.546.0",
     "markdown-it": "^10.0.0",
     "mermaid": "^11.16.0",
+    "metro-resolver": "^0.84.4",
     "mnemonic-id": "^3.2.7",
     "qrcode": "^1.5.4",
     "react": "19.1.0",
@@ -133,9 +135,7 @@
     "use-sync-external-store": "^1.6.0",
     "yaml": "^2.8.4",
     "zod": "^4.4.3",
-    "zustand": "^5.0.9",
-    "metro-resolver": "^0.84.4",
-    "babel-preset-expo": "~54.0.10"
+    "zustand": "^5.0.9"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",

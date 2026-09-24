@@ -272,11 +272,11 @@ consistent `PROD`/`TEST` naming:
 └── dev/     # pointer to the workspace dev checkout
 ```
 
-| Env  | PASEO_HOME     | Runtime / launcher        | Port | Unit                |
-| ---- | -------------- | ------------------------- | ---- | ------------------- |
-| PROD | `~/paseo/PROD` | `~/paseo/PROD/paseo-bun`  | 6767 | `paseo.service`     |
-| TEST | `~/paseo/TEST` | `~/paseo/TEST/paseo-bun`  | 6868 | `paseo-test.service`|
-| app  | —              | `~/paseo/app/web-ui`      | 6969 | `paseo-app.service` |
+| Env  | PASEO_HOME     | Runtime / launcher       | Port | Unit                 |
+| ---- | -------------- | ------------------------ | ---- | -------------------- |
+| PROD | `~/paseo/PROD` | `~/paseo/PROD/paseo-bun` | 6767 | `paseo.service`      |
+| TEST | `~/paseo/TEST` | `~/paseo/TEST/paseo-bun` | 6868 | `paseo-test.service` |
+| app  | —              | `~/paseo/app/web-ui`     | 6969 | `paseo-app.service`  |
 
 Runtime node_modules are installed by the pipeline into `PROD_HOME`/`TEST_HOME`
 (see the workflow `env:` block). All pnpm installs on the host share one
@@ -513,8 +513,8 @@ Or use the GitHub Actions UI — tick whichever stages you need.
 | 1. Build hydra   | `run_build_hydra`   | Checkout, `npm ci`, build server + web UI, persist to `builds/hydra/<sha>/`                      |
 | 2. Android APK   | `run_build_android` | Expo prebuild + `gradlew assembleRelease` (JDK 17, local SDK), output `builds/android/<sha>.apk` |
 | 3. Deploy web UI | `run_deploy_web`    | Build web UI from SHA, rsync to `~/paseo/app/web-ui/`, reload Caddy on `:6969`                   |
-| 4. Deploy TEST   | `run_deploy_test`   | Rsync server dist to `~/paseo/TEST/`, restart `paseo-test.service` (`:6868`)                    |
-| 5. Deploy PROD   | `run_deploy_prod`   | Rsync server dist to `~/paseo/PROD/`, restart `paseo.service` (`:6767`) ⚠️                   |
+| 4. Deploy TEST   | `run_deploy_test`   | Rsync server dist to `~/paseo/TEST/`, restart `paseo-test.service` (`:6868`)                     |
+| 5. Deploy PROD   | `run_deploy_prod`   | Rsync server dist to `~/paseo/PROD/`, restart `paseo.service` (`:6767`) ⚠️                       |
 
 Stage 1 must run first (or a valid `*_build_ref` SHA must be supplied) for
 stages 2–5. When both selected in one run, stages 2–5 wait for stage 1 via

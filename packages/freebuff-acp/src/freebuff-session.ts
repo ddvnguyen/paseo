@@ -63,8 +63,8 @@ function baseHeaders(token: string): Record<string, string> {
   };
 }
 
-/** Probe for a live slot this account already holds (GET; non-fatal). */
-async function probeOpenSession(
+/** Probe for a live slot and the account's quota/prices (GET; non-fatal). */
+export async function probeOpenSession(
   token: string,
   signal?: AbortSignal,
 ): Promise<FreebuffSessionServerResponse | null> {
