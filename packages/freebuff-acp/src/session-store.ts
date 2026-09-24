@@ -25,6 +25,8 @@ export interface PersistedFreebuffSession {
   modeId: string;
   /** Catalog model the session last ran on (absent in files from older builds). */
   modelId?: string;
+  /** Whether opening a new session needs host approval ("ask" | "auto"). */
+  confirmOpen?: string;
   /** Short conversation title derived from the first prompt. */
   title?: string;
   runState: Record<string, unknown> | null;
@@ -88,6 +90,7 @@ export function loadPersistedSession(
       cwd: record.cwd,
       modeId: typeof record.modeId === "string" ? record.modeId : "lite",
       ...(typeof record.modelId === "string" ? { modelId: record.modelId } : {}),
+      ...(typeof record.confirmOpen === "string" ? { confirmOpen: record.confirmOpen } : {}),
       ...(typeof record.title === "string" ? { title: record.title } : {}),
       runState:
         record.runState && typeof record.runState === "object"

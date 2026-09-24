@@ -21,6 +21,7 @@ export function getCredentialsPath(env: NodeJS.ProcessEnv = process.env): string
 interface StoredCredentials {
   default?: {
     id?: unknown;
+    name?: unknown;
     email?: unknown;
     authToken?: unknown;
     fingerprintId?: unknown;
@@ -79,4 +80,23 @@ function readStoredCredentials(credentialsPath: string): StoredCredentials | nul
 /** Sync fingerprint id generation mirroring the Codebuff SDK default (hex sha256). */
 export function generateFingerprintId(): string {
   return crypto.createHash("sha256").update(crypto.randomBytes(32)).digest("hex");
+}
+
+/**
+ * Who the adapter is logged in as, for display only (never the token).
+ * Prefers the stored display name, then the email; env-key auth has no
+ * identity on disk.
+ */
+export function resolveAccountLabel(
+  env: NodeJS.ProcessEnv = process.env,
+  readCredentialsFile: (p: string) => StoredCredentials | null = readStoredCredentials,
+): string {
+  const envKey = env.FREEBUFF_API_KEY?.trim() || env.CODEBUFF_API_KEY?.trim() || "";
+  if (envKey) return "API key (env)";
+  const credentialsPath = getCredentialsPath(env);
+  const stored = credentialsPath ? readCredentialsFile(credentialsPath) : null;
+  for (const candidate of [stored?.default?.name, stored?.default?.email]) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return "Freebuff account";
 }

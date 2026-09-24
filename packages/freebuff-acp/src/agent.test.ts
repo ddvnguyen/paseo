@@ -958,3 +958,60 @@ describe("FreebuffAcpAgent", () => {
     expect(headers?.["x-freebuff-model"]).toBe("mimo/mimo-v2.5");
   });
 });
+
+describe("account, quota and session-open switch", () => {
+  function statusResponse() {
+    return new Response(
+      JSON.stringify({
+        status: "none",
+        freebucks: {
+          daily: { limit: 25, spent: 5, remaining: 20 },
+          wallet: { balance: 0 },
+          prices: { "z-ai/glm-5.3-flash": 5, "stealth/space-bunny-alpha": 0 },
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }
+
+  it("shows the account and remaining quota, and prices on the models", async () => {
+    fetchMock.mockImplementation(async () => statusResponse());
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const account = session.configOptions?.find((option) => option.id === "account");
+    expect(account).toMatchObject({ type: "select" });
+    expect(JSON.stringify(account)).toContain("20/25 Freebucks left today");
+    const bunny = session.models?.availableModels.find(
+      (model) => model.modelId === "stealth/space-bunny-alpha",
+    );
+    expect(bunny?.name).toBe("Space Bunny Alpha");
+    expect(bunny?.description).toContain("Free");
+    const glm = session.models?.availableModels.find(
+      (model) => model.modelId === "z-ai/glm-5.3-flash",
+    );
+    expect(glm?.description).toContain("5 Freebucks/hour");
+  });
+
+  it("toggles session-open confirmation and persists it", async () => {
+    fetchMock.mockImplementation(async () => statusResponse());
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const response = await agent.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: "confirm_open",
+      value: "auto",
+    } as never);
+    const option = response.configOptions.find((entry) => entry.id === "confirm_open");
+    expect(option?.currentValue).toBe("auto");
+    expect(loadPersistedSession(session.sessionId, testEnv())?.confirmOpen).toBe("auto");
+    await expect(
+      agent.setSessionConfigOption({
+        sessionId: session.sessionId,
+        configId: "confirm_open",
+        value: "bogus",
+      } as never),
+    ).rejects.toThrow(/Unknown session-open mode/);
+  });
+});

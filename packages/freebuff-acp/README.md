@@ -90,3 +90,19 @@ adapter advertises an auth method pointing at `freebuff login`.
 - Freebuff model selection happens on the backend (the free tier's catalog).
   `FREEBUFF_MODEL` requests a model at admission time, but the adapter does
   not switch models mid-session — a reused open slot keeps its own model.
+
+## Account, quota and session-open switch
+
+The adapter reports two ACP session config options (`session/new` response and
+`config_option_update` after every turn):
+
+- `account` — read-only; its single option reads `<name> · <remaining>/<limit>
+  Freebucks left today`. The name comes from `credentials.json` (`name`, else
+  `email`); quota comes from `GET /api/v1/freebuff/session`. Never the token.
+- `confirm_open` — `ask` (default) or `auto`. `ask` requests host approval
+  before a new credit-spending free session opens; `auto` opens it without
+  asking. Default can be set with `FREEBUFF_CONFIRM_OPEN=auto`.
+
+Model names/taglines mirror the Freebuff CLI catalog; prices are merged in from
+the server's live `freebucks.prices` (they change at peak/off-peak).
+Paseo renders both options as features via `FreebuffACPAgentClient`.

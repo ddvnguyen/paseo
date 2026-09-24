@@ -25,6 +25,8 @@ import {
   type ResumeSessionRequest,
   type ResumeSessionResponse,
   type SessionNotification,
+  type SetSessionConfigOptionRequest,
+  type SetSessionConfigOptionResponse,
   type SetSessionModelRequest,
   type SetSessionModelResponse,
 } from "@agentclientprotocol/sdk";
@@ -40,9 +42,20 @@ import {
   skillCommandPrompt,
   type SkillCommand,
 } from "./commands.js";
+import {
+  ACCOUNT_CONFIG_ID,
+  CONFIRM_OPEN_CONFIG_ID,
+  buildConfigOptions,
+  fetchAccountStatus,
+  initialConfirmOpenMode,
+  isConfirmOpenMode,
+  type AccountStatus,
+  type ConfirmOpenMode,
+} from "./account.js";
 import type { SessionOpenInfo } from "./freebuff-session.js";
 import { resolveRunMcpServers } from "./mcp.js";
 import { DEFAULT_MODE_ID, FREEBUFF_MODES, FREEBUFF_MODE_IDS } from "./modes.js";
+import { resolveAccountLabel } from "./auth.js";
 import { FREEBUFF_MODEL_IDS, initialModelId, modelState } from "./models.js";
 import {
   listPersistedSessions,
@@ -74,6 +87,12 @@ interface AdapterSession {
   modelId: string;
   /** Short title derived from the first prompt; published via session_info_update. */
   title?: string;
+  /** Display name of the logged-in account (never the token). */
+  accountName: string;
+  /** Whether opening a new credit-spending session needs host approval. */
+  confirmOpen: ConfirmOpenMode;
+  /** Last quota/price snapshot from the server (null until fetched). */
+  status: AccountStatus | null;
   /** Skills discovered for this workspace (slash commands). */
   skills: SkillCommand[];
   client: CodebuffClient;
@@ -201,6 +220,9 @@ export class FreebuffAcpAgent {
       cwd: params.cwd,
       modeId: DEFAULT_MODE_ID,
       modelId,
+      accountName: resolveAccountLabel(this.env),
+      confirmOpen: initialConfirmOpenMode(this.env),
+      status: null,
       skills: [],
       client,
       token,
@@ -215,13 +237,15 @@ export class FreebuffAcpAgent {
     this.sessions.set(sessionId, session);
     this.persist(session);
     this.scheduleCommandsPublish(session);
+    await this.refreshStatus(session);
     return {
       sessionId,
       modes: {
         availableModes: FREEBUFF_MODES,
         currentModeId: DEFAULT_MODE_ID,
       },
-      models: modelState(modelId),
+      models: modelState(modelId, session.status),
+      configOptions: this.configOptionsFor(session),
     };
   }
 
@@ -272,6 +296,12 @@ export class FreebuffAcpAgent {
       cwd: sessionCwd,
       modeId,
       modelId: persisted?.modelId || initialModelId(this.env),
+      accountName: resolveAccountLabel(this.env),
+      confirmOpen:
+        persisted?.confirmOpen && isConfirmOpenMode(persisted.confirmOpen)
+          ? persisted.confirmOpen
+          : initialConfirmOpenMode(this.env),
+      status: null,
       ...(persisted?.title ? { title: persisted.title } : {}),
       skills: [],
       client,
@@ -286,6 +316,7 @@ export class FreebuffAcpAgent {
     this.sessions.set(sessionId, session);
     this.persist(session);
     this.scheduleCommandsPublish(session);
+    await this.refreshStatus(session);
     return session;
   }
 
@@ -296,6 +327,7 @@ export class FreebuffAcpAgent {
         cwd: session.cwd,
         modeId: session.modeId,
         modelId: session.modelId,
+        confirmOpen: session.confirmOpen,
         ...(session.title ? { title: session.title } : {}),
         runState: session.runState,
         updatedAt: new Date().toISOString(),
@@ -305,7 +337,62 @@ export class FreebuffAcpAgent {
   }
 
   private sessionState(session: AdapterSession) {
-    return { ...this.modeState(session.modeId), models: modelState(session.modelId) };
+    return {
+      ...this.modeState(session.modeId),
+      models: modelState(session.modelId, session.status),
+      configOptions: this.configOptionsFor(session),
+    };
+  }
+
+  private configOptionsFor(session: AdapterSession) {
+    return buildConfigOptions({
+      accountName: session.accountName,
+      status: session.status,
+      confirmOpen: session.confirmOpen,
+    });
+  }
+
+  /** Re-read quota/prices; keeps the previous snapshot when the server is unreachable. */
+  private async refreshStatus(session: AdapterSession): Promise<void> {
+    const status = await fetchAccountStatus(session.token);
+    if (status) session.status = status;
+  }
+
+  /** Push the current account/quota/switch state to the host (best-effort). */
+  private publishConfigOptions(session: AdapterSession): void {
+    void this.conn
+      .sessionUpdate({
+        sessionId: session.id,
+        update: {
+          sessionUpdate: "config_option_update",
+          configOptions: this.configOptionsFor(session),
+        },
+      } as unknown as SessionNotification)
+      .catch(() => {
+        // Best-effort, like every stream update.
+      });
+  }
+
+  async setSessionConfigOption(
+    params: SetSessionConfigOptionRequest,
+  ): Promise<SetSessionConfigOptionResponse> {
+    const session = this.sessions.get(params.sessionId);
+    if (!session) throw new Error(`Unknown session: ${params.sessionId}`);
+    const value = String((params as { value: unknown }).value);
+    switch (params.configId) {
+      case CONFIRM_OPEN_CONFIG_ID:
+        if (!isConfirmOpenMode(value)) throw new Error(`Unknown session-open mode: ${value}`);
+        session.confirmOpen = value;
+        this.persist(session);
+        break;
+      case ACCOUNT_CONFIG_ID:
+        // Read-only: selecting it just refreshes the quota line.
+        await this.refreshStatus(session);
+        break;
+      default:
+        throw new Error(`Unknown config option: ${params.configId}`);
+    }
+    return { configOptions: this.configOptionsFor(session) };
   }
 
   /**
@@ -456,7 +543,10 @@ export class FreebuffAcpAgent {
             token: session.token,
             model: session.modelId,
             mcpServers: session.mcpServers,
-            confirmSessionOpen: (info) => this.confirmSessionOpen(session.id, info),
+            confirmSessionOpen:
+              session.confirmOpen === "auto"
+                ? undefined
+                : (info) => this.confirmSessionOpen(session.id, info),
             emit,
           });
         } finally {
@@ -493,6 +583,8 @@ export class FreebuffAcpAgent {
       session.abortController = null;
       session.inflight = null;
       markUnwound();
+      // The turn may have spent Freebucks; refresh the quota line.
+      void this.refreshStatus(session).then(() => this.publishConfigOptions(session));
     }
   }
 
