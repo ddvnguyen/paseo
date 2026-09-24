@@ -63,9 +63,16 @@ export function isConfirmOpenMode(value: string): value is ConfirmOpenMode {
   return value === "ask" || value === "auto";
 }
 
-export function buildConfigOptions(input: {
-  accountName: string;
+export interface AccountChoice {
+  id: string;
+  label: string;
   status: AccountStatus | null;
+}
+
+export function buildConfigOptions(input: {
+  /** Every registered account with its latest quota (the first option when only one). */
+  accounts: AccountChoice[];
+  currentAccountId: string;
   confirmOpen: ConfirmOpenMode;
   /**
    * Model picker as a `model`-category config option, for hosts that build
@@ -73,9 +80,9 @@ export function buildConfigOptions(input: {
    */
   models?: { currentModelId: string; availableModels: ModelInfo[] };
 }): SessionConfigOption[] {
-  const summary = formatAccountSummary(input.accountName, input.status);
-  const resetNote = input.status?.resetAt
-    ? `Daily Freebucks reset at ${input.status.resetAt}.`
+  const current = input.accounts.find((account) => account.id === input.currentAccountId);
+  const resetNote = current?.status?.resetAt
+    ? `Daily Freebucks reset at ${current.status.resetAt}.`
     : undefined;
   const modelOption = input.models
     ? [
@@ -100,8 +107,11 @@ export function buildConfigOptions(input: {
       name: "Account",
       description: resetNote ?? "Freebuff account and remaining Freebucks.",
       type: "select",
-      currentValue: "current",
-      options: [{ value: "current", name: summary }],
+      currentValue: input.currentAccountId,
+      options: input.accounts.map((account) => ({
+        value: account.id,
+        name: formatAccountSummary(account.label, account.status),
+      })),
     },
     {
       id: CONFIRM_OPEN_CONFIG_ID,
@@ -115,4 +125,9 @@ export function buildConfigOptions(input: {
       ],
     },
   ] as SessionConfigOption[];
+}
+
+/** Account a new session starts on: FREEBUFF_ACCOUNT, else the default. */
+export function initialAccountId(env: NodeJS.ProcessEnv): string | undefined {
+  return env.FREEBUFF_ACCOUNT?.trim() || undefined;
 }

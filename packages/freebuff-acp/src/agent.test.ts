@@ -1022,6 +1022,129 @@ describe("account, quota and session-open switch", () => {
   });
 });
 
+describe("multiple accounts", () => {
+  function writeAccounts(): string {
+    const accountsFile = path.join(stateDir, "accounts.json");
+    const workDir = path.join(stateDir, "work-account");
+    fs.mkdirSync(workDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "credentials.json"),
+      JSON.stringify({ default: { name: "Work Person", authToken: "work-token" } }),
+    );
+    fs.writeFileSync(
+      accountsFile,
+      JSON.stringify([
+        { id: "work", label: "Work", configDir: workDir },
+        { id: "default", configDir: "/ignored" },
+        { id: "Bad Id", configDir: workDir },
+        { id: "relative", configDir: "relative/dir" },
+      ]),
+    );
+    return accountsFile;
+  }
+
+  function quotaByToken(remaining: Record<string, number>) {
+    fetchMock.mockImplementation(async (_url, init) => {
+      const auth = String((init?.headers as Record<string, string> | undefined)?.Authorization);
+      const token = auth.replace(/^Bearer /, "");
+      return new Response(
+        JSON.stringify({
+          status: "none",
+          freebucks: { daily: { limit: 25, spent: 0, remaining: remaining[token] ?? 0 } },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+  }
+
+  it("lists registered accounts (ignoring invalid entries) and rejects the reserved id", async () => {
+    const { listAccounts } = await import("./accounts.js");
+    const env = testEnv({ FREEBUFF_ACP_ACCOUNTS_FILE: writeAccounts() });
+    expect(listAccounts(env).map((account) => account.id)).toEqual(["default", "work"]);
+  });
+
+  it("offers every account with its quota and switches a session between them", async () => {
+    quotaByToken({ k: 20, "work-token": 7 });
+    const env = testEnv({ FREEBUFF_ACP_ACCOUNTS_FILE: writeAccounts() });
+    const agent = new FreebuffAcpAgent(makeConn(), env);
+    const clients = new Map<string, ReturnType<typeof makeClient>>();
+    (
+      agent as unknown as { ensureClient: (cwd: string, account: { id: string }) => unknown }
+    ).ensureClient = (_cwd, account) => {
+      const client = clients.get(account.id) ?? makeClient({ type: "success" });
+      clients.set(account.id, client);
+      return { client, token: account.id === "work" ? "work-token" : "k" };
+    };
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const account = session.configOptions?.find((option) => option.id === "account") as {
+      currentValue: string;
+      options: { value: string; name: string }[];
+    };
+    expect(account.currentValue).toBe("default");
+    expect(account.options.map((option) => option.value)).toEqual(["default", "work"]);
+    expect(account.options[0]?.name).toContain("20/25 Freebucks left today");
+    expect(account.options[1]?.name).toContain("Work · 7/25 Freebucks left today");
+
+    const response = await agent.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: "account",
+      value: "work",
+    } as never);
+    const switched = response.configOptions.find((option) => option.id === "account");
+    expect(switched?.currentValue).toBe("work");
+    expect(loadPersistedSession(session.sessionId, env)?.accountId).toBe("work");
+
+    await expect(
+      agent.setSessionConfigOption({
+        sessionId: session.sessionId,
+        configId: "account",
+        value: "nope",
+      } as never),
+    ).rejects.toThrow(/Unknown account/);
+  });
+
+  it("restores a session on its persisted account, falling back to default when it is gone", async () => {
+    quotaByToken({ k: 20, "work-token": 7 });
+    const env = testEnv({ FREEBUFF_ACP_ACCOUNTS_FILE: writeAccounts() });
+    const first = new FreebuffAcpAgent(makeConn(), env);
+    const seen: string[] = [];
+    const stub = (agent: FreebuffAcpAgent) => {
+      (
+        agent as unknown as { ensureClient: (cwd: string, account: { id: string }) => unknown }
+      ).ensureClient = (_cwd, account) => {
+        seen.push(account.id);
+        return { client: makeClient({ type: "success" }), token: "k" };
+      };
+    };
+    stub(first);
+    const session = await first.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    await first.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: "account",
+      value: "work",
+    } as never);
+
+    const second = new FreebuffAcpAgent(makeConn(), env);
+    stub(second);
+    seen.length = 0;
+    await second.loadSession({
+      sessionId: session.sessionId,
+      cwd: "/tmp",
+      mcpServers: [],
+    } as never);
+    expect(seen).toEqual(["work"]);
+
+    const third = new FreebuffAcpAgent(
+      makeConn(),
+      testEnv({ FREEBUFF_ACP_ACCOUNTS_FILE: path.join(stateDir, "missing.json") }),
+    );
+    stub(third);
+    seen.length = 0;
+    await third.loadSession({ sessionId: session.sessionId, cwd: "/tmp", mcpServers: [] } as never);
+    expect(seen).toEqual(["default"]);
+  });
+});
+
 describe("plugin-shim compatibility (session/load, close, model option)", () => {
   it("advertises load + close so hosts resuming via session/load can continue a thread", async () => {
     const agent = new FreebuffAcpAgent(makeConn(), testEnv());
