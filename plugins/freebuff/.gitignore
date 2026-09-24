@@ -1,0 +1,4 @@
+node_modules
+dist
+adapter-src
+server/generated.ts
