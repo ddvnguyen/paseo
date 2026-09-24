@@ -475,6 +475,9 @@ importers:
       '@types/mime-types':
         specifier: ^3.0.1
         version: 3.0.1
+      '@types/node':
+        specifier: ^20.9.0
+        version: 20.19.37
       '@types/ws':
         specifier: ^8.5.8
         version: 8.18.1
@@ -486,7 +489,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.6
-        version: 4.1.10(@opentelemetry/api@1.9.0)(@types/node@24.12.2)(jsdom@20.0.3)(vite@7.3.3(@types/node@24.12.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.4))
+        version: 4.1.10(@opentelemetry/api@1.9.0)(@types/node@20.19.37)(@vitest/ui@4.1.6)(jsdom@20.0.3)(vite@7.3.3(@types/node@20.19.37)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.4))
       zx:
         specifier: ^8.8.5
         version: 8.8.5
