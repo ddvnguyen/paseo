@@ -133,12 +133,13 @@ describe("startLogin", () => {
 
     expect(calls).toHaveLength(2);
     expect(second.loginUrl).toBe(first.loginUrl);
-    // The fingerprintId is regenerated per attempt (fresh device identity).
-    const firstId = JSON.parse(firstPending).fingerprintId;
-    const secondPending = JSON.parse(
+    // One stable device identity per account, but a fresh nonce per attempt.
+    const firstState = JSON.parse(firstPending);
+    const secondState = JSON.parse(
       fs.readFileSync(path.join(configDirFor("work"), ".login-pending.json"), "utf8"),
     );
-    expect(secondPending.fingerprintId).not.toBe(firstId);
+    expect(secondState.fingerprintId).toBe(firstState.fingerprintId);
+    expect(secondState.nonce).not.toBe(firstState.nonce);
   });
 
   it("rejects an invalid id without touching the network or disk", async () => {
@@ -149,6 +150,107 @@ describe("startLogin", () => {
     expect(calls).toHaveLength(0);
     expect(fs.existsSync(configDirFor("default"))).toBe(false);
     expect(fs.readdirSync(stateDir)).toEqual([]);
+  });
+});
+
+describe("review hardening", () => {
+  const pendingPath = () => path.join(configDirFor("work"), ".login-pending.json");
+
+  it("honors a cancel that happens while the status call is in flight", async () => {
+    await startLogin("work", env(), fakeFetch([]), "Work");
+    const racing = fakeFetch([], () => {
+      cancelLogin("work", env());
+      return successStatusHandler();
+    });
+
+    const result = await pollLogin("work", env(), racing);
+
+    expect(result).toEqual({ status: "none" });
+    expect(fs.existsSync(path.join(configDirFor("work"), "credentials.json"))).toBe(false);
+    expect(fs.existsSync(accountsFilePath(env()))).toBe(false);
+  });
+
+  it("does not let a stale poll complete over a restart", async () => {
+    await startLogin("work", env(), fakeFetch([]), "Work");
+    const racing = fakeFetch([], () => {
+      // Restart while the old poll is mid-flight: new nonce, new pending file.
+      void startLogin("work", env(), fakeFetch([]), "Work");
+      return successStatusHandler();
+    });
+    // startLogin is async but its file writes finish within a few ticks.
+    const result = await pollLogin("work", env(), racing);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(result).toEqual({ status: "none" });
+    expect(fs.existsSync(pendingPath())).toBe(true);
+    expect(fs.existsSync(path.join(configDirFor("work"), "credentials.json"))).toBe(false);
+  });
+
+  it("reports an unreadable or malformed pending file instead of none", async () => {
+    await startLogin("work", env(), fakeFetch([]));
+    fs.writeFileSync(pendingPath(), "{not json");
+    const result = await pollLogin("work", env(), fakeFetch([]));
+    expect(result.status).toBe("error");
+    expect(result.reason).toMatch(/malformed/);
+  });
+
+  it("surfaces non-401 failures via httpStatus while staying pending", async () => {
+    await startLogin("work", env(), fakeFetch([]));
+    const result = await pollLogin(
+      "work",
+      env(),
+      fakeFetch([], () => json(503, {})),
+    );
+    expect(result).toEqual({ status: "pending", httpStatus: 503 });
+  });
+
+  it("refuses a user record the CLI and adapter could not use", async () => {
+    await startLogin("work", env(), fakeFetch([]));
+    const result = await pollLogin(
+      "work",
+      env(),
+      fakeFetch([], () => json(200, { user: { id: "u1", email: "a@b.c" } })),
+    );
+    expect(result.status).toBe("error");
+    expect(fs.existsSync(path.join(configDirFor("work"), "credentials.json"))).toBe(false);
+    expect(fs.existsSync(pendingPath())).toBe(true);
+  });
+
+  it("keeps credentials and says how to recover when registration fails", async () => {
+    await startLogin("work", env(), fakeFetch([]));
+    fs.writeFileSync(accountsFilePath(env()), "{corrupt");
+    await expect(pollLogin("work", env(), fakeFetch([], successStatusHandler))).rejects.toThrow(
+      /accounts add work/,
+    );
+    expect(fs.existsSync(path.join(configDirFor("work"), "credentials.json"))).toBe(true);
+    expect(fs.existsSync(pendingPath())).toBe(false);
+  });
+
+  it("rejects a login-code response with no usable expiry", async () => {
+    const noExpiry: typeof fetch = async () =>
+      json(200, { loginUrl: "https://x/y", fingerprintHash: "h", expiresAt: "garbage" });
+    await expect(startLogin("work", env(), noExpiry)).rejects.toThrow(/usable expiry/);
+  });
+
+  it("refuses to re-login an id registered against a different config dir", async () => {
+    fs.writeFileSync(
+      accountsFilePath(env()),
+      JSON.stringify([{ id: "work", configDir: "/somewhere/else" }]),
+    );
+    await expect(startLogin("work", env(), fakeFetch([]))).rejects.toThrow(/different config dir/);
+  });
+
+  it("does not persist a fingerprint when the code request fails", async () => {
+    const failing: typeof fetch = async () => json(500, {});
+    await expect(startLogin("work", env(), failing)).rejects.toThrow(/HTTP 500/);
+    expect(fs.existsSync(path.join(configDirFor("work"), "fingerprint-id"))).toBe(false);
+  });
+
+  it("tightens a pre-existing account dir to 0700", async () => {
+    fs.mkdirSync(configDirFor("work"), { recursive: true, mode: 0o755 });
+    fs.chmodSync(configDirFor("work"), 0o755);
+    await startLogin("work", env(), fakeFetch([]));
+    expect(fs.statSync(configDirFor("work")).mode & 0o777).toBe(0o700);
   });
 });
 

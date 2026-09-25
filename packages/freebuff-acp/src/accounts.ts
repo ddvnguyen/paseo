@@ -79,7 +79,14 @@ export function accountsBaseDir(env: NodeJS.ProcessEnv = process.env): string {
  * credentials.json). The id must already be validated.
  */
 export function accountConfigDir(accountId: string, env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(accountsBaseDir(env), "accounts", accountId);
+  // Deployments that only relocated accounts.json keep per-account state next
+  // to it instead of splitting the registry and its state across two roots.
+  const relocatedFile = env.FREEBUFF_ACP_ACCOUNTS_FILE?.trim();
+  const root =
+    !env.FREEBUFF_ACP_CONFIG_DIR?.trim() && relocatedFile && path.isAbsolute(relocatedFile)
+      ? path.dirname(relocatedFile)
+      : accountsBaseDir(env);
+  return path.join(root, "accounts", accountId);
 }
 
 export function accountsFilePath(env: NodeJS.ProcessEnv = process.env): string {
