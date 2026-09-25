@@ -79,6 +79,53 @@ import { createAbortableTerminalTool } from "./terminal.js";
 import type { TurnResult } from "./turn.js";
 import { runTurn } from "./turn.js";
 
+/**
+ * F6 — per-turn hard timeout. A hung SDK call would otherwise wedge the
+ * process-wide turn lane forever (cancel/steer/clear/close all hang behind
+ * it). FREEBUFF_TURN_TIMEOUT_MS overrides the default; "0" disables.
+ */
+const DEFAULT_TURN_TIMEOUT_MS = 30 * 60 * 1000;
+/** setTimeout() silently turns delays above 2^31-1 into 1ms; clamp instead. */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+/** F8 — upper bound for awaited quota refreshes so session open never stalls. */
+const STATUS_REFRESH_TIMEOUT_MS = 5_000;
+
+function logWarn(message: string): void {
+  process.stderr.write(`freebuff-acp: ${message}\n`);
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** F8: a failed/timed-out quota refresh keeps the last known status. */
+function ignoreStatusError(error: unknown): void {
+  logWarn(`quota refresh failed: ${describeError(error)}; keeping the last known status.`);
+}
+
+/**
+ * F6: per-turn hard timeout in milliseconds from FREEBUFF_TURN_TIMEOUT_MS.
+ * Default 30 minutes; "0" disables the watchdog; an invalid value falls back
+ * to the default (logged to stderr).
+ */
+export function resolveTurnTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.FREEBUFF_TURN_TIMEOUT_MS?.trim();
+  if (!raw) return DEFAULT_TURN_TIMEOUT_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    logWarn(
+      `ignoring invalid FREEBUFF_TURN_TIMEOUT_MS "${raw}"; using the default ` +
+        `${DEFAULT_TURN_TIMEOUT_MS}ms.`,
+    );
+    return DEFAULT_TURN_TIMEOUT_MS;
+  }
+  if (value > MAX_TIMEOUT_MS) {
+    logWarn(`capping FREEBUFF_TURN_TIMEOUT_MS ${raw} to ${MAX_TIMEOUT_MS}ms.`);
+    return MAX_TIMEOUT_MS;
+  }
+  return value;
+}
+
 interface ClientApi {
   sessionUpdate(params: SessionNotification): Promise<void>;
   /**
@@ -127,8 +174,16 @@ interface AdapterSession {
 export class FreebuffAcpAgent {
   private readonly sessions = new Map<string, AdapterSession>();
   private sessionCounter = 0;
-  /** One SDK client per account id (each carries that account's API key). */
+  /**
+   * F7: one SDK client per (account, cwd). The client bakes the cwd it was
+   * created with, so the key must include the cwd — otherwise a second
+   * session on another workspace would silently run against the first one.
+   */
   private readonly clients = new Map<string, CodebuffClient>();
+  /** F7: set once shutdown() has run; keeps it idempotent. */
+  private shutdownRan = false;
+  /** F7: set once this instance registered its process shutdown hooks. */
+  private hooksInstalled = false;
   /** Latest quota per account id, for the account picker. */
   private readonly accountStatuses = new Map<string, AccountStatus | null>();
   private readonly conn: ClientApi;
@@ -150,6 +205,11 @@ export class FreebuffAcpAgent {
   constructor(conn: ClientApi, env: NodeJS.ProcessEnv = process.env) {
     this.conn = conn;
     this.env = env;
+    // F7: teardown path for the long-lived adapter process. Tests opt out
+    // (FREEBUFF_ACP_DISABLE_SHUTDOWN_HOOKS=1) to keep the runner unpolluted.
+    if (this.env.FREEBUFF_ACP_DISABLE_SHUTDOWN_HOOKS !== "1") {
+      this.installShutdownHooks();
+    }
   }
 
   private ensureClient(
@@ -166,7 +226,8 @@ export class FreebuffAcpAgent {
               `Run \`FREEBUFF_CONFIG_DIR=${account.configDir} freebuff login\`.`,
       );
     }
-    let client = this.clients.get(account.id);
+    const clientKey = `${account.id}\u0000${cwd}`;
+    let client = this.clients.get(clientKey);
     if (!client) {
       client = new CodebuffClient({
         apiKey: credentials.apiKey,
@@ -183,7 +244,7 @@ export class FreebuffAcpAgent {
           ),
         },
       });
-      this.clients.set(account.id, client);
+      this.clients.set(clientKey, client);
     }
     return { client, token: credentials.apiKey };
   }
@@ -271,7 +332,8 @@ export class FreebuffAcpAgent {
     this.sessions.set(sessionId, session);
     this.persist(session);
     this.scheduleCommandsPublish(session);
-    await this.refreshStatus(session);
+    // F8: bounded — a slow quota server must not stall session open.
+    await this.refreshStatusBounded(session);
     return {
       sessionId,
       modes: {
@@ -359,7 +421,8 @@ export class FreebuffAcpAgent {
     this.sessions.set(sessionId, session);
     this.persist(session);
     this.scheduleCommandsPublish(session);
-    await this.refreshStatus(session);
+    // F8: bounded — a slow quota server must not stall session restore.
+    await this.refreshStatusBounded(session);
     return session;
   }
 
@@ -472,7 +535,8 @@ export class FreebuffAcpAgent {
         break;
       case ACCOUNT_CONFIG_ID:
         if (value !== session.accountId) this.switchAccount(session, value);
-        await this.refreshStatus(session);
+        // F8: bounded — keep the last known status on a slow server.
+        await this.refreshStatusBounded(session);
         break;
       default:
         throw new Error(`Unknown config option: ${params.configId}`);
@@ -616,11 +680,9 @@ export class FreebuffAcpAgent {
           // caller already gave up on.
           return { stopReason: "cancelled", runState: session.runState };
         }
-        this.activeTurn = {
-          cwd: session.cwd,
-          signal: abortController.signal,
-          sessionId: session.id,
-        };
+        // F6: hard deadline for the running turn (admission + SDK run). A
+        // hung call would otherwise wedge the process-wide lane forever.
+        const disarmWatchdog = this.armTurnWatchdog(session.id, abortController);
         const emit = (update: Record<string, unknown> & { sessionUpdate: string }) => {
           void this.conn
             .sessionUpdate({ sessionId: session.id, update } as unknown as SessionNotification)
@@ -629,6 +691,11 @@ export class FreebuffAcpAgent {
             });
         };
         try {
+          this.activeTurn = {
+            cwd: session.cwd,
+            signal: abortController.signal,
+            sessionId: session.id,
+          };
           return await runTurn({
             client: session.client,
             cwd: session.cwd,
@@ -648,6 +715,7 @@ export class FreebuffAcpAgent {
             emit,
           });
         } finally {
+          disarmWatchdog();
           this.activeTurn = null;
         }
       });
@@ -685,8 +753,11 @@ export class FreebuffAcpAgent {
       session.abortController = null;
       session.inflight = null;
       markUnwound();
-      // The turn may have spent Freebucks; refresh the quota line.
-      void this.refreshStatus(session).then(() => this.publishConfigOptions(session));
+      // The turn may have spent Freebucks; refresh the quota line. F8: the
+      // failure is swallowed and logged — never an unhandled rejection.
+      void this.refreshStatus(session)
+        .then(() => this.publishConfigOptions(session))
+        .catch(ignoreStatusError);
     }
   }
 
@@ -697,6 +768,144 @@ export class FreebuffAcpAgent {
       await session.inflight;
     }
   }
+
+  /**
+   * F6: arm the per-turn hard watchdog. Returns a disarm function the caller
+   * MUST run when the turn unwinds. A disabled timeout (0) arms nothing.
+   */
+  private armTurnWatchdog(sessionId: string, abortController: AbortController): () => void {
+    const timeoutMs = resolveTurnTimeoutMs(this.env);
+    if (timeoutMs <= 0) return () => undefined;
+    let fired = false;
+    const timer = setTimeout(() => {
+      fired = true;
+      this.fireTurnWatchdog(sessionId, abortController, timeoutMs);
+    }, timeoutMs);
+    return () => {
+      if (!fired) clearTimeout(timer);
+    };
+  }
+
+  /** F6: deadline hit — abort the turn, tell the host, let the lane drain. */
+  private fireTurnWatchdog(
+    sessionId: string,
+    abortController: AbortController,
+    timeoutMs: number,
+  ): void {
+    const seconds = Math.round(timeoutMs / 1000);
+    const message =
+      `Freebuff turn timed out after ${seconds}s (FREEBUFF_TURN_TIMEOUT_MS) and was stopped. ` +
+      "The conversation state was kept — retry with a smaller prompt if this repeats.";
+    logWarn(`turn watchdog fired for session ${sessionId} after ${seconds}s.`);
+    abortController.abort();
+    void this.conn
+      .sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: message },
+        },
+      } as unknown as SessionNotification)
+      .catch(() => {
+        // The host may be gone already; the stderr log carries the signal.
+      });
+  }
+
+  /**
+   * F8: refreshStatus bounded by STATUS_REFRESH_TIMEOUT_MS so session open,
+   * restore and account switches never stall on a slow server. On timeout the
+   * last known snapshot simply stays in place.
+   */
+  private async refreshStatusBounded(session: AdapterSession): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), STATUS_REFRESH_TIMEOUT_MS);
+    });
+    try {
+      const outcome = await Promise.race([
+        this.refreshStatus(session).catch(ignoreStatusError),
+        timeout,
+      ]);
+      if (outcome === "timeout") {
+        logWarn(
+          `quota refresh for session ${session.id} exceeded ${STATUS_REFRESH_TIMEOUT_MS}ms; ` +
+            "keeping the last known status.",
+        );
+      }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * F7: one idempotent shutdown — abort any running turn, best-effort close
+   * every SDK client, drop in-memory state. Called from the process shutdown
+   * hooks and available to hosts/embedders managing the agent directly.
+   */
+  async shutdown(): Promise<void> {
+    if (this.shutdownRan) return;
+    this.shutdownRan = true;
+    for (const session of this.sessions.values()) {
+      session.abortController?.abort();
+    }
+    await this.closeAllClients();
+    this.clients.clear();
+    this.sessions.clear();
+  }
+
+  private async closeAllClients(): Promise<void> {
+    for (const client of this.clients.values()) {
+      await this.closeClient(client);
+    }
+  }
+
+  /**
+   * The current SDK exposes no explicit teardown, so dispose/close/destroy
+   * are closed over duck-typed; when none exists there is nothing to release.
+   */
+  private async closeClient(client: CodebuffClient): Promise<void> {
+    const candidate = client as unknown as Record<string, unknown>;
+    const closerName = ["dispose", "close", "destroy"].find(
+      (name) => typeof candidate[name] === "function",
+    );
+    if (!closerName) return;
+    try {
+      await (candidate[closerName] as () => unknown)();
+    } catch (error) {
+      logWarn(`closing a Codebuff client failed: ${describeError(error)}`);
+    }
+  }
+
+  /** F7: SIGTERM/SIGINT and a closed stdin all funnel into shutdown(). */
+  private installShutdownHooks(): void {
+    if (this.hooksInstalled) return;
+    this.hooksInstalled = true;
+    process.once("SIGTERM", this.onShutdownSignal);
+    process.once("SIGINT", this.onShutdownSignal);
+    // Worker threads expose no stdin; degrade to the signal hooks only.
+    if (process.stdin) {
+      process.stdin.on("end", this.onStdinEnd);
+    }
+  }
+
+  /**
+   * Shut down, then re-raise the signal: registering the listener suppressed
+   * the default termination for this delivery only, so the process still
+   * dies once the clients are closed.
+   */
+  private readonly onShutdownSignal = (signal: NodeJS.Signals): void => {
+    void this.shutdown().finally(() => {
+      try {
+        process.kill(process.pid, signal);
+      } catch {
+        process.exit(1);
+      }
+    });
+  };
+
+  private readonly onStdinEnd = (): void => {
+    void this.shutdown();
+  };
 
   private sendMessage(session: AdapterSession, text: string): void {
     void this.conn

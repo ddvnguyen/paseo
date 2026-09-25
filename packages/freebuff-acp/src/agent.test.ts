@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { FreebuffAcpAgent } from "./agent.js";
+import { FreebuffAcpAgent, resolveTurnTimeoutMs } from "./agent.js";
 import { loadPersistedSession, savePersistedSession } from "./session-store.js";
 
 /** Resolve a fetch() input (string | URL | Request) to a string href. */
@@ -67,6 +67,9 @@ function testEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
     CODEBUFF_API_KEY: "k",
     FREEBUFF_ACP_STATE_DIR: stateDir,
+    // F7: keep process shutdown hooks out of the test runner; the dedicated
+    // F7 tests below exercise them explicitly.
+    FREEBUFF_ACP_DISABLE_SHUTDOWN_HOOKS: "1",
     ...extra,
   };
 }
@@ -136,6 +139,7 @@ describe("FreebuffAcpAgent", () => {
       CODEBUFF_API_KEY: "",
       FREEBUFF_CONFIG_DIR: "relative-must-be-ignored",
       FREEBUFF_ACP_STATE_DIR: stateDir,
+      FREEBUFF_ACP_DISABLE_SHUTDOWN_HOOKS: "1",
     });
     await expect(agent.newSession({ cwd: "/tmp", mcpServers: [] } as never)).rejects.toThrow(
       /not authenticated/i,
@@ -403,7 +407,7 @@ describe("FreebuffAcpAgent", () => {
   });
 
   it("cancel on an unknown session is a no-op", async () => {
-    const agent = new FreebuffAcpAgent(makeConn(), {});
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
     await expect(agent.cancel({ sessionId: "nope" })).resolves.toBeUndefined();
   });
 
@@ -1209,5 +1213,285 @@ describe("plugin-shim compatibility (session/load, close, model option)", () => 
         prompt: [{ type: "text", text: "x" }],
       } as never),
     ).rejects.toThrow(/Unknown session/);
+  });
+});
+
+describe("turn watchdog (F6)", () => {
+  it("resolves FREEBUFF_TURN_TIMEOUT_MS: default, override, disable, invalid, cap", () => {
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(resolveTurnTimeoutMs({})).toBe(30 * 60 * 1000);
+      expect(resolveTurnTimeoutMs({ FREEBUFF_TURN_TIMEOUT_MS: "0" })).toBe(0);
+      expect(resolveTurnTimeoutMs({ FREEBUFF_TURN_TIMEOUT_MS: "45000" })).toBe(45000);
+      expect(resolveTurnTimeoutMs({ FREEBUFF_TURN_TIMEOUT_MS: " 1000 " })).toBe(1000);
+      // Invalid values fall back to the default instead of wedging or firing instantly.
+      expect(resolveTurnTimeoutMs({ FREEBUFF_TURN_TIMEOUT_MS: "abc" })).toBe(30 * 60 * 1000);
+      expect(resolveTurnTimeoutMs({ FREEBUFF_TURN_TIMEOUT_MS: "-5" })).toBe(30 * 60 * 1000);
+      // setTimeout(>2^31-1) fires in 1ms — must be capped.
+      expect(resolveTurnTimeoutMs({ FREEBUFF_TURN_TIMEOUT_MS: "99999999999" })).toBe(2 ** 31 - 1);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it("times out a hung turn, notifies the host, and frees the lane", async () => {
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    vi.useFakeTimers();
+    try {
+      const conn = makeConn();
+      const agent = new FreebuffAcpAgent(conn, testEnv({ FREEBUFF_TURN_TIMEOUT_MS: "1000" }));
+      // A hung SDK call that ignores the abort signal.
+      const client = { run: vi.fn(() => new Promise(() => undefined)) };
+      stubClient(agent, client as unknown as ReturnType<typeof makeClient>);
+
+      const session1 = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+      const session2 = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+
+      const p1 = agent.prompt({
+        sessionId: session1.sessionId,
+        prompt: [{ type: "text", text: "hi" }],
+      } as never);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(client.run).toHaveBeenCalledTimes(1);
+
+      // Deadline hits: the watchdog aborts and tells the host.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(
+        conn.sessionUpdate.mock.calls.some(([params]) =>
+          JSON.stringify(params).includes("timed out after 1s"),
+        ),
+      ).toBe(true);
+      // The hung run never unwinds → cancel grace in turn.ts settles the turn.
+      await vi.advanceTimersByTimeAsync(1600);
+      await expect(p1).resolves.toMatchObject({ stopReason: "cancelled" });
+
+      // The process-wide lane is free again.
+      const p2 = agent.prompt({
+        sessionId: session2.sessionId,
+        prompt: [{ type: "text", text: "go" }],
+      } as never);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(client.run).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(2600);
+      await expect(p2).resolves.toMatchObject({ stopReason: "cancelled" });
+    } finally {
+      vi.useRealTimers();
+      errSpy.mockRestore();
+    }
+  });
+
+  it("does not fire the watchdog when the turn finishes before the deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const conn = makeConn();
+      const agent = new FreebuffAcpAgent(conn, testEnv({ FREEBUFF_TURN_TIMEOUT_MS: "1000" }));
+      stubClient(agent, makeClient({ type: "success" }));
+      const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+
+      const response = await agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "hi" }],
+      } as never);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(response.stopReason).toBe("end_turn");
+      expect(JSON.stringify(conn.sessionUpdate.mock.calls)).not.toContain("timed out after");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("client lifecycle and shutdown (F7)", () => {
+  it("creates one client per (account, cwd) instead of baking the first cwd", () => {
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    const ensure = (
+      agent as unknown as {
+        ensureClient: (
+          cwd: string,
+          account: { id: string; configDir: string | null },
+        ) => { client: unknown };
+      }
+    ).ensureClient;
+    const account = { id: "default", configDir: null };
+
+    const first = ensure.call(agent, "/w/a", account).client;
+    const again = ensure.call(agent, "/w/a", account).client;
+    const other = ensure.call(agent, "/w/b", account).client;
+
+    expect(again).toBe(first);
+    expect(other).not.toBe(first);
+    const clients = (agent as unknown as { clients: Map<string, unknown> }).clients;
+    expect(clients.size).toBe(2);
+  });
+
+  it("shutdown aborts the running turn, closes clients, and is idempotent", async () => {
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    const client = {
+      dispose: vi.fn(async () => {}),
+      run: vi.fn(async (options: { signal: AbortSignal }) => {
+        await waitForAbort(options.signal);
+        return { sessionState: { marker: 7 }, output: { type: "error", message: "Aborted" } };
+      }),
+    };
+    stubClient(agent, client as unknown as ReturnType<typeof makeClient>);
+    (agent as unknown as { clients: Map<string, unknown> }).clients.set(
+      "default\u0000/tmp",
+      client,
+    );
+
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const pending = agent.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "hi" }],
+    } as never);
+    await vi.waitFor(() => expect(client.run).toHaveBeenCalledTimes(1));
+
+    await agent.shutdown();
+
+    await expect(pending).resolves.toMatchObject({ stopReason: "cancelled" });
+    expect(client.dispose).toHaveBeenCalledTimes(1);
+    const state = agent as unknown as {
+      clients: Map<string, unknown>;
+      sessions: Map<string, unknown>;
+    };
+    expect(state.clients.size).toBe(0);
+    expect(state.sessions.size).toBe(0);
+
+    // Idempotent: a second shutdown neither throws nor closes again.
+    await agent.shutdown();
+    expect(client.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes clients duck-typed as dispose/close/destroy and swallows close errors", async () => {
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+      const dispose = vi.fn(async () => {});
+      const close = vi.fn(async () => {});
+      const destroy = vi.fn(async () => {
+        throw new Error("nope");
+      });
+      const state = agent as unknown as { clients: Map<string, unknown> };
+      state.clients.set("a\u0000/x", { dispose });
+      state.clients.set("b\u0000/x", { close });
+      state.clients.set("c\u0000/x", { destroy });
+      state.clients.set("d\u0000/x", {}); // no teardown surface — ignored
+
+      await agent.shutdown();
+
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(destroy).toHaveBeenCalledTimes(1); // its error is swallowed+logged
+      expect(state.clients.size).toBe(0);
+      expect(errSpy.mock.calls.map((call) => String(call[0])).join("")).toContain(
+        "closing a Codebuff client failed: nope",
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it("runs shutdown on SIGTERM, SIGINT, and stdin end", async () => {
+    const agent = new FreebuffAcpAgent(
+      makeConn(),
+      testEnv({ FREEBUFF_ACP_DISABLE_SHUTDOWN_HOOKS: "" }),
+    );
+    const shutdownSpy = vi.spyOn(agent, "shutdown").mockResolvedValue(undefined);
+    // The handler re-raises the signal after shutdown — never do that here.
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      process.emit("SIGTERM", "SIGTERM");
+      await Promise.resolve();
+      expect(shutdownSpy).toHaveBeenCalledTimes(1);
+
+      process.emit("SIGINT", "SIGINT");
+      await Promise.resolve();
+      expect(shutdownSpy).toHaveBeenCalledTimes(2);
+
+      if (process.stdin) {
+        process.stdin.emit("end");
+        await Promise.resolve();
+      }
+      expect(shutdownSpy).toHaveBeenCalledTimes(3);
+    } finally {
+      process.removeAllListeners("SIGTERM");
+      process.removeAllListeners("SIGINT");
+      if (process.stdin) process.stdin.removeAllListeners("end");
+      killSpy.mockRestore();
+    }
+  });
+});
+
+describe("quota refresh robustness (F8)", () => {
+  it("bounds awaited quota refreshes and keeps the last known status", async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            status: "none",
+            freebucks: { daily: { limit: 25, spent: 5, remaining: 20 } },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    vi.useFakeTimers();
+    try {
+      const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+      stubClient(agent, makeClient({ type: "success" }));
+      const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+      expect(JSON.stringify(session.configOptions)).toContain("20/25 Freebucks left today");
+
+      // The quota server now hangs; the 5s bound must free session calls.
+      (agent as unknown as { refreshStatus: () => Promise<void> }).refreshStatus = () =>
+        new Promise(() => undefined);
+      const pending = agent.setSessionConfigOption({
+        sessionId: session.sessionId,
+        configId: "account",
+        value: "default",
+      } as never);
+      await vi.advanceTimersByTimeAsync(5000);
+      const response = await pending;
+
+      const account = response.configOptions.find((option) => option.id === "account");
+      expect(JSON.stringify(account)).toContain("20/25 Freebucks left today");
+      expect(errSpy.mock.calls.map((call) => String(call[0])).join("")).toContain(
+        "keeping the last known status",
+      );
+    } finally {
+      vi.useRealTimers();
+      errSpy.mockRestore();
+    }
+  });
+
+  it("swallows and logs a failing post-turn quota refresh instead of an unhandled rejection", async () => {
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      (agent as unknown as { refreshStatus: () => Promise<void> }).refreshStatus = () =>
+        Promise.reject(new Error("boom"));
+      await agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "hi" }],
+      } as never);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(unhandled).toHaveLength(0);
+      expect(errSpy.mock.calls.map((call) => String(call[0])).join("")).toContain(
+        "quota refresh failed: boom",
+      );
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      errSpy.mockRestore();
+    }
   });
 });
