@@ -502,6 +502,89 @@ describe("FreebuffAcpAgent", () => {
     });
   });
 
+  it("restart + resume: reuses the live seat and carries turn-1 context into turn 2", async () => {
+    // R1: same Paseo agent, same session, same folder. The adapter process
+    // restarts between turn 1 and turn 2 (fresh FreebuffAcpAgent, runState
+    // reloaded from the session store). The seat opened by turn 1 is still
+    // live, so turn 2's probe finds and reuses it — no second admission POST.
+    let seatOpen = false;
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = hrefOf(url);
+      const method = ((init?.method as string | undefined) ?? "GET").toUpperCase();
+      if (method === "POST" && href.includes("/session/admission")) {
+        seatOpen = true;
+        return new Response(
+          JSON.stringify({ status: "active", instanceId: "inst-r1", model: "z-ai/glm-5.3-flash" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      const body = seatOpen
+        ? { status: "active", instanceId: "inst-r1", model: "z-ai/glm-5.3-flash" }
+        : { status: "none" };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const env = testEnv();
+    const first = new FreebuffAcpAgent(makeConn(), env);
+    const client1 = makeClient({ type: "success" });
+    stubClient(first, client1);
+
+    const session = await first.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    expect(
+      (
+        await first.prompt({
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "turn one" }],
+        } as never)
+      ).stopReason,
+    ).toBe("end_turn");
+    expect(client1.run.mock.calls).toHaveLength(1);
+
+    // --- adapter process restart: fresh agent instance, same state dir ---
+    const restarted = new FreebuffAcpAgent(makeConn(), env);
+    const client2 = makeClient({ type: "success" });
+    stubClient(restarted, client2);
+
+    // Paseo resumes the session (the plugin shim path is session/load).
+    fetchMock.mockClear();
+    await restarted.loadSession({
+      sessionId: session.sessionId,
+      cwd: "/tmp",
+      mcpServers: [],
+    } as never);
+    expect(
+      (
+        await restarted.prompt({
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "turn two" }],
+        } as never)
+      ).stopReason,
+    ).toBe("end_turn");
+
+    // The SDK run continued turn 1's conversation.
+    expect(client2.run.mock.calls).toHaveLength(1);
+    const turn2 = client2.run.mock.calls[0]?.[0] as {
+      previousRun?: { sessionState?: { marker?: number } };
+      extraCodebuffMetadata?: { freebuff_instance_id?: string };
+    };
+    expect(turn2.previousRun?.sessionState?.marker).toBe(1);
+    expect(turn2.extraCodebuffMetadata).toEqual({ freebuff_instance_id: "inst-r1" });
+
+    // No second admission POST: the probe found the live seat and reused it.
+    const posts = fetchMock.mock.calls.filter(([url, init]) => {
+      const method = ((init?.method as string | undefined) ?? "GET").toUpperCase();
+      return method === "POST" && hrefOf(url).includes("/session/admission");
+    });
+    expect(posts).toHaveLength(0);
+    expect(
+      fetchMock.mock.calls.some(([url]) => hrefOf(url).includes("/api/v1/freebuff/session")),
+    ).toBe(true);
+  });
+
   it("streams live text and reasoning deltas and drops the duplicate flush", async () => {
     const conn = makeConn();
     const agent = new FreebuffAcpAgent(conn, testEnv());
