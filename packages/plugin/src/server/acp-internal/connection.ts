@@ -702,11 +702,24 @@ class AcpRuntime {
 
   async closeSession(): Promise<void> {
     if (this.nativeSessionId) {
-      await withTimeout(
-        this.call(this.connection.closeSession({ sessionId: this.nativeSessionId })),
-        1_000,
-        `ACP session ${this.nativeSessionId} did not close`,
-      ).catch(() => undefined);
+      // COMPAT(acp-sdk-0.17): the flat TEST/PROD runtime node_modules resolve
+      // @agentclientprotocol/sdk 0.17 (required by @getpaseo/server), where the
+      // method is `unstable_closeSession`. Remove once the plugin package gets
+      // its own ACP SDK 1.x copy there.
+      const connection = this.connection as unknown as {
+        closeSession?: ClientSideConnection["closeSession"];
+        unstable_closeSession?: ClientSideConnection["closeSession"];
+      };
+      const closeNativeSession = (
+        connection.closeSession ?? connection.unstable_closeSession
+      )?.bind(connection);
+      if (closeNativeSession) {
+        await withTimeout(
+          this.call(closeNativeSession({ sessionId: this.nativeSessionId })),
+          1_000,
+          `ACP session ${this.nativeSessionId} did not close`,
+        ).catch(() => undefined);
+      }
     }
     await this.close();
   }
