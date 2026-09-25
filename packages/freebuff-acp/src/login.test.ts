@@ -179,6 +179,48 @@ describe("pollLogin", () => {
     expect(fs.existsSync(path.join(configDirFor("work"), ".login-pending.json"))).toBe(true);
   });
 
+  it("handles the live server shape: numeric expiresAt echoed as its decimal string", async () => {
+    const liveShape: typeof fetch = async () =>
+      json(200, {
+        fingerprintId: "server-echo",
+        fingerprintHash: "hash-live",
+        loginUrl: "https://www.codebuff.com/login?auth_code=abc",
+        expiresAt: 1_790_000_000_000,
+        expiresInMs: 3_600_000,
+      });
+    const started = await startLogin("work", env(), liveShape);
+    expect(started.expiresAt).toBe("1790000000000");
+
+    const statusCalls: Call[] = [];
+    const result = await pollLogin("work", env(), fakeFetch(statusCalls));
+    expect(result).toEqual({ status: "pending" });
+    expect(statusCalls[0].url.searchParams.get("expiresAt")).toBe("1790000000000");
+  });
+
+  it("judges expiry by expiresInMs on the local clock, ignoring a skewed server instant", async () => {
+    // Server instant is far in the past (local clock "fast"), but the code is
+    // valid for another hour: it must still be polled, not reported expired.
+    const skewed: typeof fetch = async () =>
+      json(200, {
+        fingerprintHash: "hash-skew",
+        loginUrl: "https://www.codebuff.com/login?auth_code=abc",
+        expiresAt: 946_684_800_000,
+        expiresInMs: 3_600_000,
+      });
+    await startLogin("work", env(), skewed);
+
+    const statusCalls: Call[] = [];
+    const result = await pollLogin("work", env(), fakeFetch(statusCalls));
+    expect(result).toEqual({ status: "pending" });
+    expect(statusCalls).toHaveLength(1);
+  });
+
+  it("rejects a login-code response without a fingerprint hash", async () => {
+    const noHash: typeof fetch = async () =>
+      json(200, { loginUrl: "https://x/y", expiresAt: 1_790_000_000_000 });
+    await expect(startLogin("work", env(), noHash)).rejects.toThrow(/fingerprint hash/);
+  });
+
   it("answers expired once the server instant has passed without a status call", async () => {
     const calls: Call[] = [];
     const expiredFetch: typeof fetch = async (input, init) => {

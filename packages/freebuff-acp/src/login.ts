@@ -37,7 +37,14 @@ const FINGERPRINT_FILE = "fingerprint-id";
 interface LoginCodeResponse {
   loginUrl: string;
   fingerprintHash: string;
-  expiresAt: string;
+  /**
+   * A server-clock instant. The live server sends epoch milliseconds (a
+   * number); older shapes sent a string. It is the status endpoint's HMAC
+   * input, so it is echoed back as its exact decimal/string form.
+   */
+  expiresAt: string | number;
+  /** Validity duration; the only clock-independent expiry signal. */
+  expiresInMs?: number;
 }
 
 /** Server response for GET /api/auth/cli/status (`LoginStatusResponse` upstream). */
@@ -70,6 +77,12 @@ interface PendingState {
   fingerprintHash: string;
   /** Server instant, echoed byte-for-byte (it is the status endpoint's HMAC input). */
   expiresAt: string;
+  /**
+   * Local-clock deadline (epoch ms) = start time + the server's `expiresInMs`.
+   * Preferred for the expired check: comparing the server's `expiresAt` with
+   * this machine's clock rejects every code on a skewed clock.
+   */
+  localDeadlineMs?: number;
   /** Optional display label captured at start, reused when registering the account. */
   label?: string;
 }
@@ -102,16 +115,35 @@ function readPendingState(configDir: string): PendingState | null {
   if (typeof expiresAt !== "string" || !expiresAt) return null;
   const label =
     typeof record.label === "string" && record.label.trim() ? record.label.trim() : undefined;
-  return label
-    ? { fingerprintId, fingerprintHash, expiresAt, label }
-    : { fingerprintId, fingerprintHash, expiresAt };
+  const localDeadlineMs =
+    typeof record.localDeadlineMs === "number" ? record.localDeadlineMs : undefined;
+  return {
+    fingerprintId,
+    fingerprintHash,
+    expiresAt,
+    ...(localDeadlineMs === undefined ? {} : { localDeadlineMs }),
+    ...(label ? { label } : {}),
+  };
 }
 
-/** Expired once the pending handshake's instant has passed (local clock check). */
-function isExpired(expiresAt: string, now: number): boolean {
-  const parsed = Date.parse(expiresAt);
-  if (Number.isNaN(parsed)) return true;
-  return now > parsed;
+/**
+ * Expired once the handshake's deadline has passed. Uses the local-clock
+ * deadline derived from `expiresInMs`; falls back to the server instant
+ * (epoch-ms number or ISO string) for pending files written without one.
+ */
+function isExpired(pending: PendingState, now: number): boolean {
+  if (pending.localDeadlineMs !== undefined) return now > pending.localDeadlineMs;
+  const numeric = Number(pending.expiresAt);
+  const instant = Number.isNaN(numeric) ? Date.parse(pending.expiresAt) : numeric;
+  if (Number.isNaN(instant)) return true;
+  return now > instant;
+}
+
+/** Normalize the server's `expiresAt` (number or string) to its exact string form; null if absent. */
+function expiresAtString(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string" && value) return value;
+  return null;
 }
 
 /** `writeFileSync` applies `mode` only on create — re-tighten after every write. */
@@ -161,14 +193,21 @@ export async function startLogin(
   if (!body || typeof body.loginUrl !== "string" || !body.loginUrl) {
     throw new Error("Login-code request returned no login URL.");
   }
-  if (typeof body.expiresAt !== "string" || !body.expiresAt) {
+  const expiresAt = expiresAtString(body.expiresAt);
+  if (!expiresAt) {
     throw new Error("Login-code request returned no expiry.");
+  }
+  if (typeof body.fingerprintHash !== "string" || !body.fingerprintHash) {
+    throw new Error("Login-code request returned no fingerprint hash.");
   }
 
   const pending: PendingState = {
     fingerprintId,
     fingerprintHash: body.fingerprintHash,
-    expiresAt: body.expiresAt,
+    expiresAt,
+    ...(typeof body.expiresInMs === "number" && body.expiresInMs > 0
+      ? { localDeadlineMs: Date.now() + body.expiresInMs }
+      : {}),
   };
   const trimmedLabel = label?.trim();
   if (trimmedLabel) pending.label = trimmedLabel;
@@ -179,7 +218,7 @@ export async function startLogin(
   });
   tightenMode(pendingFile);
 
-  return { loginUrl: body.loginUrl, expiresAt: body.expiresAt };
+  return { loginUrl: body.loginUrl, expiresAt };
 }
 
 /**
@@ -199,7 +238,7 @@ export async function pollLogin(
   const pending = readPendingState(configDir);
   if (!pending) return { status: "none" };
 
-  if (isExpired(pending.expiresAt, Date.now())) {
+  if (isExpired(pending, Date.now())) {
     return { status: "expired" };
   }
 
