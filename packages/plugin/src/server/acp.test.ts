@@ -356,6 +356,51 @@ describe("runAcpProvider", () => {
     await connection.close();
   });
 
+  it("accepts a permission request that carries no rawInput", async () => {
+    const harness = connectorHarness();
+    const registration = runAcpProvider({
+      id: "sdk-acp",
+      label: "SDK ACP",
+      connector: harness.connector,
+    });
+    const connection = await registration.connect({
+      versions: [1],
+      capabilities: ["prompt.message", "permission"],
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    await connection.send(openInput());
+    await waitForEvent(events, (event) => event.type === "session.ready");
+
+    const request = harness.instances[1]!.request("session/request_permission", {
+      sessionId: "connector-session",
+      toolCall: {
+        toolCallId: "tool-no-input",
+        title: "Open new session",
+        status: "pending",
+        content: [],
+      },
+      options: [{ optionId: "allow-once", name: "Allow once", kind: "allow_once" }],
+    });
+    const event = await waitForEvent(
+      events,
+      (candidate) =>
+        candidate.type === "session.permission" &&
+        candidate.request.id === "permission:tool-no-input",
+    );
+    expect(event).toMatchObject({ type: "session.permission", request: { input: {} } });
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: "permission:tool-no-input",
+      response: { behavior: "allow" },
+    });
+    await expect(request).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "allow-once" },
+    });
+    await connection.close();
+  });
+
   it("rejects an explicit ACP permission option with the wrong behavior", async () => {
     const harness = connectorHarness();
     const registration = runAcpProvider({

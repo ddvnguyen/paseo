@@ -1413,8 +1413,11 @@ function jsonValue(value: unknown) {
   return z.json().parse(value);
 }
 
+/** Tool input as a JSON object; absent or non-JSON input (e.g. an adapter permission request without `rawInput`) is `{}`. */
 function jsonRecord(value: unknown): Record<string, ReturnType<typeof jsonValue>> {
-  const parsed = jsonValue(value);
+  const result = z.json().safeParse(value);
+  if (!result.success) return {};
+  const parsed = result.data;
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
   return parsed;
 }
