@@ -40,6 +40,11 @@ export interface FreebuffAccount {
 
 const ACCOUNT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
+/** Same id rules as addAccount: lowercase letters/digits/`-`/`_`, not "default". */
+export function isValidAccountId(id: string): boolean {
+  return ACCOUNT_ID_PATTERN.test(id) && id !== DEFAULT_ACCOUNT_ID;
+}
+
 /** Outcome of reading accounts.json. */
 export type AccountsFileState = "missing" | "ok" | "corrupt";
 
@@ -54,12 +59,33 @@ export interface AccountsSnapshot {
   accounts: FreebuffAccount[];
 }
 
-export function accountsFilePath(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = env.FREEBUFF_ACP_ACCOUNTS_FILE?.trim();
+/**
+ * Where a named account keeps its own state (login handshake files, its own
+ * credentials). Uses the same base as accounts.json so everything the adapter
+ * writes lives under one root: XDG_CONFIG_HOME (or ~/.config) + freebuff-acp.
+ * Override the whole base with FREEBUFF_ACP_CONFIG_DIR.
+ */
+export function accountsBaseDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.FREEBUFF_ACP_CONFIG_DIR?.trim();
   if (configured && path.isAbsolute(configured)) return configured;
   const xdg = env.XDG_CONFIG_HOME?.trim();
   const base = xdg && path.isAbsolute(xdg) ? xdg : path.join(os.homedir(), ".config");
-  return path.join(base, "freebuff-acp", "accounts.json");
+  return path.join(base, "freebuff-acp");
+}
+
+/**
+ * Per-account config dir (created on demand by the login flow, holding the
+ * login-pending file and, after a successful login, that account's own
+ * credentials.json). The id must already be validated.
+ */
+export function accountConfigDir(accountId: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(accountsBaseDir(env), "accounts", accountId);
+}
+
+export function accountsFilePath(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.FREEBUFF_ACP_ACCOUNTS_FILE?.trim();
+  if (configured && path.isAbsolute(configured)) return configured;
+  return path.join(accountsBaseDir(env), "accounts.json");
 }
 
 function warn(message: string): void {
@@ -205,7 +231,7 @@ export function addAccount(
   input: { id: string; label?: string; configDir: string },
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  if (!ACCOUNT_ID_PATTERN.test(input.id) || input.id === DEFAULT_ACCOUNT_ID) {
+  if (!isValidAccountId(input.id)) {
     throw new Error(
       `Invalid account id "${input.id}": use lowercase letters, digits, - or _ (not "${DEFAULT_ACCOUNT_ID}").`,
     );

@@ -37,7 +37,12 @@ const SESSION_PATH = "/api/v1/freebuff/session";
 /** Cap for admission calls whose caller has no deadline of their own (F4). */
 const ADMISSION_TIMEOUT_MS = 15_000;
 
-function appUrl(): string {
+/**
+ * The backend base URL every adapter HTTP call shares (free-session admission,
+ * CLI device-code login). Injectable via CODEBUFF_APP_URL; the trailing slash
+ * is stripped so path concatenation is always safe.
+ */
+export function appUrl(): string {
   return (
     process.env.NEXT_PUBLIC_CODEBUFF_APP_URL ||
     process.env.CODEBUFF_APP_URL ||
