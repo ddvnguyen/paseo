@@ -80,7 +80,7 @@ import { REQUIRE_APPROVAL_META } from "./permission-meta.js";
 import { nextConversationState } from "./run-state.js";
 import { createAbortableTerminalTool } from "./terminal.js";
 import type { TurnResult } from "./turn.js";
-import { releaseIdleSeats, runTurn } from "./turn.js";
+import { runTurn } from "./turn.js";
 
 /**
  * F6 — per-turn hard timeout. A hung SDK call would otherwise wedge the
@@ -857,7 +857,10 @@ export class FreebuffAcpAgent {
     for (const session of this.sessions.values()) {
       session.abortController?.abort();
     }
-    await releaseIdleSeats();
+    // Deliberately no seat release here: another Paseo agent may have taken
+    // over the account's seat since this process opened it, and a DELETE
+    // would end a session this process no longer owns. The seat expires on
+    // its own after its hour, or is ended via the plugin's End session button.
     await this.closeAllClients();
     this.clients.clear();
     this.sessions.clear();

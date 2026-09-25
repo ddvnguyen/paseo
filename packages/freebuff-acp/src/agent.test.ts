@@ -985,7 +985,7 @@ describe("FreebuffAcpAgent", () => {
     expect(admissionCalls).toHaveLength(1);
   });
 
-  it("keeps a POST-claimed seat between turns and releases it at shutdown", async () => {
+  it("keeps a POST-claimed seat between turns and does NOT delete it at shutdown", async () => {
     let seatOpen = false;
     fetchMock.mockClear();
     fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
@@ -1032,12 +1032,298 @@ describe("FreebuffAcpAgent", () => {
     expect(conn.requestPermission).toHaveBeenCalledTimes(1);
 
     await agent.shutdown();
-    // Shutdown releases every idle seat this process kept (earlier tests may have parked some).
+    // R2: shutdown must NOT delete the seat. Another Paseo agent may have
+    // taken it over since this process opened it — a DELETE would end a
+    // session this process no longer owns. The seat expires on its own.
     const released = fetchMock.mock.calls.filter(([, init]) => {
       const headers = JSON.stringify(init?.headers ?? {});
       return init?.method === "DELETE" && headers.includes("inst-keep");
     });
-    expect(released).toHaveLength(1);
+    expect(released).toHaveLength(0);
+  });
+
+  it("two sessions share the seat but each keeps its OWN conversation context", async () => {
+    // R2: separate Paseo agents (separate adapter sessions) on one account
+    // reuse the same server-side seat, but conversation state (runState) is
+    // per session — nothing may leak through module-global state (seatRegistry,
+    // session store, client cache).
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = hrefOf(url);
+      const method = ((init?.method as string | undefined) ?? "GET").toUpperCase();
+      if (method === "POST" && href.includes("/session/admission")) {
+        return new Response(
+          JSON.stringify({
+            status: "active",
+            instanceId: "inst-shared",
+            model: "z-ai/glm-5.3-flash",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      // Probe GET /session → none so each turn POSTs (same shared instance id).
+      return new Response(JSON.stringify({ status: "none" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    // The SDK client is cached per (account, cwd): both sessions here run
+    // against the SAME client instance, which is exactly where cross-session
+    // leakage could happen if state were threaded through it.
+    const client = makeClient({ type: "success" });
+    stubClient(agent, client);
+
+    const sessionA = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const sessionB = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+
+    // Turn 1 on each session. makeClient stamps sessionState.marker with the
+    // PREVIOUS run's marker (default 1), mirroring SDK conversation advance.
+    await agent.prompt({
+      sessionId: sessionA.sessionId,
+      prompt: [{ type: "text", text: "A1" }],
+    } as never);
+    await agent.prompt({
+      sessionId: sessionB.sessionId,
+      prompt: [{ type: "text", text: "B1" }],
+    } as never);
+
+    // Turn 2 on session A: must continue from A's own turn-1 state, not B's.
+    await agent.prompt({
+      sessionId: sessionA.sessionId,
+      prompt: [{ type: "text", text: "A2" }],
+    } as never);
+    const aRuns = client.run.mock.calls
+      .map((call) => call[0] as { previousRun?: { marker?: number }; prompt?: string })
+      .filter((options) => options.prompt === "A2");
+    expect(aRuns).toHaveLength(1);
+    // The SDK continues from previousRun.sessionState — session A's own turn-1
+    // state (a bare state would start a fresh conversation).
+    expect(aRuns[0]?.previousRun).toEqual({
+      sessionState: { marker: 1 },
+      output: { type: "lastMessage", value: [] },
+    });
+
+    // The seat was reused across all three turns: every run carries the same
+    // shared instance id despite the per-turn admission POSTs.
+    const instanceIds = client.run.mock.calls.map(
+      (call) =>
+        (call[0] as { extraCodebuffMetadata?: { freebuff_instance_id?: string } })
+          .extraCodebuffMetadata?.freebuff_instance_id,
+    );
+    expect(instanceIds).toEqual(["inst-shared", "inst-shared", "inst-shared"]);
+
+    // Persisted state is per-session too: A's file never contains B's marker.
+    const env = testEnv();
+    expect(loadPersistedSession(sessionA.sessionId, env)?.runState).toEqual({ marker: 1 });
+    expect(loadPersistedSession(sessionB.sessionId, env)?.runState).toEqual({ marker: 1 });
+  });
+
+  describe("session-end gate retry (R3)", () => {
+    /** Flatten a sessionUpdate mock's captured params into update objects. */
+    const updatesOf = (conn: ReturnType<typeof makeConn>) =>
+      (conn.sessionUpdate.mock.calls as unknown as [{ update: Record<string, unknown> }][]).map(
+        ([notification]) => notification.update,
+      );
+
+    /** Texts of agent_message_chunk updates (gate notices / failure lines). */
+    const chunkTextsOf = (conn: ReturnType<typeof makeConn>): string[] =>
+      updatesOf(conn)
+        .filter((update) => update.sessionUpdate === "agent_message_chunk")
+        .map((update) => (update.content as { text?: string } | undefined)?.text ?? "");
+
+    /** First chunk text matching `needle`, or undefined. */
+    const findChunk = (conn: ReturnType<typeof makeConn>, needle: string): string | undefined =>
+      chunkTextsOf(conn).find((text) => text.includes(needle));
+
+    /** Count admission POSTs captured by fetchMock. */
+    const admissionPostCount = () =>
+      fetchMock.mock.calls.filter(([url, init]) => {
+        const href = hrefOf(url);
+        const method = ((init?.method as string | undefined) ?? "GET").toUpperCase();
+        return method === "POST" && href.includes("/session/admission");
+      }).length;
+
+    /** One line of the fetch routing table the gate tests share. */
+    type FetchRoute = (
+      url: string | URL | Request,
+      init: RequestInit | undefined,
+    ) => Response | undefined;
+
+    /** Compose routes; the first route that answers wins (like upstream). */
+    const routeFetch = (...routes: FetchRoute[]) =>
+      fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+        for (const route of routes) {
+          const response = route(url, init);
+          if (response) return response;
+        }
+        return new Response(JSON.stringify({ status: "none" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      });
+
+    const methodOf = (init: RequestInit | undefined) =>
+      ((init?.method as string | undefined) ?? "GET").toUpperCase();
+
+    const admissionActive = (instanceId: string): Response =>
+      new Response(JSON.stringify({ status: "active", instanceId, model: "z-ai/glm-5.3-flash" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+
+    const seatProbe = (body: Record<string, unknown>): Response =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+
+    const isAdmissionPost = (url: string | URL | Request, init: RequestInit | undefined) =>
+      methodOf(init) === "POST" && hrefOf(url).includes("/session/admission");
+
+    const isSeatGet = (url: string | URL | Request, init: RequestInit | undefined) =>
+      methodOf(init) === "GET" && hrefOf(url).includes("/api/v1/freebuff/session");
+
+    /**
+     * Client whose run N fails with `error(statusCode)` exactly once, then
+     * (on retry) succeeds, echoing the instance id it ran against.
+     */
+    function gateClient(failures: Array<{ error: string; statusCode: number }>) {
+      let call = 0;
+      return {
+        run: vi.fn(async (options: Record<string, unknown>) => {
+          call += 1;
+          const failure = failures[call - 1];
+          if (failure) {
+            return {
+              sessionState: { ran: call },
+              output: {
+                type: "error",
+                message: `Agent run error: {"error":"${failure.error}","statusCode":${failure.statusCode},"message":"gate"}`,
+              },
+            };
+          }
+          const handleEvent = options.handleEvent as ((event: unknown) => void) | undefined;
+          handleEvent?.({ type: "text", text: "recovered" });
+          return {
+            sessionState: {
+              ran: call,
+              onInstance: (
+                options.extraCodebuffMetadata as { freebuff_instance_id?: string } | undefined
+              )?.freebuff_instance_id,
+            },
+            output: { type: "success" },
+          };
+        }),
+      };
+    }
+
+    it("re-admits and retries the same prompt after session_expired, keeping the conversation", async () => {
+      // Probe: seat initially dead (none); after the gate failure the POST
+      // opens a fresh seat — assert the retry ran on the NEW instance id.
+      let postCount = 0;
+      fetchMock.mockClear();
+      const admitNewSeat: FetchRoute = (url, init) => {
+        if (!isAdmissionPost(url, init)) return undefined;
+        postCount += 1;
+        return admissionActive(`inst-new-${postCount}`);
+      };
+      routeFetch(admitNewSeat);
+
+      const conn = makeConn();
+      const agent = new FreebuffAcpAgent(conn, testEnv());
+      const client = gateClient([{ error: "session_expired", statusCode: 410 }]);
+      stubClient(agent, client as unknown as ReturnType<typeof makeClient>);
+
+      const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+      const response = await agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "hi" }],
+      } as never);
+
+      expect(response.stopReason).toBe("end_turn");
+      // The run was retried once, against the NEW seat, with the same prompt.
+      expect(client.run).toHaveBeenCalledTimes(2);
+      const first = client.run.mock.calls[0]?.[0] as Record<string, unknown>;
+      const second = client.run.mock.calls[1]?.[0] as Record<string, unknown>;
+      expect(first.prompt).toBe("hi");
+      expect(second.prompt).toBe("hi");
+      expect(first.extraCodebuffMetadata).toEqual({ freebuff_instance_id: "inst-new-1" });
+      expect(second.extraCodebuffMetadata).toEqual({ freebuff_instance_id: "inst-new-2" });
+      // Exactly one notice, not an "free session has ended" failure.
+      const chunkTexts = chunkTextsOf(conn);
+      expect(chunkTexts).toContain("Freebuff session ended; reopened and continuing.");
+      expect(chunkTexts.join("\n")).not.toMatch(/session_expired/i);
+      // Two admissions total: original + transparent re-admit.
+      expect(postCount).toBe(2);
+    });
+
+    it("re-admits after session_superseded and reuses the live seat another agent opened", async () => {
+      // The dead seat's POST would succeed; the re-admission probe must find
+      // the OTHER agent's live seat (inst-other) and reuse it without POSTing.
+      // NOTE: the status refresh after the turn also GETs /session, so the
+      // probe response is keyed on admission POSTs seen, not call order.
+      let admitted = false;
+      fetchMock.mockClear();
+      const admitMine: FetchRoute = (url, init) => {
+        if (!isAdmissionPost(url, init)) return undefined;
+        admitted = true;
+        return admissionActive("inst-mine");
+      };
+      const probeOtherSeat: FetchRoute = (url, init) => {
+        if (!isSeatGet(url, init)) return undefined;
+        // After the gate failure: another agent holds a live seat.
+        return seatProbe(
+          admitted
+            ? { status: "active", instanceId: "inst-other", model: "z-ai/glm-5.3-flash" }
+            : { status: "none" },
+        );
+      };
+      routeFetch(admitMine, probeOtherSeat);
+
+      const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+      const client = gateClient([{ error: "session_superseded", statusCode: 409 }]);
+      stubClient(agent, client as unknown as ReturnType<typeof makeClient>);
+
+      const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+      const response = await agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "hi" }],
+      } as never);
+
+      expect(response.stopReason).toBe("end_turn");
+      expect(client.run).toHaveBeenCalledTimes(2);
+      const second = client.run.mock.calls[1]?.[0] as Record<string, unknown>;
+      // Retry ran on the seat the other agent holds — reused, not superseded.
+      expect(second.extraCodebuffMetadata).toEqual({ freebuff_instance_id: "inst-other" });
+      // Reuse path: only ONE admission POST in the whole turn.
+      expect(admissionPostCount()).toBe(1);
+    });
+
+    it("reports the failure normally when the retried run hits the gate again", async () => {
+      const gate = { error: "session_expired", statusCode: 410 };
+      fetchMock.mockClear();
+      const admitFixedSeat: FetchRoute = (url, init) =>
+        isAdmissionPost(url, init) ? admissionActive("inst-x") : undefined;
+      routeFetch(admitFixedSeat);
+
+      const conn = makeConn();
+      const agent = new FreebuffAcpAgent(conn, testEnv());
+      const client = gateClient([gate, gate]);
+      stubClient(agent, client as unknown as ReturnType<typeof makeClient>);
+
+      const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+      const response = await agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "hi" }],
+      } as never);
+
+      // Retry also failed: the failure surfaces normally (no silent success).
+      expect(response.stopReason).toBe("refusal");
+      expect(client.run).toHaveBeenCalledTimes(2);
+      expect(findChunk(conn, "Freebuff run failed")).toBeTruthy();
+    });
   });
 
   it("hard-fails on an admitted model with no matching root agent, releasing a POST-claimed slot", async () => {

@@ -189,6 +189,61 @@ function describeRunError(output: unknown): string {
   return typeof message === "string" && message.trim() ? message.trim() : "unknown error";
 }
 
+/**
+ * The Freebuff gate codes that END the session (upstream
+ * `FREEBUFF_GATE_CODES` with `endsTheSession: true`): the account's seat is
+ * gone or unusable for this run. `session_limit_reached` (409),
+ * `waiting_room_queued` (429) and `model_unavailable` (410) deliberately do
+ * NOT end the session, so they must never trigger a re-admission here.
+ */
+export const SESSION_END_GATE_CODES = {
+  waiting_room_required: 428,
+  session_expired: 410,
+  session_superseded: 409,
+  session_model_mismatch: 409,
+} as const;
+
+export type SessionEndGateCode = keyof typeof SESSION_END_GATE_CODES;
+
+/**
+ * Extract the upstream gate rejection from a finished run's output, matching
+ * code AND status (mirrors upstream `getFreebuffGateCode`). The relayed gate
+ * error surfaces in two places depending on SDK build: top-level
+ * `output.error` + `output.statusCode`, or embedded in the error `message`
+ * as a JSON payload `{"error":code,"statusCode":N}`.
+ */
+export function gateCodeFromRunState(runState: {
+  output?: { type?: string; error?: unknown; statusCode?: unknown; message?: unknown } | null;
+}): SessionEndGateCode | null {
+  const output = runState.output;
+  if (!output || typeof output !== "object") return null;
+  const candidates: Array<{ error?: unknown; statusCode?: unknown }> = [
+    { error: output.error, statusCode: output.statusCode },
+  ];
+  if (typeof output.message === "string") {
+    const start = output.message.indexOf("{");
+    const end = output.message.lastIndexOf("}");
+    if (start !== -1 && end > start) {
+      try {
+        const parsed: unknown = JSON.parse(output.message.slice(start, end + 1));
+        if (parsed && typeof parsed === "object") {
+          const body = parsed as { error?: unknown; statusCode?: unknown };
+          candidates.push({ error: body.error, statusCode: body.statusCode });
+        }
+      } catch {
+        // Not a JSON payload; no embedded gate error.
+      }
+    }
+  }
+  for (const candidate of candidates) {
+    const code = candidate.error;
+    if (typeof code !== "string" || !Object.hasOwn(SESSION_END_GATE_CODES, code)) continue;
+    const expected = SESSION_END_GATE_CODES[code as SessionEndGateCode];
+    if (candidate.statusCode === expected) return code as SessionEndGateCode;
+  }
+  return null;
+}
+
 /** Map a finished run's state to a TurnResult (run error → refusal, cancel honored). */
 function turnResultFromRunState(runState: RunState, cancelled: boolean): TurnResult {
   const sessionState = (runState.sessionState ?? null) as Record<string, unknown> | null;
@@ -461,8 +516,10 @@ function reportRunError(runState: RunState, stopped: boolean, emit: SessionUpdat
  * `keepSeat`: a seat that just served a real run stays open (valid for an
  * hour, 5 Freebucks to open) so the next prompt reuses it instead of asking
  * to open — and pay for — another one. It is parked as an idle claimed seat
- * (recovery holder) that the next turn re-adopts and `releaseIdleSeats`
- * deletes at shutdown.
+ * (recovery holder) that the next turn re-adopts. Nothing releases it at
+ * shutdown: another agent may have taken the seat over in the meantime, and
+ * a DELETE could end a session this process no longer owns. The seat simply
+ * expires after its hour, or is ended via the plugin's End session button.
  */
 async function releaseAdmittedSeat(
   token: string,
@@ -489,31 +546,146 @@ async function releaseAdmittedSeat(
   });
 }
 
+interface AdmittedTurnContext {
+  seatHolder: symbol;
+  turnStats: { creditsUsed: number };
+  /** True once the caller's abort signal fired (cancel wins over gate retry). */
+  stopped(): boolean;
+  /** False on the final attempt: a gate failure there is reported normally. */
+  allowGateRetry: boolean;
+}
+
+type AdmittedTurnOutcome = { retryAfterGate: false; result: TurnResult } | { retryAfterGate: true };
+
 /**
- * Release every seat this process opened and kept idle between turns.
- * Called from the adapter's shutdown so a closed agent does not leave a
- * paid session held for the rest of its hour. Best-effort: the server also
- * expires seats on its own.
+ * One admission + run attempt. On a session-end gate rejection
+ * (`endsTheSession` codes: seat expired / superseded / model mismatch /
+ * waiting room) the seat is worthless — release the registry record and ask
+ * the caller to re-admit and retry the same prompt once.
  */
-export async function releaseIdleSeats(): Promise<void> {
-  const idle = [...seatRegistry.entries()].filter(
-    ([, record]) => record.state === "claimed" && record.holder === SEAT_RECOVERY_HOLDER,
-  );
-  await Promise.all(
-    idle.map(async ([instanceId, record]) => {
-      seatRegistry.delete(instanceId);
-      if (!record.token) return;
-      try {
-        await releaseFreebuffSession({
-          token: record.token,
-          instanceId,
-          signal: AbortSignal.timeout(RELEASE_TIMEOUT_MS),
-        });
-      } catch {
-        // Best-effort: the server expires seats on its own.
+async function runAdmittedTurn(
+  options: RunTurnOptions,
+  emit: SessionUpdateEmitter,
+  handleEvent: (event: PrintModeEvent) => void,
+  handleStreamChunk: unknown,
+  context: AdmittedTurnContext,
+): Promise<AdmittedTurnOutcome> {
+  const {
+    client,
+    cwd,
+    prompt,
+    content,
+    previousRun,
+    signal,
+    token,
+    model,
+    mcpServers,
+    confirmSessionOpen,
+    confirmModelSwitch,
+  } = options;
+
+  // The CLI's free-mode protocol: hold a session slot BEFORE running.
+  // Without the admitted instanceId the backend answers with
+  // `waiting_room_required` even when a slot was available.
+  const admission = await admitFreebuffSession({
+    token,
+    model,
+    signal,
+    confirmOpen: confirmSessionOpen,
+    confirmSwitch: confirmModelSwitch,
+  });
+  if (!admission.ok) {
+    return {
+      retryAfterGate: false,
+      result: await admissionFailure(admission, previousRun, emit, token, signal),
+    };
+  }
+
+  // F2 — atomic adopt: re-check the registry and mark the seat as ours in
+  // one synchronous step so two concurrent turns can never both adopt (or
+  // release) the same seat.
+  const adoption = adoptAdmittedSeatAtomically(admission, context.seatHolder, token);
+  if (!adoption.adopt) {
+    return {
+      retryAfterGate: false,
+      result: seatConflictRefusal(admission, adoption.conflict, emit, previousRun),
+    };
+  }
+
+  let seatServedRun = false;
+  try {
+    // Adopt the open slot's model when admission reuses an existing free
+    // session (catalog models differ per slot). Root agent id must match
+    // that model or the backend rejects the run with model mismatch.
+    const { runModel, agentId } = resolveAdmittedAgent(admission.model, model);
+    if (!agentId) {
+      // The model is baked into the static AgentDefinition (client.run()
+      // has no separate model field) — silently falling back to the GLM
+      // root would run against a slot locked to a different model. Refuse
+      // inside this try so the finally below still releases a slot we
+      // POST-claimed, exactly like the admission-failure path.
+      return {
+        retryAfterGate: false,
+        result: missingAgentRefusal(runModel, emit, previousRun),
+      };
+    }
+
+    const agentDefinitions = attachMcpServers(mcpServers);
+
+    seatServedRun = true;
+    const run = client.run({
+      agent: agentId,
+      agentDefinitions,
+      prompt,
+      ...(content && content.length > 0 ? { content } : {}),
+      cwd,
+      // 'free' = 0 credits charged for allowlisted Freebuff agents.
+      costMode: "free",
+      handleEvent,
+      handleStreamChunk,
+      // Per-run option of the fork SDK (no process-global state).
+      extraCodebuffMetadata: process.env.FREEBUFF_DISABLE_ADMISSION
+        ? {}
+        : { freebuff_instance_id: admission.instanceId },
+      ...(previousRun ? { previousRun: toPreviousRun(previousRun) as unknown as RunState } : {}),
+      signal,
+    } as Parameters<CodebuffClient["run"]>[0]);
+
+    const runState = await awaitRunOrAbort(run, signal);
+    if (!runState) {
+      // Stopped and the SDK did not unwind in time (e.g. a tool that ignores
+      // the signal): settle now with the pre-turn conversation state.
+      return {
+        retryAfterGate: false,
+        result: { stopReason: "cancelled", runState: previousRun },
+      };
+    }
+    const stopped = context.stopped();
+    if (!stopped && runState.output?.type === "error") {
+      const gateCode = gateCodeFromRunState(runState);
+      if (gateCode) {
+        // R3: the seat is gone (expired, superseded by another agent, or
+        // ended from the plugin UI). Never surface "free session has ended":
+        // drop the registry record (the seat is dead regardless of who held
+        // it) and re-admit — the caller retries the same prompt once.
+        seatRegistry.delete(admission.instanceId);
+        if (context.allowGateRetry) return { retryAfterGate: true };
+        // Last attempt also hit the gate: fall through and report the
+        // failure normally instead of retrying forever.
       }
-    }),
-  );
+    }
+    reportRunError(runState, stopped, emit);
+    return {
+      retryAfterGate: false,
+      result: {
+        ...turnResultFromRunState(runState, stopped),
+        admittedModel: runModel,
+        creditsUsed: context.turnStats.creditsUsed,
+      },
+    };
+  } finally {
+    await releaseAdmittedSeat(token, admission, context.seatHolder, seatServedRun);
+  }
 }
 
 /**
@@ -524,20 +696,7 @@ export async function releaseIdleSeats(): Promise<void> {
  * continue the same conversation.
  */
 export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
-  const {
-    client,
-    cwd,
-    prompt,
-    content,
-    previousRun,
-    signal,
-    emit: rawEmit,
-    token,
-    model,
-    mcpServers,
-    confirmSessionOpen,
-    confirmModelSwitch,
-  } = options;
+  const { cwd, previousRun, signal, emit: rawEmit } = options;
 
   // A stopped turn must go quiet: an orphaned run may still stream events
   // after the host has already been told the turn was cancelled.
@@ -593,79 +752,31 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
   const seatHolder = Symbol("freebuff-seat-holder");
 
   try {
-    // The CLI's free-mode protocol: hold a session slot BEFORE running.
-    // Without the admitted instanceId the backend answers with
-    // `waiting_room_required` even when a slot was available.
-    const admission = await admitFreebuffSession({
-      token,
-      model,
-      signal,
-      confirmOpen: confirmSessionOpen,
-      confirmSwitch: confirmModelSwitch,
-    });
-    if (!admission.ok) {
-      return admissionFailure(admission, previousRun, emit, token, signal);
-    }
-
-    // F2 — atomic adopt: re-check the registry and mark the seat as ours in
-    // one synchronous step so two concurrent turns can never both adopt (or
-    // release) the same seat.
-    const adoption = adoptAdmittedSeatAtomically(admission, seatHolder, token);
-    if (!adoption.adopt) {
-      return seatConflictRefusal(admission, adoption.conflict, emit, previousRun);
-    }
-
-    let seatServedRun = false;
-    try {
-      // Adopt the open slot's model when admission reuses an existing free
-      // session (catalog models differ per slot). Root agent id must match
-      // that model or the backend rejects the run with model mismatch.
-      const { runModel, agentId } = resolveAdmittedAgent(admission.model, model);
-      if (!agentId) {
-        // The model is baked into the static AgentDefinition (client.run()
-        // has no separate model field) — silently falling back to the GLM
-        // root would run against a slot locked to a different model. Refuse
-        // inside this try so the finally below still releases a slot we
-        // POST-claimed, exactly like the admission-failure path.
-        return missingAgentRefusal(runModel, emit, previousRun);
+    // Up to two attempts: the first run can be rejected by a session gate
+    // (expired / superseded / model mismatch / waiting room) because the
+    // account's seat died mid-session. Like upstream, forget the dead window
+    // and re-admit through the normal path, then retry the SAME prompt once
+    // with the same previousRun so the conversation continues.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (attempt > 0) {
+        emit({
+          sessionUpdate: "agent_message_chunk",
+          content: {
+            type: "text",
+            text: "Freebuff session ended; reopened and continuing.",
+          },
+        });
       }
-
-      const agentDefinitions = attachMcpServers(mcpServers);
-
-      seatServedRun = true;
-      const run = client.run({
-        agent: agentId,
-        agentDefinitions,
-        prompt,
-        ...(content && content.length > 0 ? { content } : {}),
-        cwd,
-        // 'free' = 0 credits charged for allowlisted Freebuff agents.
-        costMode: "free",
-        handleEvent,
-        handleStreamChunk,
-        // Per-run option of the fork SDK (no process-global state).
-        extraCodebuffMetadata: process.env.FREEBUFF_DISABLE_ADMISSION
-          ? {}
-          : { freebuff_instance_id: admission.instanceId },
-        ...(previousRun ? { previousRun: toPreviousRun(previousRun) as unknown as RunState } : {}),
-        signal,
-      } as Parameters<CodebuffClient["run"]>[0]);
-
-      const runState = await awaitRunOrAbort(run, signal);
-      if (!runState) {
-        // Stopped and the SDK did not unwind in time (e.g. a tool that ignores
-        // the signal): settle now with the pre-turn conversation state.
-        return { stopReason: "cancelled", runState: previousRun };
-      }
-      reportRunError(runState, cancelled || signal.aborted, emit);
-      return {
-        ...turnResultFromRunState(runState, cancelled || signal.aborted),
-        admittedModel: runModel,
-        creditsUsed: turnStats.creditsUsed,
-      };
-    } finally {
-      await releaseAdmittedSeat(token, admission, seatHolder, seatServedRun);
+      const turn = await runAdmittedTurn(options, emit, handleEvent, handleStreamChunk, {
+        seatHolder,
+        turnStats,
+        stopped: () => cancelled || signal.aborted,
+        allowGateRetry: attempt === 0,
+      });
+      if (!turn.retryAfterGate) return turn.result;
     }
+    // Unreachable: only the first attempt may request a gate retry.
+    throw new Error("unreachable: gate retry loop exhausted");
   } catch (error) {
     if (signal.aborted || cancelled) {
       return { stopReason: "cancelled", runState: previousRun };
