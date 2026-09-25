@@ -1,6 +1,7 @@
 import type { ModelInfo, SessionConfigOption } from "@agentclientprotocol/sdk";
 
 import { probeOpenSession } from "./freebuff-session.js";
+import type { FreebuffSessionServerResponse } from "./types.js";
 
 /**
  * Account identity + quota, surfaced to the host as ACP session config
@@ -29,6 +30,13 @@ const STATUS_TIMEOUT_MS = 4000;
 /** Quota/prices from the server; null when it cannot be reached in time. */
 export async function fetchAccountStatus(token: string): Promise<AccountStatus | null> {
   const probe = await probeOpenSession(token, AbortSignal.timeout(STATUS_TIMEOUT_MS));
+  return accountStatusFromProbe(probe);
+}
+
+/** Quota/prices out of a seat-probe response; null when it carries no Freebucks block. */
+export function accountStatusFromProbe(
+  probe: FreebuffSessionServerResponse | null,
+): AccountStatus | null {
   const freebucks = probe?.freebucks;
   if (!freebucks) return null;
   return {
