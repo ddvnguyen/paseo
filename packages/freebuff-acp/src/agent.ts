@@ -80,7 +80,7 @@ import { REQUIRE_APPROVAL_META } from "./permission-meta.js";
 import { nextConversationState } from "./run-state.js";
 import { createAbortableTerminalTool } from "./terminal.js";
 import type { TurnResult } from "./turn.js";
-import { runTurn } from "./turn.js";
+import { releaseIdleSeats, runTurn } from "./turn.js";
 
 /**
  * F6 — per-turn hard timeout. A hung SDK call would otherwise wedge the
@@ -857,6 +857,7 @@ export class FreebuffAcpAgent {
     for (const session of this.sessions.values()) {
       session.abortController?.abort();
     }
+    await releaseIdleSeats();
     await this.closeAllClients();
     this.clients.clear();
     this.sessions.clear();

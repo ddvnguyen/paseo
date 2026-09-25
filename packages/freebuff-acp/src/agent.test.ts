@@ -985,6 +985,61 @@ describe("FreebuffAcpAgent", () => {
     expect(admissionCalls).toHaveLength(1);
   });
 
+  it("keeps a POST-claimed seat between turns and releases it at shutdown", async () => {
+    let seatOpen = false;
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = hrefOf(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && href.includes("/session/admission")) {
+        seatOpen = true;
+      } else if (method === "DELETE") {
+        seatOpen = false;
+        return new Response(JSON.stringify({ status: "ended" }), { status: 200 });
+      }
+      const body = seatOpen
+        ? { status: "active", instanceId: "inst-keep", model: "z-ai/glm-5.3-flash" }
+        : { status: "none" };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const conn = makeConn();
+    const agent = new FreebuffAcpAgent(conn, testEnv());
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const promptOnce = () =>
+      agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "hi" }],
+      } as never);
+    const callsOf = (wanted: string) =>
+      fetchMock.mock.calls.filter(([, init]) => {
+        const method = typeof init?.method === "string" ? init.method.toUpperCase() : "GET";
+        return method === wanted;
+      }).length;
+
+    expect((await promptOnce()).stopReason).toBe("end_turn");
+    expect(callsOf("POST")).toBe(1);
+    expect(callsOf("DELETE")).toBe(0);
+
+    expect((await promptOnce()).stopReason).toBe("end_turn");
+    // The second prompt reuses the open seat: no second POST, no new open prompt.
+    expect(callsOf("POST")).toBe(1);
+    expect(callsOf("DELETE")).toBe(0);
+    expect(conn.requestPermission).toHaveBeenCalledTimes(1);
+
+    await agent.shutdown();
+    // Shutdown releases every idle seat this process kept (earlier tests may have parked some).
+    const released = fetchMock.mock.calls.filter(([, init]) => {
+      const headers = JSON.stringify(init?.headers ?? {});
+      return init?.method === "DELETE" && headers.includes("inst-keep");
+    });
+    expect(released).toHaveLength(1);
+  });
+
   it("hard-fails on an admitted model with no matching root agent, releasing a POST-claimed slot", async () => {
     fetchMock.mockImplementation(async (url: string | URL | Request) => {
       const href = hrefOf(url);

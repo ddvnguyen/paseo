@@ -265,6 +265,8 @@ interface SeatRecord {
   state: "claimed" | "adopted";
   /** The turn (lane) currently holding the seat, for adopt/release symmetry. */
   holder: symbol;
+  /** Kept for claimed seats so an idle one can be released at shutdown. */
+  token?: string;
 }
 
 const seatRegistry = new Map<string, SeatRecord>();
@@ -285,9 +287,10 @@ function releaseSeat(instanceId: string, holder: symbol): void {
 function adoptAdmittedSeatAtomically(
   admission: { instanceId: string; reused: boolean },
   holder: symbol,
+  token: string,
 ): { adopt: boolean; conflict?: string } {
   if (!admission.reused) {
-    seatRegistry.set(admission.instanceId, { state: "claimed", holder });
+    seatRegistry.set(admission.instanceId, { state: "claimed", holder, token });
     return { adopt: true };
   }
   const record = seatRegistry.get(admission.instanceId);
@@ -300,7 +303,7 @@ function adoptAdmittedSeatAtomically(
   if (record.state === "claimed" && record.holder === SEAT_RECOVERY_HOLDER) {
     // F3: orphaned seat from a lost POST response — take it over so this
     // turn's release path deletes it when done.
-    seatRegistry.set(admission.instanceId, { state: "claimed", holder });
+    seatRegistry.set(admission.instanceId, { state: "claimed", holder, token });
     return { adopt: true };
   }
   return {
@@ -324,7 +327,11 @@ async function recoverOrphanedSeat(token: string, signal: AbortSignal): Promise<
     const { probe } = await probeSessionSeat(token, signal);
     if (probe?.status === "active" && probe.instanceId && !seatRegistry.has(probe.instanceId)) {
       // Nothing here held it before: it came from the lost POST — ours to clean up.
-      seatRegistry.set(probe.instanceId, { state: "claimed", holder: SEAT_RECOVERY_HOLDER });
+      seatRegistry.set(probe.instanceId, {
+        state: "claimed",
+        holder: SEAT_RECOVERY_HOLDER,
+        token,
+      });
     }
   } catch {
     // Best-effort: the server expires seats on their own.
@@ -450,14 +457,29 @@ function reportRunError(runState: RunState, stopped: boolean, emit: SessionUpdat
  * slot and re-block the next prompt. Awaited so the DELETE completes before
  * the lane starts the next queued turn — keeps the next turn's GET probe
  * deterministic instead of racing this turn's release.
+ *
+ * `keepSeat`: a seat that just served a real run stays open (valid for an
+ * hour, 5 Freebucks to open) so the next prompt reuses it instead of asking
+ * to open — and pay for — another one. It is parked as an idle claimed seat
+ * (recovery holder) that the next turn re-adopts and `releaseIdleSeats`
+ * deletes at shutdown.
  */
 async function releaseAdmittedSeat(
   token: string,
   admission: { instanceId: string },
   holder: symbol,
+  keepSeat: boolean,
 ): Promise<void> {
   const record = seatRegistry.get(admission.instanceId);
   if (record?.holder !== holder) return;
+  if (record.state === "claimed" && keepSeat) {
+    seatRegistry.set(admission.instanceId, {
+      state: "claimed",
+      holder: SEAT_RECOVERY_HOLDER,
+      token,
+    });
+    return;
+  }
   releaseSeat(admission.instanceId, holder);
   if (record.state !== "claimed") return;
   await releaseFreebuffSession({
@@ -465,6 +487,33 @@ async function releaseAdmittedSeat(
     instanceId: admission.instanceId,
     signal: AbortSignal.timeout(RELEASE_TIMEOUT_MS),
   });
+}
+
+/**
+ * Release every seat this process opened and kept idle between turns.
+ * Called from the adapter's shutdown so a closed agent does not leave a
+ * paid session held for the rest of its hour. Best-effort: the server also
+ * expires seats on its own.
+ */
+export async function releaseIdleSeats(): Promise<void> {
+  const idle = [...seatRegistry.entries()].filter(
+    ([, record]) => record.state === "claimed" && record.holder === SEAT_RECOVERY_HOLDER,
+  );
+  await Promise.all(
+    idle.map(async ([instanceId, record]) => {
+      seatRegistry.delete(instanceId);
+      if (!record.token) return;
+      try {
+        await releaseFreebuffSession({
+          token: record.token,
+          instanceId,
+          signal: AbortSignal.timeout(RELEASE_TIMEOUT_MS),
+        });
+      } catch {
+        // Best-effort: the server expires seats on its own.
+      }
+    }),
+  );
 }
 
 /**
@@ -561,11 +610,12 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
     // F2 — atomic adopt: re-check the registry and mark the seat as ours in
     // one synchronous step so two concurrent turns can never both adopt (or
     // release) the same seat.
-    const adoption = adoptAdmittedSeatAtomically(admission, seatHolder);
+    const adoption = adoptAdmittedSeatAtomically(admission, seatHolder, token);
     if (!adoption.adopt) {
       return seatConflictRefusal(admission, adoption.conflict, emit, previousRun);
     }
 
+    let seatServedRun = false;
     try {
       // Adopt the open slot's model when admission reuses an existing free
       // session (catalog models differ per slot). Root agent id must match
@@ -582,6 +632,7 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
 
       const agentDefinitions = attachMcpServers(mcpServers);
 
+      seatServedRun = true;
       const run = client.run({
         agent: agentId,
         agentDefinitions,
@@ -613,7 +664,7 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
         creditsUsed: turnStats.creditsUsed,
       };
     } finally {
-      await releaseAdmittedSeat(token, admission, seatHolder);
+      await releaseAdmittedSeat(token, admission, seatHolder, seatServedRun);
     }
   } catch (error) {
     if (signal.aborted || cancelled) {
