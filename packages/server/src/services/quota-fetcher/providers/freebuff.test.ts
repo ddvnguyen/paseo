@@ -51,9 +51,14 @@ describe("FreebuffQuotaProvider", () => {
     );
   });
 
-  it("is unavailable with the error when the adapter CLI fails", async () => {
-    const usage = await provider(new Error("boom")).fetchUsage();
-    expect(usage).toMatchObject({ status: "error", error: "boom", windows: [] });
+  it("is unavailable with a generic error and never forwards the CLI's raw failure text", async () => {
+    const usage = await provider(new Error("Command failed: secret-stderr")).fetchUsage();
+    expect(usage).toMatchObject({
+      status: "error",
+      error: "Freebuff status unavailable",
+      windows: [],
+    });
+    expect(JSON.stringify(usage)).not.toContain("secret-stderr");
   });
 
   it("is unavailable when the adapter is not deployed", async () => {

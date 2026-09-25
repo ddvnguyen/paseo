@@ -102,7 +102,7 @@ function reportDetails(report: StatusReport): ProviderUsageDetail[] {
         value: "Not logged in",
         tone: "warning",
       });
-    } else if (account.status?.walletBalance) {
+    } else if (account.status?.walletBalance != null) {
       details.push({
         id: `account_${account.id}_wallet`,
         label: `${account.label} wallet`,
@@ -169,7 +169,10 @@ export class FreebuffQuotaProvider implements ProviderUsageFetcher {
       this.logger.debug({ err: error }, "Freebuff status fetch failed");
       return unavailableUsage({
         ...this,
-        error: error instanceof Error ? error.message : String(error),
+        // Never forward the raw error: execFile failures embed the child's
+        // stderr and parse errors embed fragments of its output. Details stay
+        // in the debug log above.
+        error: "Freebuff status unavailable",
       });
     }
 
