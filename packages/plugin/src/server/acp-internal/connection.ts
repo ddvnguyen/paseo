@@ -482,6 +482,12 @@ class AcpRuntime {
     };
     let response: Pick<NewSessionResponse, "modes" | "configOptions">;
     if (nativeSessionId) {
+      // Adopt the id BEFORE the load call: agents replay history notifications
+      // (session/update) before answering session/load, and sessionUpdate()
+      // drops notifications for any session other than nativeSessionId.
+      // Adopting late silently discarded the whole replayed history, which
+      // blanked the timeline on every resume after a daemon restart.
+      this.nativeSessionId = nativeSessionId;
       response = await this.call(
         this.connection.loadSession({
           sessionId: nativeSessionId,
@@ -490,7 +496,6 @@ class AcpRuntime {
           _meta: metadata,
         }),
       );
-      this.nativeSessionId = nativeSessionId;
     } else {
       const newSession = await this.call(
         this.connection.newSession({
@@ -505,6 +510,13 @@ class AcpRuntime {
     this.modes = response.modes;
     this.configOptions = response.configOptions ?? [];
     await this.applyInitialConfig(input.config);
+    // `session/load` resumes replay notifications (history) BEFORE its
+    // response, but they travel through the serialized notification lane,
+    // not the response path. Drain the lane before signaling ready so the
+    // host sees the full replayed history when it starts reading the
+    // session — otherwise hydration can observe an empty history and
+    // render the conversation as blank.
+    await this.drainNotifications();
     const sessionCapabilities = connectionCapabilities.filter(
       (capability) =>
         capability !== "session.configure" ||

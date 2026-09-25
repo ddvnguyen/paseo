@@ -4229,6 +4229,18 @@ export class AgentManager {
     this.emitState(agent);
   }
 
+  /**
+   * Fail-soft hydration guard: a replay with no events must never wipe a
+   * non-empty committed timeline (owner rule: history is always shown).
+   */
+  private isEmptyReplayAgainstCommittedTimeline(agentId: string, replayedEvents: number): boolean {
+    return (
+      replayedEvents === 0 &&
+      this.timelineStore.has(agentId) &&
+      this.timelineStore.getRows(agentId).length > 0
+    );
+  }
+
   private async primeTimelineFromLegacyProviderHistory(
     agent: ActiveManagedAgent,
     broadcast: boolean | (() => boolean),
@@ -4258,6 +4270,19 @@ export class AgentManager {
     } catch (error) {
       this.logger.warn({ err: error, agentId: agent.id }, "Failed to hydrate provider history");
       throw error;
+    }
+
+    // Fail-soft: a replay that yields nothing against an agent whose committed
+    // timeline is non-empty is a broken replay (e.g. a plugin provider race),
+    // not an empty conversation. Deleting the rows here would blank the chat
+    // while the provider still holds the history. Keep the committed timeline,
+    // leave historyPrimed false so the next open retries hydration, and warn.
+    if (this.isEmptyReplayAgainstCommittedTimeline(agent.id, historyEvents.length)) {
+      this.logger.warn(
+        { agentId: agent.id, provider: agent.provider },
+        "Provider history replay returned no events for an agent with a committed timeline; keeping the existing timeline",
+      );
+      return;
     }
 
     // The replay is the timeline, so drop the rows a previous hydration committed.

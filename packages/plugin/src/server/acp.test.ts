@@ -693,6 +693,58 @@ describe("runAcpProvider", () => {
     await connection.close();
   });
 
+  it("delivers replayed history before session/open resolves on resume", async () => {
+    // Regression: a `session/load` that streams history notifications before
+    // its response used to race the host — session.ready fired before the
+    // notification lane drained, so the host hydrated an empty timeline and
+    // rendered the conversation blank after a daemon restart.
+    const harness = connectorHarness({
+      capabilities: { loadSession: true },
+      handleMessage(instance, message) {
+        if (!("method" in message) || message.method !== "session/load") return false;
+        const request = message as AcpRequestMessage;
+        // Replay first (like freebuff-acp does), then answer the load.
+        instance.notify("session/update", {
+          sessionId: "connector-session",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "replayed" },
+          },
+        });
+        instance.respond(request, {
+          sessionId: "connector-session",
+          modes: null,
+          configOptions: [],
+        });
+        return true;
+      },
+    });
+    const registration = runAcpProvider({
+      id: "replay-acp",
+      label: "Replay ACP",
+      connector: harness.connector,
+    });
+    const connection = await registration.connect({
+      versions: [1],
+      capabilities: ["prompt.message", "session.persistence"],
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    const open = connection.send({
+      ...openInput(),
+      persistence: { version: 1, data: { sessionId: "connector-session" } },
+    });
+    await open;
+    // The open promise resolves only after session.ready, which must now be
+    // behind the drained replay notification.
+    await waitForEvent(events, (event) => event.type === "session.ready");
+    const replayed = events.find(
+      (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
+    );
+    expect(replayed).toBeTruthy();
+    await connection.close();
+  });
+
   it("does not claim exact permission policy, listing, image, or configuration support", async () => {
     const executable = await fakeAcp(basicAgent);
     const { connection, events } = await connect(executable, [

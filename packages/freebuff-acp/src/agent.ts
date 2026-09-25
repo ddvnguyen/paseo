@@ -357,13 +357,29 @@ export class FreebuffAcpAgent {
     );
     // Paseo keeps its timeline in memory and refills it from this replay after
     // a daemon restart. Awaited so the host has the full history before it
-    // reads the load response.
+    // reads the load response. A failed delivery is logged, never swallowed
+    // silently: dropped history looks like an empty chat to the user.
+    let delivered = 0;
+    let failed = 0;
     for (const update of runStateToReplayUpdates(session.runState)) {
-      await this.conn
-        .sessionUpdate({ sessionId: session.id, update } as unknown as SessionNotification)
-        .catch(() => {
-          // Replay is best-effort; the restored RunState still carries context.
-        });
+      try {
+        await this.conn.sessionUpdate({
+          sessionId: session.id,
+          update,
+        } as unknown as SessionNotification);
+        delivered += 1;
+      } catch (error) {
+        failed += 1;
+        logWarn(
+          `history replay to ${session.id} failed for update ${delivered + failed}: ${describeError(error)}`,
+        );
+      }
+    }
+    if (failed > 0) {
+      logWarn(
+        `history replay to ${session.id} delivered ${delivered}/${delivered + failed} updates; ` +
+          "the restored RunState still carries the full context",
+      );
     }
     this.emitContextUsage(session);
     return this.sessionState(session);
