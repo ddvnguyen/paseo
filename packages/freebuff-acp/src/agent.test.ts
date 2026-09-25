@@ -1678,6 +1678,98 @@ describe("multiple accounts", () => {
     ).rejects.toThrow(/Unknown account/);
   });
 
+  it("switchAccount: runState carries over, the NEW account's own seat is opened, the old seat is left alone", async () => {
+    // R4: moving a Paseo agent from one Freebuff account to another keeps the
+    // conversation (runState), probes/opens the new account's own seat (never
+    // an admission against the old account), and never ends the old seat.
+    const seatsByToken: Record<string, string | null> = { k: null, "work-token": null };
+    const postsByToken: string[] = [];
+    const deletes: string[] = [];
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = hrefOf(url);
+      const method = ((init?.method as string | undefined) ?? "GET").toUpperCase();
+      const token = String(
+        (init?.headers as Record<string, string> | undefined)?.Authorization ?? "Bearer ",
+      ).replace(/^Bearer /, "");
+      if (method === "POST" && href.includes("/session/admission")) {
+        postsByToken.push(token);
+        const seat = `inst-${token === "k" ? "acct1" : "acct2"}`;
+        seatsByToken[token] = seat;
+        return new Response(
+          JSON.stringify({ status: "active", instanceId: seat, model: "z-ai/glm-5.3-flash" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (method === "DELETE" && href.includes("/api/v1/freebuff/session")) {
+        deletes.push(seatsByToken[token] ?? "?");
+        seatsByToken[token] = null;
+        return new Response(JSON.stringify({ status: "ended" }), { status: 200 });
+      }
+      const seat = seatsByToken[token];
+      return new Response(
+        JSON.stringify(
+          seat
+            ? { status: "active", instanceId: seat, model: "z-ai/glm-5.3-flash" }
+            : { status: "none" },
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const env = testEnv({ FREEBUFF_ACP_ACCOUNTS_FILE: writeAccounts() });
+    const agent = new FreebuffAcpAgent(makeConn(), env);
+    const clients = new Map<string, ReturnType<typeof makeClient>>();
+    (
+      agent as unknown as { ensureClient: (cwd: string, account: { id: string }) => unknown }
+    ).ensureClient = (_cwd, account) => {
+      const client = clients.get(account.id) ?? makeClient({ type: "success" });
+      clients.set(account.id, client);
+      return { client, token: account.id === "work" ? "work-token" : "k" };
+    };
+
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    expect(
+      (
+        await agent.prompt({
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "on default" }],
+        } as never)
+      ).stopReason,
+    ).toBe("end_turn");
+
+    // Move the agent to the second account.
+    await agent.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: "account",
+      value: "work",
+    } as never);
+    expect(
+      (
+        await agent.prompt({
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "on work" }],
+        } as never)
+      ).stopReason,
+    ).toBe("end_turn");
+
+    // Each account admitted its own seat; the work turn never touched acct1.
+    expect(postsByToken).toEqual(["k", "work-token"]);
+    const clientWork = clients.get("work")!;
+    const workTurn = clientWork.run.mock.calls[0]?.[0] as {
+      previousRun?: { sessionState?: { marker?: number } };
+      extraCodebuffMetadata?: { freebuff_instance_id?: string };
+    };
+    // Conversation state carried across the account switch...
+    expect(workTurn.previousRun?.sessionState?.marker).toBe(1);
+    // ...and the run went to the NEW account's own seat.
+    expect(workTurn.extraCodebuffMetadata).toEqual({ freebuff_instance_id: "inst-acct2" });
+
+    // The old account's kept seat was left alone (no DELETE anywhere).
+    expect(deletes).toEqual([]);
+    expect(seatsByToken.k).toBe("inst-acct1");
+  });
+
   it("restores a session on its persisted account, falling back to default when it is gone", async () => {
     quotaByToken({ k: 20, "work-token": 7 });
     const env = testEnv({ FREEBUFF_ACP_ACCOUNTS_FILE: writeAccounts() });
