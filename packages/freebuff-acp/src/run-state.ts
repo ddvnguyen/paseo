@@ -27,3 +27,15 @@ export function nextConversationState(
   if (stopReason === "end_turn") return next;
   return messageCount(next) >= messageCount(previous) ? next : previous;
 }
+
+/**
+ * The SDK continues a conversation from `previousRun.sessionState`. The adapter
+ * keeps (and persists) the session state itself, so wrap it; a state already
+ * in RunState shape (older persisted files) is passed through unchanged.
+ * Passing the bare session state makes the SDK silently start a fresh
+ * conversation every turn.
+ */
+export function toPreviousRun(state: SessionState): Record<string, unknown> {
+  if ("sessionState" in state) return state;
+  return { sessionState: state, output: { type: "lastMessage", value: [] } };
+}

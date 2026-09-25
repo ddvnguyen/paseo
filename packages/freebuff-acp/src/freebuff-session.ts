@@ -47,6 +47,16 @@ export type AdmissionResult =
   | { ok: false; waitingRoom: true; message?: string }
   | { ok: false; terminal: true; message: string };
 
+/** What the host approves before ending another holder's session to switch model. */
+export interface ModelSwitchInfo {
+  /** Model of the session the account already holds (shared with other agents/CLIs). */
+  currentModel: string;
+  requestedModel: string;
+  /** Catalog price of one hour on `requestedModel`, when the probe reported it. */
+  priceFreebucks?: number;
+  dailyRemaining?: number;
+}
+
 /** What the host approves before a credit-spending session open. */
 export interface SessionOpenInfo {
   model: string;
@@ -126,6 +136,69 @@ async function interpretAdmissionResponse(res: Response, model: string): Promise
   };
 }
 
+/** Fail closed: never spend credit when consent cannot be obtained. */
+async function askOpenConsent(
+  confirmOpen: (info: SessionOpenInfo) => Promise<boolean>,
+  probe: FreebuffSessionServerResponse | null,
+  model: string,
+): Promise<boolean> {
+  try {
+    return await confirmOpen({
+      model,
+      priceFreebucks: probe?.freebucks?.prices?.[model],
+      dailyRemaining: probe?.freebucks?.daily?.remaining,
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The account holds one seat, on another model: ask the host, and on approval
+ * end it (like the CLI: DELETE by instance id, then POST the new model).
+ * Returns whether the seat was ended. Declined, unanswerable or no hook = keep.
+ */
+async function endHeldSeatIfSwitching(
+  opts: {
+    token: string;
+    signal?: AbortSignal;
+    confirmSwitch?: (info: ModelSwitchInfo) => Promise<boolean>;
+  },
+  probe: FreebuffSessionServerResponse | null,
+  model: string,
+): Promise<boolean> {
+  const heldModel = probe?.model?.trim();
+  if (
+    probe?.status !== "active" ||
+    !probe.instanceId ||
+    !heldModel ||
+    heldModel === model ||
+    !opts.confirmSwitch
+  ) {
+    return false;
+  }
+  let approved = false;
+  try {
+    approved = await opts.confirmSwitch({
+      currentModel: heldModel,
+      requestedModel: model,
+      priceFreebucks: probe.freebucks?.prices?.[model],
+      dailyRemaining: probe.freebucks?.daily?.remaining,
+    });
+  } catch {
+    // Fail closed: never end someone's session without an answer.
+    approved = false;
+  }
+  if (approved) {
+    await releaseFreebuffSession({
+      token: opts.token,
+      instanceId: probe.instanceId,
+      signal: opts.signal,
+    });
+  }
+  return approved;
+}
+
 /**
  * Hold a free-session slot for `model`.
  *
@@ -141,12 +214,20 @@ export async function admitFreebuffSession(opts: {
   signal?: AbortSignal;
   /** Host consent hook; asked only when no live slot exists (POST = credit spend). */
   confirmOpen?: (info: SessionOpenInfo) => Promise<boolean>;
+  /**
+   * The account has ONE seat, already held on another model. Asked before the
+   * seat is ended to switch (the CLI's "End your active session to switch?").
+   * Omitted or declined = keep the held seat and run on its model.
+   */
+  confirmSwitch?: (info: ModelSwitchInfo) => Promise<boolean>;
 }): Promise<AdmissionResult> {
   const model = opts.model?.trim() || DEFAULT_MODEL_FALLBACK;
 
   // 1. Probe: reuse a live slot when one exists.
   const probe = await probeOpenSession(opts.token, opts.signal);
-  if (probe?.status === "active" && probe.instanceId) {
+  const switchApproved = await endHeldSeatIfSwitching(opts, probe, model);
+
+  if (!switchApproved && probe?.status === "active" && probe.instanceId) {
     // An already-open free session is never a hard block. Prefer the slot's
     // model (runs must match `x-freebuff-model`); if the probe omitted it,
     // keep the requested model. Returning ok lets the turn adopt the open
@@ -163,26 +244,17 @@ export async function admitFreebuffSession(opts: {
   // 2. Nothing live: the POST below opens a NEW 1-hour slot that costs
   // credit. Ask the host first — decline (or an unanswerable request) means
   // no spend. Reused slots above never reach this gate.
-  if (opts.confirmOpen) {
-    const freebucks = probe?.freebucks;
-    let openConfirmed = false;
-    try {
-      openConfirmed = await opts.confirmOpen({
-        model,
-        priceFreebucks: freebucks?.prices?.[model],
-        dailyRemaining: freebucks?.daily?.remaining,
-      });
-    } catch {
-      // Fail closed: never spend credit when consent cannot be obtained.
-      openConfirmed = false;
-    }
-    if (!openConfirmed) {
-      return {
-        ok: false,
-        terminal: true,
-        message: "New free-session open was declined in the host — no credit spent.",
-      };
-    }
+  // An approved switch already showed the price, so it does not ask twice.
+  if (
+    opts.confirmOpen &&
+    !switchApproved &&
+    !(await askOpenConsent(opts.confirmOpen, probe, model))
+  ) {
+    return {
+      ok: false,
+      terminal: true,
+      message: "New free-session open was declined in the host — no credit spent.",
+    };
   }
 
   // 3. Admission POST.

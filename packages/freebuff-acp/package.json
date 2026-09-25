@@ -4,7 +4,8 @@
   "private": true,
   "description": "Agent Client Protocol (ACP) adapter for Freebuff, backed by @codebuff/sdk",
   "bin": {
-    "freebuff-acp": "./dist/entry.js"
+    "freebuff-acp": "./dist/entry.js",
+    "freebuff-acp-cli": "./dist/cli.js"
   },
   "files": [
     "dist"

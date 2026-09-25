@@ -25,6 +25,8 @@ import {
   type ResumeSessionRequest,
   type ResumeSessionResponse,
   type SessionNotification,
+  type CloseSessionRequest,
+  type CloseSessionResponse,
   type SetSessionConfigOptionRequest,
   type SetSessionConfigOptionResponse,
   type SetSessionModelRequest,
@@ -32,6 +34,14 @@ import {
 } from "@agentclientprotocol/sdk";
 import { CodebuffClient, type MessageContent } from "@codebuff/sdk";
 
+import {
+  DEFAULT_ACCOUNT_ID,
+  accountDisplayName,
+  credentialsForAccount,
+  findAccount,
+  listAccounts,
+  type FreebuffAccount,
+} from "./accounts.js";
 import { createAskUserTool } from "./ask-user.js";
 import { resolveCredentials } from "./auth.js";
 import {
@@ -45,17 +55,18 @@ import {
 import {
   ACCOUNT_CONFIG_ID,
   CONFIRM_OPEN_CONFIG_ID,
+  MODEL_CONFIG_ID,
   buildConfigOptions,
+  initialAccountId,
   fetchAccountStatus,
   initialConfirmOpenMode,
   isConfirmOpenMode,
   type AccountStatus,
   type ConfirmOpenMode,
 } from "./account.js";
-import type { SessionOpenInfo } from "./freebuff-session.js";
+import type { ModelSwitchInfo, SessionOpenInfo } from "./freebuff-session.js";
 import { resolveRunMcpServers } from "./mcp.js";
 import { DEFAULT_MODE_ID, FREEBUFF_MODES, FREEBUFF_MODE_IDS } from "./modes.js";
-import { resolveAccountLabel } from "./auth.js";
 import { FREEBUFF_MODEL_IDS, initialModelId, modelState } from "./models.js";
 import {
   listPersistedSessions,
@@ -87,7 +98,9 @@ interface AdapterSession {
   modelId: string;
   /** Short title derived from the first prompt; published via session_info_update. */
   title?: string;
-  /** Display name of the logged-in account (never the token). */
+  /** Registered account this session runs under (see accounts.ts). */
+  accountId: string;
+  /** Display name of the account (never the token). */
   accountName: string;
   /** Whether opening a new credit-spending session needs host approval. */
   confirmOpen: ConfirmOpenMode;
@@ -113,15 +126,18 @@ interface AdapterSession {
 export class FreebuffAcpAgent {
   private readonly sessions = new Map<string, AdapterSession>();
   private sessionCounter = 0;
-  private client: CodebuffClient | null = null;
+  /** One SDK client per account id (each carries that account's API key). */
+  private readonly clients = new Map<string, CodebuffClient>();
+  /** Latest quota per account id, for the account picker. */
+  private readonly accountStatuses = new Map<string, AccountStatus | null>();
   private readonly conn: ClientApi;
   private readonly env: NodeJS.ProcessEnv;
   /**
-   * Process-wide turn queue. turn.ts pins a single global hook
-   * (`__freebuffExtraCodebuffMetadata`) around each `client.run()` call, so
-   * two sessions prompting concurrently in this process would bleed instance
-   * ids into each other's run. All turns funnel through this lane so only
-   * one `runTurn` is in flight at a time, regardless of session.
+   * Process-wide turn queue. The instance id now travels per run
+   * (`extraCodebuffMetadata`), so nothing is shared between runs; the lane
+   * stays because Freebuff grants one seat per account and admission/release
+   * ordering across sessions is not yet safe to interleave. All turns funnel
+   * through it so only one `runTurn` is in flight at a time.
    */
   private turnLane: Promise<void> = Promise.resolve();
   /**
@@ -135,16 +151,23 @@ export class FreebuffAcpAgent {
     this.env = env;
   }
 
-  private ensureClient(cwd: string): { client: CodebuffClient; token: string } {
-    const credentials = resolveCredentials(this.env);
+  private ensureClient(
+    cwd: string,
+    account: FreebuffAccount,
+  ): { client: CodebuffClient; token: string } {
+    const credentials = credentialsForAccount(account, this.env);
     if (!credentials) {
       throw new Error(
-        "Freebuff is not authenticated. Run `freebuff login` (or `codebuff login`), " +
-          "or set FREEBUFF_API_KEY / CODEBUFF_API_KEY in the provider environment.",
+        account.configDir === null
+          ? "Freebuff is not authenticated. Run `freebuff login` (or `codebuff login`), " +
+              "or set FREEBUFF_API_KEY / CODEBUFF_API_KEY in the provider environment."
+          : `Freebuff account "${account.id}" has no credentials in ${account.configDir}. ` +
+              `Run \`FREEBUFF_CONFIG_DIR=${account.configDir} freebuff login\`.`,
       );
     }
-    if (!this.client) {
-      this.client = new CodebuffClient({
+    let client = this.clients.get(account.id);
+    if (!client) {
+      client = new CodebuffClient({
         apiKey: credentials.apiKey,
         cwd,
         overrideTools: {
@@ -159,17 +182,25 @@ export class FreebuffAcpAgent {
           ),
         },
       });
+      this.clients.set(account.id, client);
     }
-    return { client: this.client, token: credentials.apiKey };
+    return { client, token: credentials.apiKey };
+  }
+
+  /** The account a persisted/requested id names; the default when it no longer exists. */
+  private resolveAccount(accountId: string | undefined): FreebuffAccount {
+    return findAccount(accountId, this.env) ?? findAccount(DEFAULT_ACCOUNT_ID, this.env)!;
   }
 
   async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
     return {
       protocolVersion: 1,
       agentCapabilities: {
-        // History replay is not supported (SDK RunState is opaque); hosts that
-        // only need to continue a conversation use session/resume instead.
-        loadSession: false,
+        // History replay is not supported (SDK RunState is opaque).
+        // Soft load: restores the RunState from disk without replaying history.
+        // Hosts that only resume via session/load (Paseo's plugin ACP shim)
+        // need this true; session/resume below serves hosts that prefer it.
+        loadSession: true,
         sessionCapabilities: {
           // Unstable ACP resume: restore context without replaying messages.
           // Paseo prefers loadSession when present, else this path — so open
@@ -177,6 +208,7 @@ export class FreebuffAcpAgent {
           resume: {},
           // Lets hosts list/import sessions persisted by this adapter.
           list: {},
+          close: {},
         },
         promptCapabilities: {
           audio: false,
@@ -207,11 +239,12 @@ export class FreebuffAcpAgent {
       );
     }
     // Credentials are re-resolved lazily on the next newSession.
-    this.client = null;
+    this.clients.clear();
   }
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-    const { client, token } = this.ensureClient(params.cwd);
+    const account = this.resolveAccount(initialAccountId(this.env));
+    const { client, token } = this.ensureClient(params.cwd, account);
     const sessionId = `freebuff-${++this.sessionCounter}-${Date.now().toString(36)}`;
     const hostMcpServers = params.mcpServers;
     const modelId = initialModelId(this.env);
@@ -220,7 +253,8 @@ export class FreebuffAcpAgent {
       cwd: params.cwd,
       modeId: DEFAULT_MODE_ID,
       modelId,
-      accountName: resolveAccountLabel(this.env),
+      accountId: account.id,
+      accountName: accountDisplayName(account, this.env),
       confirmOpen: initialConfirmOpenMode(this.env),
       status: null,
       skills: [],
@@ -284,8 +318,9 @@ export class FreebuffAcpAgent {
     if (existing) {
       return existing;
     }
-    const { client, token } = this.ensureClient(cwd);
     const persisted = loadPersistedSession(sessionId, this.env);
+    const account = this.resolveAccount(persisted?.accountId);
+    const { client, token } = this.ensureClient(cwd, account);
     const modeId =
       persisted?.modeId && FREEBUFF_MODE_IDS.has(persisted.modeId)
         ? persisted.modeId
@@ -296,7 +331,8 @@ export class FreebuffAcpAgent {
       cwd: sessionCwd,
       modeId,
       modelId: persisted?.modelId || initialModelId(this.env),
-      accountName: resolveAccountLabel(this.env),
+      accountId: account.id,
+      accountName: accountDisplayName(account, this.env),
       confirmOpen:
         persisted?.confirmOpen && isConfirmOpenMode(persisted.confirmOpen)
           ? persisted.confirmOpen
@@ -328,6 +364,7 @@ export class FreebuffAcpAgent {
         modeId: session.modeId,
         modelId: session.modelId,
         confirmOpen: session.confirmOpen,
+        accountId: session.accountId,
         ...(session.title ? { title: session.title } : {}),
         runState: session.runState,
         updatedAt: new Date().toISOString(),
@@ -345,17 +382,55 @@ export class FreebuffAcpAgent {
   }
 
   private configOptionsFor(session: AdapterSession) {
+    const accounts = listAccounts(this.env).map((account) => ({
+      id: account.id,
+      label:
+        account.id === session.accountId
+          ? session.accountName
+          : accountDisplayName(account, this.env),
+      status:
+        account.id === session.accountId
+          ? session.status
+          : (this.accountStatuses.get(account.id) ?? null),
+    }));
     return buildConfigOptions({
-      accountName: session.accountName,
-      status: session.status,
+      accounts,
+      currentAccountId: session.accountId,
       confirmOpen: session.confirmOpen,
+      models: modelState(session.modelId, session.status),
     });
   }
 
   /** Re-read quota/prices; keeps the previous snapshot when the server is unreachable. */
   private async refreshStatus(session: AdapterSession): Promise<void> {
-    const status = await fetchAccountStatus(session.token);
-    if (status) session.status = status;
+    const accounts = listAccounts(this.env);
+    await Promise.all(
+      accounts.map(async (account) => {
+        const token =
+          account.id === session.accountId
+            ? session.token
+            : credentialsForAccount(account, this.env)?.apiKey;
+        if (!token) return;
+        const status = await fetchAccountStatus(token);
+        if (status) this.accountStatuses.set(account.id, status);
+      }),
+    );
+    const current = this.accountStatuses.get(session.accountId);
+    if (current) session.status = current;
+  }
+
+  /** Move a session to another registered account; the conversation state carries over. */
+  private switchAccount(session: AdapterSession, accountId: string): void {
+    if (session.busy) throw new Error("Cannot switch account while a turn is running.");
+    const account = findAccount(accountId, this.env);
+    if (!account) throw new Error(`Unknown account: ${accountId}`);
+    const { client, token } = this.ensureClient(session.cwd, account);
+    session.accountId = account.id;
+    session.accountName = accountDisplayName(account, this.env);
+    session.client = client;
+    session.token = token;
+    session.status = this.accountStatuses.get(account.id) ?? null;
+    this.persist(session);
   }
 
   /** Push the current account/quota/switch state to the host (best-effort). */
@@ -380,13 +455,16 @@ export class FreebuffAcpAgent {
     if (!session) throw new Error(`Unknown session: ${params.sessionId}`);
     const value = String((params as { value: unknown }).value);
     switch (params.configId) {
+      case MODEL_CONFIG_ID:
+        await this.unstable_setSessionModel({ sessionId: params.sessionId, modelId: value });
+        break;
       case CONFIRM_OPEN_CONFIG_ID:
         if (!isConfirmOpenMode(value)) throw new Error(`Unknown session-open mode: ${value}`);
         session.confirmOpen = value;
         this.persist(session);
         break;
       case ACCOUNT_CONFIG_ID:
-        // Read-only: selecting it just refreshes the quota line.
+        if (value !== session.accountId) this.switchAccount(session, value);
         await this.refreshStatus(session);
         break;
       default:
@@ -428,6 +506,17 @@ export class FreebuffAcpAgent {
     }
     session.modelId = params.modelId;
     this.persist(session);
+    return {};
+  }
+
+  /** Host is done with the session: stop any turn and drop it from memory (state stays on disk). */
+  async unstable_closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+    const session = this.sessions.get(params.sessionId);
+    if (session) {
+      await this.stopRunningTurn(session);
+      this.persist(session);
+      this.sessions.delete(params.sessionId);
+    }
     return {};
   }
 
@@ -512,7 +601,7 @@ export class FreebuffAcpAgent {
     try {
       this.maybePublishTitle(session, rawText);
       // Queue this turn onto the process-wide lane instead of running it
-      // immediately: only one runTurn (and its global metadata hook) may be
+      // immediately: only one runTurn may be
       // in flight across all sessions at once.
       const task = this.turnLane.then(async (): Promise<TurnResult> => {
         if (abortController.signal.aborted) {
@@ -547,6 +636,8 @@ export class FreebuffAcpAgent {
               session.confirmOpen === "auto"
                 ? undefined
                 : (info) => this.confirmSessionOpen(session.id, info),
+            // Ending the shared seat can cut another agent's run: always ask.
+            confirmModelSwitch: (info) => this.confirmModelSwitch(session.id, info),
             emit,
           });
         } finally {
@@ -693,6 +784,8 @@ export class FreebuffAcpAgent {
       info.dailyRemaining != null ? ` — ${info.dailyRemaining} Freebucks left today` : "";
     const response = await this.conn.requestPermission({
       sessionId,
+      // Spends credit: hosts with auto-accept must still ask a person.
+      _meta: { "paseo/requireApproval": true },
       toolCall: {
         toolCallId: `freebuff-open-${crypto.randomUUID()}`,
         title: "Open new Freebuff session",
@@ -717,6 +810,50 @@ export class FreebuffAcpAgent {
       ],
     });
     return response.outcome.outcome === "selected" && response.outcome.optionId === "open-session";
+  }
+
+  /**
+   * The account has one seat and it is held on another model (by another
+   * agent or a Freebuff CLI). Keep it by default; switching ends it.
+   */
+  private async confirmModelSwitch(sessionId: string, info: ModelSwitchInfo): Promise<boolean> {
+    const cost = info.priceFreebucks != null ? `${info.priceFreebucks} Freebucks` : "Freebucks";
+    const response = await this.conn.requestPermission({
+      sessionId,
+      _meta: { "paseo/requireApproval": true },
+      toolCall: {
+        toolCallId: `freebuff-switch-${crypto.randomUUID()}`,
+        title: "Switch the account's Freebuff model?",
+        kind: "other",
+        status: "pending",
+        content: [
+          {
+            type: "content",
+            content: {
+              type: "text",
+              text:
+                `This account already has an open Freebuff session on ${info.currentModel} ` +
+                `(one session per account, shared with other agents and CLIs). ` +
+                `Switching to ${info.requestedModel} ends it, which can interrupt another agent, ` +
+                `and opens a new one (${cost}, 1 hour).`,
+            },
+          },
+        ],
+      },
+      options: [
+        {
+          optionId: "keep-session",
+          name: `Keep ${info.currentModel} (no change)`,
+          kind: "reject_once",
+        },
+        {
+          optionId: "switch-model",
+          name: `Switch to ${info.requestedModel} — ${cost}`,
+          kind: "allow_once",
+        },
+      ],
+    });
+    return response.outcome.outcome === "selected" && response.outcome.optionId === "switch-model";
   }
 
   async cancel(params: { sessionId: string }): Promise<void> {

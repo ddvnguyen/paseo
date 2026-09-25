@@ -115,14 +115,14 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
 }
 
 describe("FreebuffAcpAgent", () => {
-  it("initializes with session/resume enabled and an auth method", async () => {
+  it("initializes with session/load + resume enabled and an auth method", async () => {
     const agent = new FreebuffAcpAgent(makeConn(), testEnv());
     const response = await agent.initialize({
       protocolVersion: 1,
       clientCapabilities: {},
     } as never);
     expect(response.protocolVersion).toBe(1);
-    expect(response.agentCapabilities?.loadSession).toBe(false);
+    expect(response.agentCapabilities?.loadSession).toBe(true);
     expect(response.agentCapabilities?.sessionCapabilities?.resume).toEqual({});
     expect(response.authMethods?.[0]?.id).toBe("freebuff-login");
   });
@@ -433,11 +433,8 @@ describe("FreebuffAcpAgent", () => {
     const pending: Array<() => void> = [];
     const capturedHooks: Array<Record<string, string> | undefined> = [];
     const client = {
-      run: vi.fn(async () => {
-        capturedHooks.push(
-          (globalThis as { __freebuffExtraCodebuffMetadata?: Record<string, string> })
-            .__freebuffExtraCodebuffMetadata,
-        );
+      run: vi.fn(async (options: { extraCodebuffMetadata?: Record<string, string> }) => {
+        capturedHooks.push(options.extraCodebuffMetadata);
         const gate = Promise.withResolvers<{
           sessionState: { marker: number };
           output: { type: string };
@@ -923,8 +920,10 @@ describe("FreebuffAcpAgent", () => {
       return method === "POST" || method === "DELETE";
     });
     expect(mutating).toHaveLength(0);
-    // Reuse never consults the open-session confirm — no permission prompt.
-    expect(conn.requestPermission).not.toHaveBeenCalled();
+    // Reuse never consults the open-session confirm; the only prompt is the
+    // model-switch question, and the default answer keeps the held seat.
+    expect(conn.requestPermission).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(conn.requestPermission.mock.calls[0])).toContain("keep-session");
   });
 
   it("writes persisted session files with 0600 permissions", () => {
@@ -1019,5 +1018,196 @@ describe("account, quota and session-open switch", () => {
         value: "bogus",
       } as never),
     ).rejects.toThrow(/Unknown session-open mode/);
+  });
+});
+
+describe("multiple accounts", () => {
+  function writeAccounts(): string {
+    const accountsFile = path.join(stateDir, "accounts.json");
+    const workDir = path.join(stateDir, "work-account");
+    fs.mkdirSync(workDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(workDir, "credentials.json"),
+      JSON.stringify({ default: { name: "Work Person", authToken: "work-token" } }),
+    );
+    fs.writeFileSync(
+      accountsFile,
+      JSON.stringify([
+        { id: "work", label: "Work", configDir: workDir },
+        { id: "default", configDir: "/ignored" },
+        { id: "Bad Id", configDir: workDir },
+        { id: "relative", configDir: "relative/dir" },
+      ]),
+    );
+    return accountsFile;
+  }
+
+  function quotaByToken(remaining: Record<string, number>) {
+    fetchMock.mockImplementation(async (_url, init) => {
+      const auth = String((init?.headers as Record<string, string> | undefined)?.Authorization);
+      const token = auth.replace(/^Bearer /, "");
+      return new Response(
+        JSON.stringify({
+          status: "none",
+          freebucks: { daily: { limit: 25, spent: 0, remaining: remaining[token] ?? 0 } },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+  }
+
+  it("lists registered accounts (ignoring invalid entries) and rejects the reserved id", async () => {
+    const { listAccounts } = await import("./accounts.js");
+    const env = testEnv({ FREEBUFF_ACP_ACCOUNTS_FILE: writeAccounts() });
+    expect(listAccounts(env).map((account) => account.id)).toEqual(["default", "work"]);
+  });
+
+  it("offers every account with its quota and switches a session between them", async () => {
+    quotaByToken({ k: 20, "work-token": 7 });
+    const env = testEnv({ FREEBUFF_ACP_ACCOUNTS_FILE: writeAccounts() });
+    const agent = new FreebuffAcpAgent(makeConn(), env);
+    const clients = new Map<string, ReturnType<typeof makeClient>>();
+    (
+      agent as unknown as { ensureClient: (cwd: string, account: { id: string }) => unknown }
+    ).ensureClient = (_cwd, account) => {
+      const client = clients.get(account.id) ?? makeClient({ type: "success" });
+      clients.set(account.id, client);
+      return { client, token: account.id === "work" ? "work-token" : "k" };
+    };
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const account = session.configOptions?.find((option) => option.id === "account") as {
+      currentValue: string;
+      options: { value: string; name: string }[];
+    };
+    expect(account.currentValue).toBe("default");
+    expect(account.options.map((option) => option.value)).toEqual(["default", "work"]);
+    expect(account.options[0]?.name).toContain("20/25 Freebucks left today");
+    expect(account.options[1]?.name).toContain("Work · 7/25 Freebucks left today");
+
+    const response = await agent.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: "account",
+      value: "work",
+    } as never);
+    const switched = response.configOptions.find((option) => option.id === "account");
+    expect(switched?.currentValue).toBe("work");
+    expect(loadPersistedSession(session.sessionId, env)?.accountId).toBe("work");
+
+    await expect(
+      agent.setSessionConfigOption({
+        sessionId: session.sessionId,
+        configId: "account",
+        value: "nope",
+      } as never),
+    ).rejects.toThrow(/Unknown account/);
+  });
+
+  it("restores a session on its persisted account, falling back to default when it is gone", async () => {
+    quotaByToken({ k: 20, "work-token": 7 });
+    const env = testEnv({ FREEBUFF_ACP_ACCOUNTS_FILE: writeAccounts() });
+    const first = new FreebuffAcpAgent(makeConn(), env);
+    const seen: string[] = [];
+    const stub = (agent: FreebuffAcpAgent) => {
+      (
+        agent as unknown as { ensureClient: (cwd: string, account: { id: string }) => unknown }
+      ).ensureClient = (_cwd, account) => {
+        seen.push(account.id);
+        return { client: makeClient({ type: "success" }), token: "k" };
+      };
+    };
+    stub(first);
+    const session = await first.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    await first.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: "account",
+      value: "work",
+    } as never);
+
+    const second = new FreebuffAcpAgent(makeConn(), env);
+    stub(second);
+    seen.length = 0;
+    await second.loadSession({
+      sessionId: session.sessionId,
+      cwd: "/tmp",
+      mcpServers: [],
+    } as never);
+    expect(seen).toEqual(["work"]);
+
+    const third = new FreebuffAcpAgent(
+      makeConn(),
+      testEnv({ FREEBUFF_ACP_ACCOUNTS_FILE: path.join(stateDir, "missing.json") }),
+    );
+    stub(third);
+    seen.length = 0;
+    await third.loadSession({ sessionId: session.sessionId, cwd: "/tmp", mcpServers: [] } as never);
+    expect(seen).toEqual(["default"]);
+  });
+});
+
+describe("plugin-shim compatibility (session/load, close, model option)", () => {
+  it("advertises load + close so hosts resuming via session/load can continue a thread", async () => {
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    const response = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: {},
+    } as never);
+    expect(response.agentCapabilities?.loadSession).toBe(true);
+    expect(response.agentCapabilities?.sessionCapabilities?.close).toEqual({});
+  });
+
+  it("exposes the model picker as a model-category config option and switches through it", async () => {
+    const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    const model = session.configOptions?.find((option) => option.id === "model");
+    expect(model).toMatchObject({ category: "model", type: "select" });
+    const response = await agent.setSessionConfigOption({
+      sessionId: session.sessionId,
+      configId: "model",
+      value: "stealth/space-bunny-alpha",
+    } as never);
+    expect(response.configOptions.find((option) => option.id === "model")?.currentValue).toBe(
+      "stealth/space-bunny-alpha",
+    );
+    expect(loadPersistedSession(session.sessionId, testEnv())?.modelId).toBe(
+      "stealth/space-bunny-alpha",
+    );
+  });
+
+  it("continues a conversation through session/load after a restart, then closes cleanly", async () => {
+    const first = new FreebuffAcpAgent(makeConn(), testEnv());
+    stubClient(first, makeClient({ type: "success" }));
+    const session = await first.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+    await first.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "hi" }],
+    } as never);
+
+    const second = new FreebuffAcpAgent(makeConn(), testEnv());
+    const client = makeClient({ type: "success" });
+    stubClient(second, client);
+    const loaded = await second.loadSession({
+      sessionId: session.sessionId,
+      cwd: "/tmp",
+      mcpServers: [],
+    } as never);
+    expect(loaded.configOptions?.some((option) => option.id === "account")).toBe(true);
+    await second.prompt({
+      sessionId: session.sessionId,
+      prompt: [{ type: "text", text: "again" }],
+    } as never);
+    const previous = (
+      client.run.mock.calls[0]![0] as { previousRun?: { sessionState?: { marker?: number } } }
+    ).previousRun;
+    // The SDK continues from previousRun.sessionState; a bare state would start fresh.
+    expect(previous?.sessionState?.marker).toBe(1);
+
+    await second.unstable_closeSession({ sessionId: session.sessionId } as never);
+    await expect(
+      second.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "x" }],
+      } as never),
+    ).rejects.toThrow(/Unknown session/);
   });
 });

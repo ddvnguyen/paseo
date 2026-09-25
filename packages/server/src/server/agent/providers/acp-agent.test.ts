@@ -1407,6 +1407,36 @@ describe("ACPAgentSession Zed parity", () => {
     });
   });
 
+  test("never auto-accepts a request marked paseo/requireApproval", async () => {
+    const session = createSessionWithConfig({
+      provider: "generic-acp",
+      featureValues: { auto_accept: true },
+    });
+    const events: AgentStreamEvent[] = [];
+    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
+    session.subscribe((event) => events.push(event));
+
+    const permission = session.requestPermission({
+      sessionId: "session-1",
+      toolCall: { toolCallId: "spend-1", title: "Open session", status: "pending" },
+      options: [
+        { optionId: "open-session", name: "Open session", kind: "allow_once" },
+        { optionId: "cancel-open", name: "Cancel", kind: "reject_once" },
+      ],
+      _meta: { "paseo/requireApproval": true },
+    } satisfies RequestPermissionRequest);
+    await Promise.resolve();
+
+    const requested = events.find((event) => event.type === "permission_requested");
+    if (requested?.type !== "permission_requested") {
+      throw new Error("Expected the request to wait for a person");
+    }
+    await session.respondToPermission(requested.request.id, { behavior: "deny" });
+    await expect(permission).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "cancel-open" },
+    });
+  });
+
   test("preserves ACP permission requests after invalid selected actions", async () => {
     const session = createSessionWithConfig({ provider: "generic-acp" });
     const events: AgentStreamEvent[] = [];

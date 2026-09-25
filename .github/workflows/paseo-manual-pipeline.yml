@@ -78,6 +78,27 @@ on:
         type: string
         default: ""
 
+      # ── Stage 6: Deploy freebuff-acp adapter ──────────────────────────
+      run_deploy_freebuff:
+        description: "Stage 6 — Deploy freebuff-acp adapter (no daemon restart; new agents pick it up)"
+        required: false
+        type: boolean
+        default: false
+      freebuff_target:
+        description: "Stage 6 — Which daemon home receives the adapter"
+        required: false
+        type: choice
+        default: test
+        options:
+          - test
+          - prod
+          - both
+      freebuff_ref:
+        description: "Stage 6 — Git SHA of packages/freebuff-acp + plugins/freebuff to deploy"
+        required: false
+        type: string
+        default: ""
+
 permissions:
   contents: write
 
@@ -670,3 +691,62 @@ jobs:
           HEALTH=$(curl -sf http://127.0.0.1:6767/api/health 2>/dev/null || echo '{"status":"error"}')
           echo "PROD health: $HEALTH"
           if [ "$HEALTH" = '{"status":"error"}' ]; then echo "::error::PROD health endpoint unreachable after deploy"; exit 1; fi
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Stage 6 — Deploy freebuff-acp adapter (versioned release + `current` symlink)
+  # Independent of the daemon: agents spawn the adapter as a child process, so a
+  # new release is used by the next agent/session; running agents keep the old
+  # one. Rollback = repoint the symlink.
+  # ═══════════════════════════════════════════════════════════════════════
+  deploy-freebuff:
+    if: ${{ always() && inputs.run_deploy_freebuff }}
+    runs-on: [self-hosted, paseo-host]
+    steps:
+      - name: Resolve ref
+        id: ref
+        run: |
+          set -euo pipefail
+          REF="${{ inputs.freebuff_ref }}"
+          if [ -z "$REF" ]; then REF="${{ github.sha }}"; fi
+          echo "sha=$REF" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          # Full checkout: sparse-checkout persists in the shared self-hosted
+          # workspace and would strip scripts/ from the next build job.
+          ref: ${{ steps.ref.outputs.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build and install release
+        run: |
+          set -euo pipefail
+          SHA="${{ steps.ref.outputs.sha }}"
+          case "${{ inputs.freebuff_target }}" in
+            test) HOMES="${{ env.TEST_HOME }}" ;;
+            prod) HOMES="${{ env.PROD_HOME }}" ;;
+            both) HOMES="${{ env.TEST_HOME }} ${{ env.PROD_HOME }}" ;;
+          esac
+          for HOME_DIR in $HOMES; do
+            ROOT="$HOME_DIR/freebuff-acp"
+            REL="$ROOT/releases/$SHA"
+            rm -rf "$REL"
+            mkdir -p "$REL/plugins" "$REL/packages/freebuff-acp"
+            cp -r plugins/freebuff "$REL/plugins/freebuff"
+            cp -r packages/freebuff-acp/src "$REL/packages/freebuff-acp/src"
+            (cd "$REL/plugins/freebuff" && npm ci --omit=dev --legacy-peer-deps --no-audit --no-fund && node scripts/build.mjs)
+
+            # Smoke: the adapter must answer an ACP initialize before we switch to it.
+            ENTRY="$REL/plugins/freebuff/dist/entry.js"
+            RESP=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}' \
+              | timeout 20 node "$ENTRY" | head -n1 || true)
+            echo "$RESP" | grep -q '"loadSession":true' || { echo "::error::adapter smoke failed for $HOME_DIR: $RESP"; exit 1; }
+
+            ln -sfn "$REL" "$ROOT/current.new"
+            mv -Tf "$ROOT/current.new" "$ROOT/current"
+            echo "## freebuff-acp $SHA -> $ROOT/current/plugins/freebuff/dist/entry.js" >> "$GITHUB_STEP_SUMMARY"
+            # Keep the 3 newest releases (never the one `current` points to).
+            (cd "$ROOT/releases" && ls -1t | tail -n +4 | { grep -vx "$SHA" || true; } | xargs -r rm -rf)
+          done

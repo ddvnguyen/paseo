@@ -1,6 +1,7 @@
 import type { StopReason } from "@agentclientprotocol/sdk";
 import type { CodebuffClient, MessageContent, PrintModeEvent, RunState } from "@codebuff/sdk";
 
+import { toPreviousRun } from "./run-state.js";
 import { todosToPlan } from "./plan.js";
 import { mapToolCallEvent, mapToolResultEvent } from "./tools.js";
 import type { CodebuffMcpConfig } from "./mcp.js";
@@ -12,6 +13,7 @@ import {
 import {
   admitFreebuffSession,
   releaseFreebuffSession,
+  type ModelSwitchInfo,
   type SessionOpenInfo,
 } from "./freebuff-session.js";
 
@@ -46,6 +48,11 @@ export interface RunTurnOptions {
    * Omitted = auto-open; live-session reuse probes never consult it.
    */
   confirmSessionOpen?: (info: SessionOpenInfo) => Promise<boolean>;
+  /**
+   * Asked when the account's single seat is held on another model. Approve =
+   * end it and open the requested model; omitted/declined = run on the held one.
+   */
+  confirmModelSwitch?: (info: ModelSwitchInfo) => Promise<boolean>;
 }
 
 export interface TurnResult {
@@ -259,6 +266,7 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
     model,
     mcpServers,
     confirmSessionOpen,
+    confirmModelSwitch,
   } = options;
 
   // A stopped turn must go quiet: an orphaned run may still stream events
@@ -320,6 +328,7 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
       model,
       signal,
       confirmOpen: confirmSessionOpen,
+      confirmSwitch: confirmModelSwitch,
     });
     if (!admission.ok) {
       return admissionRefusal(admission, previousRun, emit);
@@ -352,21 +361,6 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
         };
       }
 
-      // The published @codebuff/sdk 0.10.7 lacks the upstream
-      // `extraCodebuffMetadata` run option, so the adapter installs a tiny
-      // runtime hook (see entry.ts) and feeds the admitted slot id through
-      // it; newer SDKs pick the same value up via the official option.
-      const globalWithHook = globalThis as typeof globalThis & {
-        __freebuffExtraCodebuffMetadata?: Record<string, string>;
-      };
-      if (process.env.FREEBUFF_DISABLE_ADMISSION) {
-        delete globalWithHook.__freebuffExtraCodebuffMetadata;
-      } else {
-        globalWithHook.__freebuffExtraCodebuffMetadata = {
-          freebuff_instance_id: admission.instanceId,
-        };
-      }
-
       // Attach host + mcp.json MCP servers to every root definition so the
       // SDK discovers tools via AgentDefinition.mcpServers (run() does not
       // auto-load mcp.json).
@@ -389,11 +383,11 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
         costMode: "free",
         handleEvent,
         handleStreamChunk,
-        // Official option on newer SDKs; 0.10.7 also reads the globalThis hook.
+        // Per-run option of the fork SDK (no process-global state).
         extraCodebuffMetadata: process.env.FREEBUFF_DISABLE_ADMISSION
           ? {}
           : { freebuff_instance_id: admission.instanceId },
-        ...(previousRun ? { previousRun: previousRun as unknown as RunState } : {}),
+        ...(previousRun ? { previousRun: toPreviousRun(previousRun) as unknown as RunState } : {}),
         signal,
       } as Parameters<CodebuffClient["run"]>[0]);
 
@@ -419,17 +413,13 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
         creditsUsed: turnStats.creditsUsed,
       };
     } finally {
-      const globalWithHook = globalThis as typeof globalThis & {
-        __freebuffExtraCodebuffMetadata?: Record<string, string>;
-      };
-      delete globalWithHook.__freebuffExtraCodebuffMetadata;
       // Only hand back a slot we claimed with POST. A reused open session
       // belongs to another holder (CLI / second adapter) — releasing it would
       // steal their slot and re-block the next prompt.
       if (!admission.reused) {
-        // Await so the DELETE completes before the lane hands the next
-        // queued turn the global metadata hook — keeps the next turn's GET
-        // probe deterministic instead of racing this turn's release.
+        // Await so the DELETE completes before the lane starts the next
+        // queued turn — keeps the next turn's GET probe deterministic
+        // instead of racing this turn's release.
         await releaseFreebuffSession({
           token,
           instanceId: admission.instanceId,

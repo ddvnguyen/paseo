@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { nextConversationState } from "./run-state.js";
+import { nextConversationState, toPreviousRun } from "./run-state.js";
 
 const stateWith = (count: number) => ({
   mainAgentState: { messageHistory: Array.from({ length: count }, () => ({ role: "user" })) },
@@ -33,5 +33,20 @@ describe("nextConversationState", () => {
     const next = stateWith(2);
     expect(nextConversationState(null, next, "refusal")).toBe(next);
     expect(nextConversationState(null, null, "refusal")).toBeNull();
+  });
+});
+
+describe("toPreviousRun", () => {
+  it("wraps the bare session state the adapter persists", () => {
+    const state = { mainAgentState: { messageHistory: [1] } };
+    expect(toPreviousRun(state)).toEqual({
+      sessionState: state,
+      output: { type: "lastMessage", value: [] },
+    });
+  });
+
+  it("passes an already-wrapped RunState through", () => {
+    const wrapped = { sessionState: { a: 1 }, output: { type: "lastMessage", value: [] } };
+    expect(toPreviousRun(wrapped)).toBe(wrapped);
   });
 });

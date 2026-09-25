@@ -113,7 +113,11 @@ import {
   type ProviderRuntimeSettings,
 } from "../provider-launch-config.js";
 import { renderPromptAttachmentAsText } from "../prompt-attachments.js";
-import { acpAnswersResponseMeta, readAcpQuestions } from "./acp-questions.js";
+import {
+  acpAnswersResponseMeta,
+  readAcpQuestions,
+  requiresExplicitApproval,
+} from "./acp-questions.js";
 import { appendOrReplaceGrowingAssistantMessage, runProviderTurn } from "./provider-runner.js";
 import {
   buildStringCommandShellInvocation,
@@ -2470,7 +2474,8 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     const canAutoAccept =
       isACPAutoAcceptEnabled(this.config) &&
       !isACPChooserRequest(params.options) &&
-      !readAcpQuestions(params._meta);
+      !readAcpQuestions(params._meta) &&
+      !requiresExplicitApproval(params._meta);
     if (canAutoAccept) {
       const allowOption = selectPermissionOption(params.options, { behavior: "allow" });
       if (allowOption) {
