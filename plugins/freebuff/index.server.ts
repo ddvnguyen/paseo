@@ -24,8 +24,11 @@ import { freebuffStatus } from "./shared/status";
 export default function contribute(server: PluginServerContext) {
   server.registerProvider(
     runAcpProvider({
-      id: "freebuff",
-      label: "Freebuff",
+      // Not "freebuff": hosts that already configure a `freebuff` provider by
+      // hand (agents.providers.freebuff) reject a plugin provider with that id
+      // and the whole plugin fails to start, taking the settings screen with it.
+      id: "freebuff-plugin",
+      label: "Freebuff (plugin)",
       description: "Free coding models via Freebuff, with multi-account quota",
       icon: "icon.svg",
       command: [process.execPath, ADAPTER_ENTRY],
