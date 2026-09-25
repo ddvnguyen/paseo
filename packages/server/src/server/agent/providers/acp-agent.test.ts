@@ -4042,6 +4042,56 @@ describe("ACP session/load invariant — cwd and mcpServers always passed", () =
     });
   });
 
+  test("publishes context usage reported during loadSession replay with the history", async () => {
+    let session!: ACPAgentSession;
+    const loadSession = async () => {
+      await session.sessionUpdate({
+        sessionId: "session-1",
+        update: { sessionUpdate: "usage_update", used: 5000, size: 1_000_000 } as SessionUpdate,
+      });
+      return { sessionId: "session-1", modes: null, models: null, configOptions: [] };
+    };
+    ({ session } = makeTestSession({
+      capabilities: { loadSession: true },
+      handle: { sessionId: "session-1", provider: "claude-acp" },
+      loadSession,
+    }));
+
+    await session.initializeResumedSession();
+
+    const history: AgentStreamEvent[] = [];
+    for await (const event of session.streamHistory()) {
+      history.push(event);
+    }
+    expect(history).toEqual([
+      {
+        type: "usage_updated",
+        provider: "claude-acp",
+        usage: { contextWindowUsedTokens: 5000, contextWindowMaxTokens: 1_000_000 },
+      },
+    ]);
+  });
+
+  test("treats a usage_update size of 0 as an unknown context window", async () => {
+    const { session } = makeTestSession({
+      handle: { sessionId: "session-1", provider: "claude-acp" },
+    });
+    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+
+    await session.sessionUpdate({
+      sessionId: "session-1",
+      update: { sessionUpdate: "usage_update", used: 1234, size: 0 } as SessionUpdate,
+    });
+
+    expect(events).toContainEqual({
+      type: "usage_updated",
+      provider: "claude-acp",
+      usage: { contextWindowUsedTokens: 1234 },
+    });
+  });
+
   test("preserves assistant message IDs from loadSession replay", async () => {
     let session!: ACPAgentSession;
     const loadSession = async () => {

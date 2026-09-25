@@ -261,7 +261,7 @@ describe("FreebuffAcpAgent", () => {
     expect(runOptions.agent).toBe("base3-free-mimo");
   });
 
-  it("soft-loads via loadSession without history replay", async () => {
+  it("restores RunState on loadSession", async () => {
     const env = testEnv();
     savePersistedSession(
       {
@@ -285,6 +285,74 @@ describe("FreebuffAcpAgent", () => {
       agent as unknown as { sessions: Map<string, { runState: unknown }> }
     ).sessions.get("freebuff-load-1");
     expect(session?.runState).toEqual({ marker: 42 });
+  });
+
+  it("replays history and reports context usage on loadSession", async () => {
+    const env = testEnv();
+    savePersistedSession(
+      {
+        sessionId: "freebuff-load-usage",
+        cwd: "/tmp",
+        modeId: "lite",
+        modelId: "stealth/ox-alpha",
+        runState: {
+          mainAgentState: {
+            contextTokenCount: 5000,
+            messageHistory: [
+              { role: "user", tags: ["USER_PROMPT"], content: [{ type: "text", text: "hi" }] },
+              { role: "assistant", content: [{ type: "text", text: "hello" }] },
+            ],
+          },
+        },
+        updatedAt: new Date().toISOString(),
+      },
+      env,
+    );
+    const conn = makeConn();
+    const agent = new FreebuffAcpAgent(conn, env);
+    stubClient(agent, makeClient({ type: "success" }));
+    await agent.loadSession({
+      sessionId: "freebuff-load-usage",
+      cwd: "/tmp",
+      mcpServers: [],
+    } as never);
+    const updates = (
+      conn.sessionUpdate.mock.calls as unknown as [{ update: Record<string, unknown> }][]
+    ).map(([notification]) => notification.update);
+    expect(updates.map((update) => update.sessionUpdate)).toEqual(
+      expect.arrayContaining(["user_message_chunk", "agent_message_chunk", "usage_update"]),
+    );
+    expect(updates.find((update) => update.sessionUpdate === "usage_update")).toEqual({
+      sessionUpdate: "usage_update",
+      used: 5000,
+      size: 1_000_000,
+    });
+  });
+
+  it("does not claim context usage for a session that has none", async () => {
+    const env = testEnv();
+    savePersistedSession(
+      {
+        sessionId: "freebuff-load-empty",
+        cwd: "/tmp",
+        modeId: "lite",
+        runState: null,
+        updatedAt: new Date().toISOString(),
+      },
+      env,
+    );
+    const conn = makeConn();
+    const agent = new FreebuffAcpAgent(conn, env);
+    stubClient(agent, makeClient({ type: "success" }));
+    await agent.loadSession({
+      sessionId: "freebuff-load-empty",
+      cwd: "/tmp",
+      mcpServers: [],
+    } as never);
+    const kinds = (
+      conn.sessionUpdate.mock.calls as unknown as [{ update: { sessionUpdate: string } }][]
+    ).map(([notification]) => notification.update.sessionUpdate);
+    expect(kinds).not.toContain("usage_update");
   });
 
   it("surfaces the waiting room as a refusal and preserves state", async () => {

@@ -1668,6 +1668,8 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   private readonly toolCalls = new Map<string, ACPToolSnapshot>();
   private readonly terminalEntries = new Map<string, TerminalEntry>();
   private readonly persistedHistory: AgentTimelineItem[] = [];
+  /** Context usage reported while history was replayed; published with the history. */
+  private restoredContextUsage: AgentUsage | undefined;
   private readonly initialHandle?: AgentPersistenceHandle;
 
   private readonly config: AgentSessionConfig;
@@ -1904,14 +1906,18 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   }
 
   async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
-    if (!this.historyPending || this.persistedHistory.length === 0) {
-      return;
+    const restoredUsage = this.restoredContextUsage;
+    this.restoredContextUsage = undefined;
+    if (this.historyPending && this.persistedHistory.length > 0) {
+      const history = [...this.persistedHistory];
+      this.persistedHistory.length = 0;
+      this.historyPending = false;
+      for (const item of history) {
+        yield { type: "timeline", provider: this.provider, item };
+      }
     }
-    const history = [...this.persistedHistory];
-    this.persistedHistory.length = 0;
-    this.historyPending = false;
-    for (const item of history) {
-      yield { type: "timeline", provider: this.provider, item };
+    if (restoredUsage) {
+      yield { type: "usage_updated", provider: this.provider, usage: restoredUsage };
     }
   }
 
@@ -2552,6 +2558,8 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       for (const event of events) {
         if (event.type === "timeline") {
           this.persistedHistory.push(event.item);
+        } else if (event.type === "usage_updated") {
+          this.restoredContextUsage = event.usage;
         }
       }
       return;
@@ -2968,8 +2976,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
         this.handleSessionInfoUpdate(update);
         return pendingUserEvents;
       case "usage_update":
-        this.handleUsageUpdate(update);
-        return pendingUserEvents;
+        return [...pendingUserEvents, ...this.handleUsageUpdate(update)];
       case "available_commands_update":
         this.cachedCommands = update.availableCommands.map((command) => ({
           name: command.name,
@@ -3129,8 +3136,17 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     }
   }
 
-  private handleUsageUpdate(update: UsageUpdate): void {
-    void update;
+  /**
+   * ACP `usage_update` reports the conversation's context fill: `used` tokens
+   * of a `size` window. A `size` of 0 means the agent does not know the window.
+   */
+  private handleUsageUpdate(update: UsageUpdate): AgentStreamEvent[] {
+    const usage: AgentUsage = {
+      contextWindowUsedTokens: update.used,
+      ...(update.size > 0 ? { contextWindowMaxTokens: update.size } : {}),
+    };
+    this.currentTurnUsage = { ...this.currentTurnUsage, ...usage };
+    return [{ type: "usage_updated", provider: this.provider, usage }];
   }
 
   private handlePromptResponse(response: PromptResponse, turnId: string): void {

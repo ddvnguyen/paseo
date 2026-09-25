@@ -74,6 +74,7 @@ import {
   loadPersistedSession,
   savePersistedSession,
 } from "./session-store.js";
+import { contextUsageUpdate } from "./context-usage.js";
 import { runStateToReplayUpdates } from "./history-replay.js";
 import { REQUIRE_APPROVAL_META } from "./permission-meta.js";
 import { nextConversationState } from "./run-state.js";
@@ -364,6 +365,7 @@ export class FreebuffAcpAgent {
           // Replay is best-effort; the restored RunState still carries context.
         });
     }
+    this.emitContextUsage(session);
     return this.sessionState(session);
   }
 
@@ -378,6 +380,7 @@ export class FreebuffAcpAgent {
       params.cwd,
       params.mcpServers ?? [],
     );
+    this.emitContextUsage(session);
     return this.sessionState(session);
   }
 
@@ -737,6 +740,7 @@ export class FreebuffAcpAgent {
       );
       this.adoptAdmittedModel(session, result.admittedModel);
       this.persist(session);
+      this.emitContextUsage(session);
       return {
         stopReason: result.stopReason,
         ...(result.contextTokens !== undefined || result.creditsUsed !== undefined
@@ -909,6 +913,17 @@ export class FreebuffAcpAgent {
   private readonly onStdinEnd = (): void => {
     void this.shutdown();
   };
+
+  /** Tell the host how full the conversation context is (standard ACP `usage_update`). */
+  private emitContextUsage(session: AdapterSession): void {
+    const update = contextUsageUpdate(session.runState, session.modelId);
+    if (!update) return;
+    void this.conn
+      .sessionUpdate({ sessionId: session.id, update } as unknown as SessionNotification)
+      .catch(() => {
+        // Best-effort, like every stream update.
+      });
+  }
 
   private sendMessage(session: AdapterSession, text: string): void {
     void this.conn
