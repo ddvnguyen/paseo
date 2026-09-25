@@ -1068,7 +1068,9 @@ Themes need a host that supports them. A client released before `addTheme` canno
 ## Settings screens
 
 Register a component with `client.addSettingsScreen({ id, title, icon, Component })` in
-`index.client.tsx`. It appears under **Settings → Plugins → your plugin** on that host.
+`index.client.tsx`. It appears under **Settings → Plugins → your plugin** on that host and, while
+the plugin runs, as its own entry — title and Lucide icon from the registration — in the Settings
+side menu below Plugins.
 `id` is unique within the installation; `icon` is a Lucide name. Registration returns an
 idempotent remover, and plugin teardown removes remaining screens.
 

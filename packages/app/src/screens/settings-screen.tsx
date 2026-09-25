@@ -117,6 +117,11 @@ import {
 } from "@/screens/settings/host-page";
 import { resolvePluginIcon } from "@/plugins/icons";
 import { PluginSettingsContent } from "@/plugins/settings";
+import { buildPluginSettingsRoute } from "@/plugins/settings/routes";
+import {
+  derivePluginSettingsSidebarItems,
+  type PluginSettingsSidebarItem,
+} from "@/plugins/settings/sidebar-items";
 import { useInstalledPlugins } from "@/plugins/registry";
 import { HostPluginsPage } from "@/screens/settings/plugins-page";
 import { MetadataGenerationPage } from "@/screens/settings/metadata-generation-page";
@@ -231,6 +236,93 @@ function renderHostSettingsContent(
       return <HostPluginsPage serverId={view.serverId} />;
     case "host":
       return <HostSettingsPage serverId={view.serverId} onHostRemoved={onHostRemoved} />;
+  }
+}
+
+interface SectionContentProps {
+  view: Extract<SettingsView, { kind: "section" }>;
+  settings: AppSettings;
+  isDesktopApp: boolean;
+  voiceAudioEngine: ReturnType<typeof useVoiceAudioEngineOptional>;
+  isPlaybackTestRunning: boolean;
+  playbackTestResult: string | null;
+  handleSendBehaviorChange: (behavior: SendBehavior) => void;
+  handleServiceUrlBehaviorChange: (behavior: ServiceUrlBehavior) => void;
+  handleLanguageChange: (language: AppLanguage) => void;
+  handleTerminalScrollbackLinesChange: (lines: number) => void;
+  handleUseLegacyTerminalRendererChange: (value: boolean) => void;
+  handlePlaybackTest: () => Promise<void>;
+  appVersion: string | null;
+}
+
+/**
+ * Renders the body of an app-level settings section. Extracted from the main
+ * screen component so the per-section switch stays out of its complexity
+ * budget; it carries no screen state of its own.
+ */
+function renderSectionContent({
+  view,
+  settings,
+  isDesktopApp,
+  voiceAudioEngine,
+  isPlaybackTestRunning,
+  playbackTestResult,
+  handleSendBehaviorChange,
+  handleServiceUrlBehaviorChange,
+  handleLanguageChange,
+  handleTerminalScrollbackLinesChange,
+  handleUseLegacyTerminalRendererChange,
+  handlePlaybackTest,
+  appVersion,
+}: SectionContentProps): ReactNode {
+  switch (view.section) {
+    case "general":
+      return (
+        <>
+          <GeneralSection
+            settings={settings}
+            isDesktopApp={isDesktopApp}
+            handleSendBehaviorChange={handleSendBehaviorChange}
+            handleServiceUrlBehaviorChange={handleServiceUrlBehaviorChange}
+            handleLanguageChange={handleLanguageChange}
+            handleTerminalScrollbackLinesChange={handleTerminalScrollbackLinesChange}
+          />
+          {isDesktopApp ? <BrowserDataSection /> : null}
+        </>
+      );
+    case "appearance":
+      return <AppearanceSection />;
+    case "editor":
+      return isWeb ? <EditorSection /> : null;
+    case "shortcuts":
+      return isDesktopApp ? <KeyboardShortcutsSection /> : null;
+    case "integrations":
+      return isDesktopApp ? <IntegrationsSection /> : null;
+    case "notifications":
+      return isDesktopApp ? <DesktopNotificationsSection /> : null;
+    case "permissions":
+      return isDesktopApp ? <DesktopPermissionsSection /> : null;
+    case "diagnostics":
+      return (
+        <DiagnosticsSection
+          useLegacyTerminalRenderer={settings.useLegacyTerminalRenderer}
+          onUseLegacyTerminalRendererChange={handleUseLegacyTerminalRendererChange}
+          voiceAudioEngine={voiceAudioEngine}
+          isPlaybackTestRunning={isPlaybackTestRunning}
+          playbackTestResult={playbackTestResult}
+          handlePlaybackTest={handlePlaybackTest}
+        />
+      );
+    case "debug":
+      return <DebugSection />;
+    case "about":
+      return (
+        <AboutSection
+          appVersion={appVersion}
+          appVersionText={formatVersionWithPrefix(appVersion)}
+          isDesktopApp={isDesktopApp}
+        />
+      );
   }
 }
 
@@ -1062,6 +1154,53 @@ function SidebarHostSectionButton({
   );
 }
 
+interface SidebarPluginSettingsButtonProps {
+  item: PluginSettingsSidebarItem;
+  isSelected: boolean;
+}
+
+/**
+ * Sidebar entry for one running plugin's settings screen. Reuses the plugin
+ * settings route — the same one the Plugins page "..." menu opens — so this is
+ * another entry point, not another screen.
+ */
+function SidebarPluginSettingsButton({ item, isSelected }: SidebarPluginSettingsButtonProps) {
+  const { theme } = useUnistyles();
+  const router = useRouter();
+  const isCompactLayout = useIsCompactFormFactor();
+  const IconComponent = resolvePluginIcon(item.icon);
+  const handlePress = useCallback(() => {
+    const target = buildPluginSettingsRoute(item.serverId, item.pluginId, item.screenId);
+    if (isCompactLayout) {
+      router.push(target);
+    } else {
+      router.replace(target);
+    }
+  }, [isCompactLayout, item.pluginId, item.screenId, item.serverId, router]);
+  const accessibilityState = useMemo(() => ({ selected: isSelected }), [isSelected]);
+  const labelStyle = useMemo(
+    () => [sidebarStyles.label, isSelected && { color: theme.colors.foreground }],
+    [isSelected, theme.colors.foreground],
+  );
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={accessibilityState}
+      onPress={handlePress}
+      testID={`settings-plugin-settings-${item.pluginId}-${item.screenId}`}
+      style={isSelected ? selectedSidebarItemStyle : sidebarItemStyle}
+    >
+      <IconComponent
+        size={theme.iconSize.md}
+        color={isSelected ? theme.colors.foreground : theme.colors.foregroundMuted}
+      />
+      <Text style={labelStyle} numberOfLines={1}>
+        {item.title}
+      </Text>
+    </Pressable>
+  );
+}
+
 interface HostPickerProps {
   activeServerId: string | null;
   sortedHosts: HostProfile[];
@@ -1176,6 +1315,11 @@ function SettingsSidebar({
   const items = SIDEBAR_SECTION_ITEMS.filter(
     (item) => (!item.desktopOnly || isDesktopApp) && (!item.webOnly || isWeb),
   );
+  const installedPlugins = useInstalledPlugins();
+  const pluginSettingsItems = useMemo(
+    () => derivePluginSettingsSidebarItems(installedPlugins, activeHostServerId),
+    [activeHostServerId, installedPlugins],
+  );
   const insets = useSafeAreaInsets();
   const isDesktop = layout === "desktop";
   const outerContainerStyle = useMemo(
@@ -1226,6 +1370,18 @@ function SettingsSidebar({
               icon={item.icon}
               isSelected={selectedHostSection === item.id}
               onSelect={onSelectHostSection}
+            />
+          ))}
+          {pluginSettingsItems.map((item) => (
+            <SidebarPluginSettingsButton
+              key={item.key}
+              item={item}
+              isSelected={
+                view.kind === "plugin" &&
+                view.serverId === item.serverId &&
+                view.pluginId === item.pluginId &&
+                view.screenId === item.screenId
+              }
             />
           ))}
         </View>
@@ -1320,7 +1476,6 @@ export default function SettingsScreen({ view, openAddHostIntent = null }: Setti
   const lastOpenedAddHostIntentRef = useRef<string | null>(null);
   const isDesktopApp = isElectronRuntime();
   const appVersion = resolveAppVersion();
-  const appVersionText = formatVersionWithPrefix(appVersion);
   const isCompactLayout = useIsCompactFormFactor();
   const insets = useSafeAreaInsets();
   const insetBottomStyle = useMemo(() => ({ paddingBottom: insets.bottom }), [insets.bottom]);
@@ -1611,55 +1766,21 @@ export default function SettingsScreen({ view, openAddHostIntent = null }: Setti
         );
       }
       if (view.kind === "section") {
-        switch (view.section) {
-          case "general":
-            return (
-              <>
-                <GeneralSection
-                  settings={settings}
-                  isDesktopApp={isDesktopApp}
-                  handleSendBehaviorChange={handleSendBehaviorChange}
-                  handleServiceUrlBehaviorChange={handleServiceUrlBehaviorChange}
-                  handleLanguageChange={handleLanguageChange}
-                  handleTerminalScrollbackLinesChange={handleTerminalScrollbackLinesChange}
-                />
-                {isDesktopApp ? <BrowserDataSection /> : null}
-              </>
-            );
-          case "appearance":
-            return <AppearanceSection />;
-          case "editor":
-            return isWeb ? <EditorSection /> : null;
-          case "shortcuts":
-            return isDesktopApp ? <KeyboardShortcutsSection /> : null;
-          case "integrations":
-            return isDesktopApp ? <IntegrationsSection /> : null;
-          case "notifications":
-            return isDesktopApp ? <DesktopNotificationsSection /> : null;
-          case "permissions":
-            return isDesktopApp ? <DesktopPermissionsSection /> : null;
-          case "diagnostics":
-            return (
-              <DiagnosticsSection
-                useLegacyTerminalRenderer={settings.useLegacyTerminalRenderer}
-                onUseLegacyTerminalRendererChange={handleUseLegacyTerminalRendererChange}
-                voiceAudioEngine={voiceAudioEngine}
-                isPlaybackTestRunning={isPlaybackTestRunning}
-                playbackTestResult={playbackTestResult}
-                handlePlaybackTest={handlePlaybackTest}
-              />
-            );
-          case "debug":
-            return <DebugSection />;
-          case "about":
-            return (
-              <AboutSection
-                appVersion={appVersion}
-                appVersionText={appVersionText}
-                isDesktopApp={isDesktopApp}
-              />
-            );
-        }
+        return renderSectionContent({
+          view,
+          settings,
+          isDesktopApp,
+          voiceAudioEngine,
+          isPlaybackTestRunning,
+          playbackTestResult,
+          handleSendBehaviorChange,
+          handleServiceUrlBehaviorChange,
+          handleLanguageChange,
+          handleTerminalScrollbackLinesChange,
+          handleUseLegacyTerminalRendererChange,
+          handlePlaybackTest,
+          appVersion,
+        });
       }
       return null;
     })();
