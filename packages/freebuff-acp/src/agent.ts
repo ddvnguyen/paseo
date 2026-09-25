@@ -73,6 +73,7 @@ import {
   loadPersistedSession,
   savePersistedSession,
 } from "./session-store.js";
+import { runStateToReplayUpdates } from "./history-replay.js";
 import { nextConversationState } from "./run-state.js";
 import { createAbortableTerminalTool } from "./terminal.js";
 import type { TurnResult } from "./turn.js";
@@ -196,9 +197,8 @@ export class FreebuffAcpAgent {
     return {
       protocolVersion: 1,
       agentCapabilities: {
-        // History replay is not supported (SDK RunState is opaque).
-        // Soft load: restores the RunState from disk without replaying history.
-        // Hosts that only resume via session/load (Paseo's plugin ACP shim)
+        // session/load restores the RunState and replays the visible history
+        // (history-replay.ts). Hosts that only resume via session/load (Paseo's plugin ACP shim)
         // need this true; session/resume below serves hosts that prefer it.
         loadSession: true,
         sessionCapabilities: {
@@ -284,14 +284,21 @@ export class FreebuffAcpAgent {
   }
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
-    // History replay is intentionally unsupported (opaque RunState). Advertise
-    // session/resume instead; if a host still calls loadSession, restore
-    // context without emitting past messages so resume never hard-fails.
     const session = await this.restoreSession(
       params.sessionId,
       params.cwd,
       params.mcpServers ?? [],
     );
+    // Paseo keeps its timeline in memory and refills it from this replay after
+    // a daemon restart. Awaited so the host has the full history before it
+    // reads the load response.
+    for (const update of runStateToReplayUpdates(session.runState)) {
+      await this.conn
+        .sessionUpdate({ sessionId: session.id, update } as unknown as SessionNotification)
+        .catch(() => {
+          // Replay is best-effort; the restored RunState still carries context.
+        });
+    }
     return this.sessionState(session);
   }
 

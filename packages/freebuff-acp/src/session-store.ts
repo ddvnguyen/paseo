@@ -63,13 +63,18 @@ export function savePersistedSession(
     const file = sessionFilePath(env, session.sessionId);
     // RunState carries conversation content; keep it off other local users.
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(file, JSON.stringify({ ...session, updatedAt: new Date().toISOString() }), {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    // `mode` above only applies when the file is newly created; correct an
-    // existing file's permissions too (e.g. left behind by an older build).
-    fs.chmodSync(file, 0o600);
+    // Write to a temp file then rename: a crash mid-write must never leave a
+    // truncated session file that would lose the whole conversation.
+    const temporary = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(
+      temporary,
+      JSON.stringify({ ...session, updatedAt: new Date().toISOString() }),
+      {
+        encoding: "utf8",
+        mode: 0o600,
+      },
+    );
+    fs.renameSync(temporary, file);
   } catch {
     // Best-effort; resume degrades to a fresh conversation context.
   }
