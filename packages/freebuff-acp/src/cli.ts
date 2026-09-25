@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 import path from "node:path";
 
-import { endAccountSession, listAccountDetails, removeAccountAndState } from "./account-admin.js";
+import {
+  endAccountSession,
+  listAccountDetails,
+  removeAccountAndState,
+  renameAccountLabel,
+  setAccountDefault,
+} from "./account-admin.js";
 import { accountsFilePath, addAccount, removeAccount } from "./accounts.js";
 import { cancelLogin, pollLogin, startLogin } from "./login.js";
 import { buildStatusReport } from "./status-report.js";
@@ -24,6 +30,12 @@ const USAGE = `freebuff-acp-cli <command>
   accounts list                Accounts with seat, quota and read-only CLI settings (JSON)
   accounts delete --id <id>    Unregister an account and delete its adapter-managed
                                credentials (JSON)
+  accounts set-default --id <id>
+                               Make an account the one new sessions start on (JSON:
+                               {"defaultAccountId"})
+  accounts rename --id <id> --label <label>
+                               Change an account's display label (empty label clears an
+                               override; JSON: {"id","label"})
   session end --id <id>        End the account's live Freebuff seat (JSON)
 `;
 
@@ -48,6 +60,19 @@ async function runAdminCommand(
     const id = flagValue("--id", rest);
     if (!id) throw new Error("usage: accounts delete --id <id>");
     console.log(JSON.stringify(removeAccountAndState(id), null, 2));
+    return 0;
+  }
+  if (command === "accounts" && subcommand === "set-default") {
+    const id = flagValue("--id", rest);
+    if (!id) throw new Error("usage: accounts set-default --id <id>");
+    console.log(JSON.stringify(setAccountDefault(id), null, 2));
+    return 0;
+  }
+  if (command === "accounts" && subcommand === "rename") {
+    const id = flagValue("--id", rest);
+    const label = flagValue("--label", rest);
+    if (!id || label === null) throw new Error("usage: accounts rename --id <id> --label <label>");
+    console.log(JSON.stringify(renameAccountLabel(id, label), null, 2));
     return 0;
   }
   if (command === "session" && subcommand === "end") {

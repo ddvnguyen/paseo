@@ -2,7 +2,9 @@ import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 
 import type {
   freebuffAccountDelete,
+  freebuffAccountRename,
   freebuffAccountsList,
+  freebuffAccountSetDefault,
   freebuffLoginCancel,
   freebuffLoginPoll,
   freebuffLoginStart,
@@ -43,6 +45,21 @@ export function deleteAccount({
   id,
 }: RpcInput<typeof freebuffAccountDelete>): Promise<RpcOutput<typeof freebuffAccountDelete>> {
   return runAdapterJson(["accounts", "delete", "--id", id]);
+}
+
+export function setAccountDefault({
+  id,
+}: RpcInput<typeof freebuffAccountSetDefault>): Promise<
+  RpcOutput<typeof freebuffAccountSetDefault>
+> {
+  return runAdapterJson(["accounts", "set-default", "--id", id]);
+}
+
+export function renameAccount({
+  id,
+  label,
+}: RpcInput<typeof freebuffAccountRename>): Promise<RpcOutput<typeof freebuffAccountRename>> {
+  return runAdapterJson(["accounts", "rename", "--id", id, "--label", label]);
 }
 
 export function endSession({

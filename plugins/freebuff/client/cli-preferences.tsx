@@ -20,8 +20,6 @@ function prefRows(cli: CliSettings): PrefRow[] {
     { key: "model", label: "Model", value: cliValue(cli.freebuffModel) },
     { key: "ads", label: "Ads", value: cliValue(cli.adsEnabled) },
     { key: "reasoning", label: "Reasoning per model", value: effort ?? "not set" },
-    { key: "fallback", label: "À-la-carte fallback", value: cliValue(cli.fallbackToALaCarte) },
-    { key: "byok", label: "BYOK connected", value: cliValue(cli.byokConnected) },
   ];
 }
 

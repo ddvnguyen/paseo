@@ -20,13 +20,14 @@ export interface AccountDetail {
   cliSettings: CliSettings | null;
 }
 
+/** The account fields the quota helpers read. */
+export type QuotaAccount = Pick<AccountDetail, "id" | "label" | "authenticated" | "status">;
+
 export interface CliSettings {
   mode?: string;
   freebuffModel?: string;
   adsEnabled?: boolean;
   freebuffReasoningEfforts?: Record<string, string>;
-  fallbackToALaCarte?: boolean;
-  byokConnected?: boolean;
 }
 
 /** Login poll outcome, mirroring the freebuff.login.poll contract. */
@@ -35,6 +36,9 @@ export type LoginPollStatus = "pending" | "expired" | "success" | "none" | "erro
 export const ACCOUNT_ID_PATTERN = /^[a-z0-9_-]+$/;
 export const ACCOUNT_ID_MAX_LENGTH = 32;
 export const RESERVED_ACCOUNT_IDS = ["default"] as const;
+
+/** Max display-label length, enforced by the rename RPC contract too. */
+export const ACCOUNT_LABEL_MAX_LENGTH = 80;
 
 /** Reasons an id cannot be registered; empty string means valid. */
 export function validateAccountId(id: string, existingIds: readonly string[]): string {
@@ -58,15 +62,47 @@ export function isValidAccountId(id: string, existingIds: readonly string[]): bo
 }
 
 /** '20/25 Freebucks left today', falling back to login state. */
-export function quotaLine(account: AccountDetail): string {
+export function quotaLine(account: QuotaAccount): string {
   if (!account.authenticated) return "Not logged in";
-  if (account.status?.dailyRemaining == null) return "Quota unavailable";
-  const limit = account.status.dailyLimit ?? "?";
-  return `${account.status.dailyRemaining}/${limit} Freebucks left today`;
+  const remaining = account.status?.dailyRemaining;
+  if (remaining == null) return "Quota unavailable";
+  return `${remaining}/${account.status?.dailyLimit ?? "?"} Freebucks left today`;
+}
+
+/** '20/25' with the limit blanked when unknown; '—' when not logged in. */
+export function quotaRatio(account: QuotaAccount): string {
+  if (!account.authenticated) return "—";
+  const remaining = account.status?.dailyRemaining;
+  if (remaining == null) return "—";
+  return `${remaining}/${account.status?.dailyLimit ?? "?"}`;
+}
+
+/** 0..100 used today, or null when unknown (no bar). */
+export function quotaUsedPercent(account: QuotaAccount): number | null {
+  const remaining = account.status?.dailyRemaining;
+  const limit = account.status?.dailyLimit;
+  if (remaining == null || limit == null || limit <= 0) return null;
+  return Math.min(100, Math.max(0, Math.round(((limit - remaining) / limit) * 100)));
+}
+
+/**
+ * A daily reset timestamp rendered in the viewer's local time, e.g.
+ * 'Sep 26, 7:00 AM'. Null when absent or unparseable — never shows raw tokens.
+ */
+export function formatResetTime(resetAt: string | undefined): string | null {
+  if (!resetAt) return null;
+  const date = new Date(resetAt);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 /** Optional '· 3 Freebucks in wallet' suffix. */
-export function walletLine(account: AccountDetail): string {
+export function walletLine(account: QuotaAccount): string {
   const balance = account.status?.walletBalance;
   if (balance == null || balance <= 0) return "";
   return ` · ${balance} Freebucks in wallet`;
@@ -108,4 +144,9 @@ export function reasoningLine(
   const entries = Object.entries(efforts);
   if (entries.length === 0) return null;
   return entries.map(([key, effort]) => `${key}: ${effort}`).join(", ");
+}
+
+/** Empty label clears the override; trim before sending. */
+export function normalizeRenameLabel(label: string): string {
+  return label.trim();
 }

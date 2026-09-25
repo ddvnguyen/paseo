@@ -2,6 +2,7 @@ import type { ModelInfo, SessionConfigOption } from "@agentclientprotocol/sdk";
 
 import { probeOpenSession } from "./freebuff-session.js";
 import type { FreebuffSessionServerResponse } from "./types.js";
+import { resolveDefaultAccountId } from "./accounts.js";
 
 /**
  * Account identity + quota, surfaced to the host as ACP session config
@@ -135,7 +136,10 @@ export function buildConfigOptions(input: {
   ] as SessionConfigOption[];
 }
 
-/** Account a new session starts on: FREEBUFF_ACCOUNT, else the default. */
+/**
+ * Account a new session starts on: FREEBUFF_ACCOUNT wins, else the stored
+ * default from accounts-prefs.json ("default" when none is set).
+ */
 export function initialAccountId(env: NodeJS.ProcessEnv): string | undefined {
-  return env.FREEBUFF_ACCOUNT?.trim() || undefined;
+  return env.FREEBUFF_ACCOUNT?.trim() || resolveDefaultAccountId(env);
 }

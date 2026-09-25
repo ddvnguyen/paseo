@@ -6,10 +6,12 @@ import {
   accountConfigDir,
   accountDisplayName,
   credentialsForAccount,
-  DEFAULT_ACCOUNT_ID,
   isValidAccountId,
   listAccounts,
   removeAccount,
+  renameAccount,
+  resolveDefaultAccountId,
+  setDefaultAccount,
   type FreebuffAccount,
 } from "./accounts.js";
 import { getCredentialsPath } from "./auth.js";
@@ -39,10 +41,6 @@ export interface CliSettingsView {
   freebuffModel?: string;
   adsEnabled?: boolean;
   freebuffReasoningEfforts?: Record<string, string>;
-  /** Server-side fallback preference; the deprecated CLI flags map onto it. */
-  fallbackToALaCarte?: boolean;
-  /** Only whether a BYOK connection is selected, never its id or credentials. */
-  byokConnected?: boolean;
 }
 
 export interface AccountDetail {
@@ -78,9 +76,6 @@ export function cliSettingsFromJson(raw: unknown): CliSettingsView {
   if (typeof raw.adsEnabled === "boolean") view.adsEnabled = raw.adsEnabled;
   const efforts = stringRecord(raw.freebuffReasoningEfforts);
   if (efforts) view.freebuffReasoningEfforts = efforts;
-  const fallback = raw.fallbackToALaCarte ?? raw.alwaysUseALaCarte;
-  if (typeof fallback === "boolean") view.fallbackToALaCarte = fallback;
-  if (isRecord(raw.byokConnection)) view.byokConnected = true;
   return view;
 }
 
@@ -112,7 +107,7 @@ async function describeAccount(
   const base = {
     id: account.id,
     label: accountDisplayName(account, env),
-    isDefault: account.id === DEFAULT_ACCOUNT_ID,
+    isDefault: account.id === resolveDefaultAccountId(env),
     authenticated: credentials !== null,
     managed: isManaged(account, env),
     cliSettings: readCliSettings(account, env),
@@ -194,4 +189,30 @@ export function removeAccountAndState(
     deletedCredentials = true;
   }
   return { removed, deletedCredentials };
+}
+
+/**
+ * Choose the account new sessions start on. `"default"` is always accepted;
+ * anything else must name a registered account.
+ */
+export function setAccountDefault(
+  id: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { defaultAccountId: string } {
+  return { defaultAccountId: setDefaultAccount(id, env) };
+}
+
+/**
+ * Rename an account's display label (the id is fixed). Registered accounts
+ * are rewritten in accounts.json; the built-in default's label lives in the
+ * prefs file. An empty label clears the override.
+ */
+export function renameAccountLabel(
+  id: string,
+  label: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { id: string; label: string } {
+  const renamed = renameAccount(id, label, env);
+  if (!renamed) throw new Error(`No such account "${id}".`);
+  return { id: renamed.id, label: accountDisplayName(renamed, env) };
 }

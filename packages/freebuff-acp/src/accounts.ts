@@ -168,16 +168,111 @@ export function readAccountsSnapshot(env: NodeJS.ProcessEnv = process.env): Acco
   return { state: "ok", accounts: parseExtraAccounts(parsed) };
 }
 
+/**
+ * Adapter-side preferences that are not accounts: which account new sessions
+ * start on and the built-in default's display-label override. Stored in a
+ * small file next to accounts.json so accounts.json keeps holding paths only:
+ *
+ *   ~/.config/freebuff-acp/accounts-prefs.json
+ *   { "defaultAccountId": "work", "defaultLabel": "Personal" }
+ *
+ * A missing or corrupt file means "no preferences": readers fall back to the
+ * built-in default and never throw.
+ */
+export interface AccountsPrefs {
+  /** Account new sessions start on; "default" or a registered id. */
+  defaultAccountId?: string;
+  /** Display-label override for the built-in default account. */
+  defaultLabel?: string;
+}
+
+export function accountsPrefsFilePath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(path.dirname(accountsFilePath(env)), "accounts-prefs.json");
+}
+
+function parseAccountsPrefs(parsed: unknown): AccountsPrefs {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+  const prefs: AccountsPrefs = {};
+  const { defaultAccountId, defaultLabel } = parsed as Record<string, unknown>;
+  if (typeof defaultAccountId === "string" && defaultAccountId.trim()) {
+    prefs.defaultAccountId = defaultAccountId.trim();
+  }
+  if (typeof defaultLabel === "string" && defaultLabel.trim()) {
+    prefs.defaultLabel = defaultLabel.trim();
+  }
+  return prefs;
+}
+
+/** Read accounts-prefs.json; missing/corrupt/unreadable = no preferences. */
+export function readAccountsPrefs(env: NodeJS.ProcessEnv = process.env): AccountsPrefs {
+  const file = accountsPrefsFilePath(env);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return {};
+    warn(
+      `accounts prefs file ${file} is unreadable (${describeError(error)}); ` +
+        "using the built-in default account.",
+    );
+    return {};
+  }
+  try {
+    return parseAccountsPrefs(JSON.parse(raw));
+  } catch (error) {
+    warn(
+      `accounts prefs file ${file} is corrupt (${describeError(error)}); ` +
+        "using the built-in default account.",
+    );
+    return {};
+  }
+}
+
+/** Same atomic temp-file + rename write as accounts.json, mode 0600. */
+function writeAccountsPrefs(prefs: AccountsPrefs, env: NodeJS.ProcessEnv): void {
+  const file = accountsPrefsFilePath(env);
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    fs.writeFileSync(tmp, `${JSON.stringify(prefs, null, 2)}\n`, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
 /** The default account first, then any registered extras. */
 export function listAccounts(env: NodeJS.ProcessEnv = process.env): FreebuffAccount[] {
   return [{ id: DEFAULT_ACCOUNT_ID, configDir: null }, ...readAccountsSnapshot(env).accounts];
 }
 
+/**
+ * Account id new sessions start on: the stored default when it still names
+ * "default" or a registered account (a removed account self-heals), else the
+ * built-in "default". A missing/corrupt prefs file is the built-in default.
+ */
+export function resolveDefaultAccountId(env: NodeJS.ProcessEnv = process.env): string {
+  const stored = readAccountsPrefs(env).defaultAccountId;
+  if (
+    stored &&
+    (stored === DEFAULT_ACCOUNT_ID ||
+      readAccountsSnapshot(env).accounts.some((account) => account.id === stored))
+  ) {
+    return stored;
+  }
+  return DEFAULT_ACCOUNT_ID;
+}
+
+/**
+ * The named account, or — when no id is given — the stored default.
+ * An unknown explicit id returns null (callers fall back to the default).
+ */
 export function findAccount(
   accountId: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): FreebuffAccount | null {
-  const id = accountId || DEFAULT_ACCOUNT_ID;
+  const requested = accountId?.trim();
+  const id = requested ? requested : resolveDefaultAccountId(env);
   return listAccounts(env).find((account) => account.id === id) ?? null;
 }
 
@@ -202,7 +297,72 @@ export function accountDisplayName(
   account: FreebuffAccount,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return account.label ?? resolveAccountLabel(envForAccount(account, env));
+  // The built-in default has no label of its own; its override lives in prefs.
+  const override =
+    account.id === DEFAULT_ACCOUNT_ID ? readAccountsPrefs(env).defaultLabel : account.label;
+  return override ?? resolveAccountLabel(envForAccount(account, env));
+}
+
+/**
+ * Choose the account new sessions start on: the built-in "default" or a
+ * registered id. Throws when the id names no known account.
+ * Returns the id that was stored.
+ */
+export function setDefaultAccount(id: string, env: NodeJS.ProcessEnv = process.env): string {
+  const accountId = id.trim();
+  if (accountId !== DEFAULT_ACCOUNT_ID && !isValidAccountId(accountId)) {
+    throw new Error(`Invalid account id "${id}".`);
+  }
+  if (accountId !== DEFAULT_ACCOUNT_ID) {
+    const registered = readAccountsSnapshot(env).accounts.some(
+      (account) => account.id === accountId,
+    );
+    if (!registered) throw new Error(`No such account "${accountId}".`);
+  }
+  const prefs = readAccountsPrefs(env);
+  prefs.defaultAccountId = accountId;
+  writeAccountsPrefs(prefs, env);
+  return accountId;
+}
+
+/**
+ * Edit an account's display label only — the id is fixed. Registered accounts
+ * are rewritten in accounts.json (addAccount-style atomic rewrite, refusing a
+ * corrupt file); the built-in "default" keeps its override in
+ * accounts-prefs.json. An empty label clears the override. Returns the
+ * renamed account, or null when it vanished mid-write.
+ */
+export function renameAccount(
+  id: string,
+  label: string,
+  env: NodeJS.ProcessEnv = process.env,
+): FreebuffAccount | null {
+  const accountId = id.trim();
+  const trimmed = label.trim();
+  if (accountId === DEFAULT_ACCOUNT_ID) {
+    const prefs = readAccountsPrefs(env);
+    if (trimmed) prefs.defaultLabel = trimmed;
+    else delete prefs.defaultLabel;
+    writeAccountsPrefs(prefs, env);
+    return findAccount(DEFAULT_ACCOUNT_ID, env);
+  }
+  if (!isValidAccountId(accountId)) throw new Error(`Invalid account id "${id}".`);
+  const file = accountsFilePath(env);
+  const snapshot = readAccountsSnapshot(env);
+  assertAccountsFileReadable(snapshot, file);
+  const current = snapshot.accounts.find((account) => account.id === accountId);
+  if (!current) throw new Error(`No such account "${accountId}".`);
+  const renamed: FreebuffAccount = {
+    id: accountId,
+    configDir: current.configDir,
+    ...(trimmed ? { label: trimmed } : {}),
+  };
+  // Replace in place so the account keeps its position in the list.
+  writeExtraAccounts(
+    snapshot.accounts.map((account) => (account.id === accountId ? renamed : account)),
+    env,
+  );
+  return findAccount(accountId, env);
 }
 
 /**
@@ -270,5 +430,11 @@ export function removeAccount(id: string, env: NodeJS.ProcessEnv = process.env):
   const rest = snapshot.accounts.filter((account) => account.id !== id);
   if (rest.length === snapshot.accounts.length) return false;
   writeExtraAccounts(rest, env);
+  // Removing the chosen default resets it to the built-in "default" account.
+  const prefs = readAccountsPrefs(env);
+  if (prefs.defaultAccountId === id) {
+    prefs.defaultAccountId = DEFAULT_ACCOUNT_ID;
+    writeAccountsPrefs(prefs, env);
+  }
   return true;
 }

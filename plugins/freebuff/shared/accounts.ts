@@ -20,8 +20,6 @@ const cliSettings = z.object({
   freebuffModel: z.string().optional(),
   adsEnabled: z.boolean().optional(),
   freebuffReasoningEfforts: z.record(z.string(), z.string()).optional(),
-  fallbackToALaCarte: z.boolean().optional(),
-  byokConnected: z.boolean().optional(),
 });
 
 const accountDetail = z.object({
@@ -76,6 +74,18 @@ export const freebuffAccountDelete = defineRpc({
   name: "freebuff.account.delete",
   input: z.object({ id: accountId }),
   output: z.object({ removed: z.boolean(), deletedCredentials: z.boolean() }),
+});
+
+export const freebuffAccountSetDefault = defineRpc({
+  name: "freebuff.account.setDefault",
+  input: z.object({ id: accountId }),
+  output: z.object({ defaultAccountId: z.string() }),
+});
+
+export const freebuffAccountRename = defineRpc({
+  name: "freebuff.account.rename",
+  input: z.object({ id: accountId, label: z.string().max(80) }),
+  output: z.object({ id: z.string(), label: z.string() }),
 });
 
 export const freebuffSessionEnd = defineRpc({

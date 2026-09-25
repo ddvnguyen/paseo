@@ -7,13 +7,17 @@ import {
   endSession,
   listAccounts,
   pollLogin,
+  renameAccount,
+  setAccountDefault,
   startLogin,
 } from "./server/accounts";
 import { ADAPTER_ENTRY } from "./server/generated";
 import { readFreebuffStatus } from "./server/status";
 import {
   freebuffAccountDelete,
+  freebuffAccountRename,
   freebuffAccountsList,
+  freebuffAccountSetDefault,
   freebuffLoginCancel,
   freebuffLoginPoll,
   freebuffLoginStart,
@@ -40,6 +44,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(freebuffLoginPoll, pollLogin);
   server.handle(freebuffLoginCancel, cancelLogin);
   server.handle(freebuffAccountDelete, deleteAccount);
+  server.handle(freebuffAccountSetDefault, setAccountDefault);
+  server.handle(freebuffAccountRename, renameAccount);
   server.handle(freebuffSessionEnd, endSession);
   return () => {};
 }

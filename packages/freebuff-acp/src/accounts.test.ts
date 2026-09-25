@@ -3,7 +3,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { addAccount, listAccounts, readAccountsSnapshot, removeAccount } from "./accounts.js";
+import {
+  accountDisplayName,
+  accountsPrefsFilePath,
+  addAccount,
+  findAccount,
+  listAccounts,
+  readAccountsPrefs,
+  readAccountsSnapshot,
+  removeAccount,
+  renameAccount,
+  resolveDefaultAccountId,
+  setDefaultAccount,
+} from "./accounts.js";
+import { resolveAccountLabel } from "./auth.js";
 
 let stateDir = "";
 let accountsFile = "";
@@ -23,6 +36,11 @@ afterEach(() => {
 
 function env(): NodeJS.ProcessEnv {
   return { FREEBUFF_ACP_ACCOUNTS_FILE: accountsFile };
+}
+
+/** Credentials for the built-in default account (its config dir in this test). */
+function withDefaultConfigDir(e: NodeJS.ProcessEnv, dir: string): NodeJS.ProcessEnv {
+  return { ...e, FREEBUFF_CONFIG_DIR: dir };
 }
 
 const VALID_ACCOUNT = { id: "work", label: "Work", configDir: "/abs/work" };
@@ -125,5 +143,120 @@ describe("atomic writes (F5)", () => {
     expect(removeAccount("nope", env())).toBe(false);
     expect(removeAccount("work", env())).toBe(true);
     expect(listAccounts(env()).map((account) => account.id)).toEqual(["default"]);
+  });
+});
+
+describe("accounts-prefs file", () => {
+  it("lives next to accounts.json and reads as no-preferences when missing", () => {
+    expect(accountsPrefsFilePath(env())).toBe(path.join(stateDir, "accounts-prefs.json"));
+    expect(readAccountsPrefs(env())).toEqual({});
+    expect(resolveDefaultAccountId(env())).toBe("default");
+  });
+
+  it("treats a corrupt prefs file as no-preferences and never throws", () => {
+    fs.writeFileSync(accountsPrefsFilePath(env()), "{ broken json");
+    expect(readAccountsPrefs(env())).toEqual({});
+    expect(resolveDefaultAccountId(env())).toBe("default");
+    expect(findAccount(undefined, env())?.id).toBe("default");
+  });
+
+  it("writes 0600 with no temp files left behind", () => {
+    setDefaultAccount("default", env());
+    const prefsFile = accountsPrefsFilePath(env());
+    expect(fs.statSync(prefsFile).mode & 0o777).toBe(0o600);
+    const leftovers = fs.readdirSync(stateDir).filter((name) => name.includes(".tmp-"));
+    expect(leftovers).toEqual([]);
+  });
+});
+
+describe("default account resolution", () => {
+  it("findAccount(undefined) follows the stored default", () => {
+    addAccount(VALID_ACCOUNT, env());
+    expect(findAccount(undefined, env())?.id).toBe("default");
+    setDefaultAccount("work", env());
+    expect(findAccount(undefined, env())?.id).toBe("work");
+  });
+
+  it("a removed chosen default self-heals back to the built-in default", () => {
+    addAccount(VALID_ACCOUNT, env());
+    setDefaultAccount("work", env());
+    expect(resolveDefaultAccountId(env())).toBe("work");
+    removeAccount("work", env());
+    expect(resolveDefaultAccountId(env())).toBe("default");
+    expect(findAccount(undefined, env())?.id).toBe("default");
+  });
+
+  it("set-default rejects unknown and invalid ids but always allows 'default'", () => {
+    expect(() => setDefaultAccount("ghost", env())).toThrow(/No such account/);
+    expect(() => setDefaultAccount("Bad Id", env())).toThrow(/Invalid account id/);
+    expect(() => setDefaultAccount("default", env())).not.toThrow();
+    expect(resolveDefaultAccountId(env())).toBe("default");
+  });
+
+  it("an unknown stored default falls back to the built-in default", () => {
+    fs.writeFileSync(accountsPrefsFilePath(env()), JSON.stringify({ defaultAccountId: "ghost" }));
+    expect(resolveDefaultAccountId(env())).toBe("default");
+  });
+});
+
+describe("renameAccount", () => {
+  it("rewrites a registered account's label in accounts.json", () => {
+    addAccount(VALID_ACCOUNT, env());
+    const renamed = renameAccount("work", "Work laptop", env());
+    expect(renamed?.label).toBe("Work laptop");
+    expect(readAccountsSnapshot(env()).accounts).toEqual([
+      { id: "work", label: "Work laptop", configDir: "/abs/work" },
+    ]);
+    expect(listAccounts(env()).map((account) => account.id)).toEqual(["default", "work"]);
+  });
+
+  it("an empty label clears a registered account's override", () => {
+    addAccount(VALID_ACCOUNT, env());
+    renameAccount("work", "", env());
+    expect(readAccountsSnapshot(env()).accounts).toEqual([{ id: "work", configDir: "/abs/work" }]);
+  });
+
+  it("stores the built-in default's label override in the prefs file", () => {
+    renameAccount("default", "Personal", env());
+    expect(readAccountsPrefs(env()).defaultLabel).toBe("Personal");
+    renameAccount("default", "", env());
+    expect(readAccountsPrefs(env()).defaultLabel).toBeUndefined();
+  });
+
+  it("refuses to rename when the accounts file is corrupt", () => {
+    fs.writeFileSync(accountsFile, "not json");
+    expect(() => renameAccount("work", "X", env())).toThrow(/Refusing to update/i);
+  });
+
+  it("rejects unknown and invalid ids", () => {
+    addAccount(VALID_ACCOUNT, env());
+    expect(() => renameAccount("ghost", "X", env())).toThrow(/No such account/);
+    expect(() => renameAccount("Bad Id", "X", env())).toThrow(/Invalid account id/);
+  });
+});
+
+describe("accountDisplayName", () => {
+  it("honors the built-in default's defaultLabel override", () => {
+    const cliDir = path.join(stateDir, "cli");
+    fs.mkdirSync(cliDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(cliDir, "credentials.json"),
+      JSON.stringify({ default: { name: "Duc", authToken: "t" } }),
+    );
+    const e = withDefaultConfigDir(env(), cliDir);
+    const defaultAccount = listAccounts(e)[0];
+    expect(defaultAccount).not.toBeNull();
+    if (!defaultAccount) return;
+    expect(accountDisplayName(defaultAccount, e)).toBe("Duc");
+    renameAccount("default", "Personal", e);
+    expect(accountDisplayName(defaultAccount, e)).toBe("Personal");
+    expect(resolveAccountLabel({ FREEBUFF_CONFIG_DIR: cliDir })).toBe("Duc");
+  });
+
+  it("registered accounts keep their own label over the credentials name", () => {
+    addAccount(VALID_ACCOUNT, env());
+    const work = findAccount("work", env());
+    expect(work?.label).toBe("Work");
+    expect(accountDisplayName(work!, env())).toBe("Work");
   });
 });
