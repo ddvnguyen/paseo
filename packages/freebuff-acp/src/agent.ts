@@ -75,6 +75,7 @@ import {
   savePersistedSession,
 } from "./session-store.js";
 import { runStateToReplayUpdates } from "./history-replay.js";
+import { REQUIRE_APPROVAL_META } from "./permission-meta.js";
 import { nextConversationState } from "./run-state.js";
 import { createAbortableTerminalTool } from "./terminal.js";
 import type { TurnResult } from "./turn.js";
@@ -1003,7 +1004,7 @@ export class FreebuffAcpAgent {
     const response = await this.conn.requestPermission({
       sessionId,
       // Spends credit: hosts with auto-accept must still ask a person.
-      _meta: { "paseo/requireApproval": true },
+      _meta: REQUIRE_APPROVAL_META,
       toolCall: {
         toolCallId: `freebuff-open-${crypto.randomUUID()}`,
         title: "Open new Freebuff session",
@@ -1038,7 +1039,7 @@ export class FreebuffAcpAgent {
     const cost = info.priceFreebucks != null ? `${info.priceFreebucks} Freebucks` : "Freebucks";
     const response = await this.conn.requestPermission({
       sessionId,
-      _meta: { "paseo/requireApproval": true },
+      _meta: REQUIRE_APPROVAL_META,
       toolCall: {
         toolCallId: `freebuff-switch-${crypto.randomUUID()}`,
         title: "Switch the account's Freebuff model?",
