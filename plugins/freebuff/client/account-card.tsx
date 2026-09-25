@@ -54,8 +54,8 @@ export function AccountCard({
       ) : null}
       {!account.isDefault ? (
         <SettingsAction
-          label="Account"
-          actionLabel="Remove account"
+          label="Remove this account"
+          actionLabel="Remove"
           disabled={deleteBusy}
           onPress={handleDelete}
         />
