@@ -77,7 +77,7 @@ export const freebuffAccountDelete = defineRpc({
 });
 
 export const freebuffAccountSetDefault = defineRpc({
-  name: "freebuff.account.setDefault",
+  name: "freebuff.account.set-default",
   input: z.object({ id: accountId }),
   output: z.object({ defaultAccountId: z.string() }),
 });
