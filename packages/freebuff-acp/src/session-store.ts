@@ -55,6 +55,75 @@ function sessionFilePath(env: NodeJS.ProcessEnv, sessionId: string): string {
   return path.join(sessionsStateDir(env), `${safe}.json`);
 }
 
+interface HistoryMessage {
+  role?: unknown;
+  content?: unknown;
+}
+
+function isReasoningPart(part: unknown): boolean {
+  return (
+    typeof part === "object" && part !== null && (part as { type?: unknown }).type === "reasoning"
+  );
+}
+
+/**
+ * Drops reasoning parts from every turn except the latest one. Old reasoning
+ * dominates session size (a single message can be >100 KB) and is not needed
+ * to continue a conversation. Returns a copy; the live in-memory RunState is
+ * never modified.
+ */
+export function slimRunState(
+  runState: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  const mainAgentState = runState?.mainAgentState as { messageHistory?: unknown } | undefined;
+  const history = mainAgentState?.messageHistory;
+  if (!runState || !mainAgentState || !Array.isArray(history)) return runState;
+
+  const messages = history as HistoryMessage[];
+  const lastUserIndex = messages.map((message) => message.role).lastIndexOf("user");
+  const slimmed = messages.flatMap((message, index) => {
+    if (index >= lastUserIndex || message.role !== "assistant" || !Array.isArray(message.content)) {
+      return [message];
+    }
+    const content = message.content.filter((part) => !isReasoningPart(part));
+    if (content.length === message.content.length) return [message];
+    return content.length > 0 ? [{ ...message, content }] : [];
+  });
+  return { ...runState, mainAgentState: { ...mainAgentState, messageHistory: slimmed } };
+}
+
+/** Sessions that never ran a turn and are older than this are junk. */
+const EMPTY_SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Removes session files that hold no conversation (no RunState) once they are
+ * a day old. Host probes and abandoned drafts create these; they only add
+ * noise to session/list. Best-effort like every store operation.
+ */
+export function pruneEmptyPersistedSessions(
+  env: NodeJS.ProcessEnv = process.env,
+  now: number = Date.now(),
+): number {
+  let removed = 0;
+  try {
+    const dir = sessionsStateDir(env);
+    if (!fs.existsSync(dir)) return 0;
+    for (const entry of fs.readdirSync(dir)) {
+      if (!entry.endsWith(".json")) continue;
+      const sessionId = entry.slice(0, -".json".length);
+      const session = loadPersistedSession(sessionId, env);
+      if (!session || session.runState !== null) continue;
+      const updatedAt = Date.parse(session.updatedAt);
+      if (Number.isNaN(updatedAt) || now - updatedAt < EMPTY_SESSION_MAX_AGE_MS) continue;
+      fs.rmSync(path.join(dir, entry), { force: true });
+      removed += 1;
+    }
+  } catch {
+    // Best-effort cleanup.
+  }
+  return removed;
+}
+
 export function savePersistedSession(
   session: PersistedFreebuffSession,
   env: NodeJS.ProcessEnv = process.env,
@@ -68,7 +137,11 @@ export function savePersistedSession(
     const temporary = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(
       temporary,
-      JSON.stringify({ ...session, updatedAt: new Date().toISOString() }),
+      JSON.stringify({
+        ...session,
+        runState: slimRunState(session.runState),
+        updatedAt: new Date().toISOString(),
+      }),
       {
         encoding: "utf8",
         mode: 0o600,

@@ -70,6 +70,7 @@ import { DEFAULT_MODE_ID, FREEBUFF_MODES, FREEBUFF_MODE_IDS } from "./modes.js";
 import { FREEBUFF_MODEL_IDS, initialModelId, modelState } from "./models.js";
 import {
   listPersistedSessions,
+  pruneEmptyPersistedSessions,
   loadPersistedSession,
   savePersistedSession,
 } from "./session-store.js";
@@ -205,6 +206,7 @@ export class FreebuffAcpAgent {
   constructor(conn: ClientApi, env: NodeJS.ProcessEnv = process.env) {
     this.conn = conn;
     this.env = env;
+    pruneEmptyPersistedSessions(this.env);
     // F7: teardown path for the long-lived adapter process. Tests opt out
     // (FREEBUFF_ACP_DISABLE_SHUTDOWN_HOOKS=1) to keep the runner unpolluted.
     if (this.env.FREEBUFF_ACP_DISABLE_SHUTDOWN_HOOKS !== "1") {
