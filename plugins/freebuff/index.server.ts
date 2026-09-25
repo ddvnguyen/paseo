@@ -1,8 +1,24 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { runAcpProvider } from "@getpaseo/plugin/server/acp";
 
+import {
+  cancelLogin,
+  deleteAccount,
+  endSession,
+  listAccounts,
+  pollLogin,
+  startLogin,
+} from "./server/accounts";
 import { ADAPTER_ENTRY } from "./server/generated";
 import { readFreebuffStatus } from "./server/status";
+import {
+  freebuffAccountDelete,
+  freebuffAccountsList,
+  freebuffLoginCancel,
+  freebuffLoginPoll,
+  freebuffLoginStart,
+  freebuffSessionEnd,
+} from "./shared/accounts";
 import { freebuffStatus } from "./shared/status";
 
 export default function contribute(server: PluginServerContext) {
@@ -16,5 +32,11 @@ export default function contribute(server: PluginServerContext) {
     }),
   );
   server.handle(freebuffStatus, readFreebuffStatus);
+  server.handle(freebuffAccountsList, listAccounts);
+  server.handle(freebuffLoginStart, startLogin);
+  server.handle(freebuffLoginPoll, pollLogin);
+  server.handle(freebuffLoginCancel, cancelLogin);
+  server.handle(freebuffAccountDelete, deleteAccount);
+  server.handle(freebuffSessionEnd, endSession);
   return () => {};
 }
