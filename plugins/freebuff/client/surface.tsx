@@ -81,9 +81,7 @@ export function FreebuffSurface({ theme, layout }: PluginSurfaceProps) {
         >
           <Text style={styles.buttonText}>Refresh</Text>
         </Pressable>
-        <Text style={styles.label}>
-          Add accounts with the adapter CLI: freebuff-acp-cli accounts add
-        </Text>
+        <Text style={styles.label}>Accounts are managed in Settings → Plugins → Freebuff</Text>
       </View>
     </ScrollView>
   );
