@@ -355,6 +355,86 @@ describe("FreebuffAcpAgent", () => {
     expect(kinds).not.toContain("usage_update");
   });
 
+  describe("context usage updates", () => {
+    const usageUpdatesOf = (conn: ReturnType<typeof makeConn>) =>
+      (conn.sessionUpdate.mock.calls as unknown as [{ update: Record<string, unknown> }][])
+        .map(([notification]) => notification.update)
+        .filter((update) => update.sessionUpdate === "usage_update");
+
+    const saveSessionWithContext = (env: NodeJS.ProcessEnv, sessionId: string) =>
+      savePersistedSession(
+        {
+          sessionId,
+          cwd: "/tmp",
+          modeId: "lite",
+          modelId: "z-ai/glm-5.3-flash",
+          runState: { mainAgentState: { contextTokenCount: 7000, messageHistory: [] } },
+          updatedAt: new Date().toISOString(),
+        },
+        env,
+      );
+
+    it("reports usage when a session is resumed", async () => {
+      const env = testEnv();
+      saveSessionWithContext(env, "freebuff-resume-usage");
+      const conn = makeConn();
+      const agent = new FreebuffAcpAgent(conn, env);
+      stubClient(agent, makeClient({ type: "success" }));
+      await agent.unstable_resumeSession({
+        sessionId: "freebuff-resume-usage",
+        cwd: "/tmp",
+        mcpServers: [],
+      } as never);
+      expect(usageUpdatesOf(conn)).toEqual([
+        { sessionUpdate: "usage_update", used: 7000, size: 1_000_000 },
+      ]);
+    });
+
+    it("recomputes the window when the model changes", async () => {
+      const env = testEnv();
+      saveSessionWithContext(env, "freebuff-switch-usage");
+      const conn = makeConn();
+      const agent = new FreebuffAcpAgent(conn, env);
+      stubClient(agent, makeClient({ type: "success" }));
+      await agent.loadSession({
+        sessionId: "freebuff-switch-usage",
+        cwd: "/tmp",
+        mcpServers: [],
+      } as never);
+      await agent.unstable_setSessionModel({
+        sessionId: "freebuff-switch-usage",
+        modelId: "minimax/minimax-m3",
+      } as never);
+      expect(usageUpdatesOf(conn).at(-1)).toEqual({
+        sessionUpdate: "usage_update",
+        used: 7000,
+        size: 524_288,
+      });
+    });
+
+    it("resets the indicator on /clear", async () => {
+      const env = testEnv();
+      saveSessionWithContext(env, "freebuff-clear-usage");
+      const conn = makeConn();
+      const agent = new FreebuffAcpAgent(conn, env);
+      stubClient(agent, makeClient({ type: "success" }));
+      await agent.loadSession({
+        sessionId: "freebuff-clear-usage",
+        cwd: "/tmp",
+        mcpServers: [],
+      } as never);
+      await agent.prompt({
+        sessionId: "freebuff-clear-usage",
+        prompt: [{ type: "text", text: "/clear" }],
+      } as never);
+      expect(usageUpdatesOf(conn).at(-1)).toEqual({
+        sessionUpdate: "usage_update",
+        used: 0,
+        size: 1_000_000,
+      });
+    });
+  });
+
   it("surfaces the waiting room as a refusal and preserves state", async () => {
     // Probe (GET /session) → none; admission POST → rate_limited.
     fetchMock.mockImplementation(async (url: string | URL | Request) => {

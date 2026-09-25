@@ -74,7 +74,7 @@ import {
   loadPersistedSession,
   savePersistedSession,
 } from "./session-store.js";
-import { contextUsageUpdate } from "./context-usage.js";
+import { clearedContextUsageUpdate, contextUsageUpdate } from "./context-usage.js";
 import { runStateToReplayUpdates } from "./history-replay.js";
 import { REQUIRE_APPROVAL_META } from "./permission-meta.js";
 import { nextConversationState } from "./run-state.js";
@@ -583,6 +583,8 @@ export class FreebuffAcpAgent {
     }
     session.modelId = params.modelId;
     this.persist(session);
+    // A different model has a different window: recompute the fill.
+    this.emitContextUsage(session);
     return {};
   }
 
@@ -915,8 +917,10 @@ export class FreebuffAcpAgent {
   };
 
   /** Tell the host how full the conversation context is (standard ACP `usage_update`). */
-  private emitContextUsage(session: AdapterSession): void {
-    const update = contextUsageUpdate(session.runState, session.modelId);
+  private emitContextUsage(session: AdapterSession, cleared = false): void {
+    const update = cleared
+      ? clearedContextUsageUpdate(session.modelId)
+      : contextUsageUpdate(session.runState, session.modelId);
     if (!update) return;
     void this.conn
       .sessionUpdate({ sessionId: session.id, update } as unknown as SessionNotification)
@@ -967,6 +971,7 @@ export class FreebuffAcpAgent {
         await this.stopRunningTurn(session);
         session.runState = null;
         this.persist(session);
+        this.emitContextUsage(session, true);
         this.sendMessage(session, "Conversation cleared.");
         break;
     }

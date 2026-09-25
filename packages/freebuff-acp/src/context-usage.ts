@@ -51,3 +51,8 @@ export function contextUsageUpdate(
   if (used === undefined) return null;
   return { sessionUpdate: "usage_update", used, size: contextWindowFor(modelId) };
 }
+
+/** `usage_update` for an emptied conversation (`/clear`): the host resets its indicator instead of showing the old fill. */
+export function clearedContextUsageUpdate(modelId: string): ReplayUpdate {
+  return { sessionUpdate: "usage_update", used: 0, size: contextWindowFor(modelId) };
+}

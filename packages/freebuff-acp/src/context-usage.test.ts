@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { contextTokensOf, contextUsageUpdate, contextWindowFor } from "./context-usage.js";
+import {
+  clearedContextUsageUpdate,
+  contextTokensOf,
+  contextUsageUpdate,
+  contextWindowFor,
+} from "./context-usage.js";
 
 const runState = { mainAgentState: { contextTokenCount: 4200, messageHistory: [] } };
 
@@ -23,5 +28,39 @@ describe("contextUsageUpdate", () => {
     expect(contextUsageUpdate({ mainAgentState: {} }, "z-ai/glm-5.3-flash")).toBeNull();
     expect(contextTokensOf({ mainAgentState: { contextTokenCount: "12" } })).toBeUndefined();
     expect(contextTokensOf({ mainAgentState: { contextTokenCount: -1 } })).toBeUndefined();
+  });
+});
+
+describe("context window table", () => {
+  // Copy of FREEBUFF_MODEL_CONTEXT_WINDOWS in the Freebuff CLI (external/freebuff,
+  // common/src/constants/freebuff-models.ts). A typo in the adapter's table would
+  // silently fall back to the default, so every row is pinned here.
+  const cliTable: Record<string, number> = {
+    "minimax/minimax-m3": 524_288,
+    "deepseek/deepseek-v4-flash": 1_048_576,
+    "deepseek/deepseek-v4-pro": 1_048_576,
+    "openai/gpt-5.6-luna": 1_000_000,
+    "openai/gpt-6-luna": 1_000_000,
+    "openai/gpt-5.6-luna-es": 372_000,
+    "meta/muse-spark-1.2-contributor": 1_000_000,
+    "stealth/ox-alpha": 1_000_000,
+    "z-ai/glm-5.3-flash": 1_000_000,
+    "upstage/solar-pro4": 500_000,
+    "upstage/solar-mini4": 500_000,
+    "stealth/space-bunny-alpha": 1_000_000,
+  };
+
+  it.each(Object.entries(cliTable))("%s has window %i", (modelId, window) => {
+    expect(contextWindowFor(modelId)).toBe(window);
+  });
+});
+
+describe("clearedContextUsageUpdate", () => {
+  it("resets used to 0 against the model's window", () => {
+    expect(clearedContextUsageUpdate("minimax/minimax-m3")).toEqual({
+      sessionUpdate: "usage_update",
+      used: 0,
+      size: 524_288,
+    });
   });
 });

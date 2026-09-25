@@ -4072,6 +4072,36 @@ describe("ACP session/load invariant — cwd and mcpServers always passed", () =
     ]);
   });
 
+  test("publishes context usage reported while resuming without loadSession", async () => {
+    let session!: ACPAgentSession;
+    const unstableResumeSession = async () => {
+      await session.sessionUpdate({
+        sessionId: "session-1",
+        update: { sessionUpdate: "usage_update", used: 900, size: 131_072 } as SessionUpdate,
+      });
+      return { modes: null, models: null, configOptions: [] };
+    };
+    ({ session } = makeTestSession({
+      capabilities: { sessionCapabilities: { resume: {} } },
+      handle: { sessionId: "session-1", provider: "claude-acp" },
+      unstableResumeSession: unstableResumeSession as unknown as ReturnType<typeof vi.fn>,
+    }));
+
+    await session.initializeResumedSession();
+
+    const history: AgentStreamEvent[] = [];
+    for await (const event of session.streamHistory()) {
+      history.push(event);
+    }
+    expect(history).toEqual([
+      {
+        type: "usage_updated",
+        provider: "claude-acp",
+        usage: { contextWindowUsedTokens: 900, contextWindowMaxTokens: 131_072 },
+      },
+    ]);
+  });
+
   test("treats a usage_update size of 0 as an unknown context window", async () => {
     const { session } = makeTestSession({
       handle: { sessionId: "session-1", provider: "claude-acp" },
