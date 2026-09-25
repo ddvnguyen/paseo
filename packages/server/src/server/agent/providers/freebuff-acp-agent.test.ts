@@ -14,7 +14,7 @@ const configOptions: SessionConfigOption[] = [
     name: "Account",
     type: "select",
     currentValue: "current",
-    options: [{ value: "current", name: "Duc · 20/25 Freebucks left today" }],
+    options: [{ value: "current", name: "Duc · 20/25 left" }],
   },
   {
     id: "confirm_open",
@@ -38,7 +38,7 @@ describe("Freebuff ACP features", () => {
     expect(features[0]).toMatchObject({
       type: "select",
       value: "current",
-      options: [{ id: "current", label: "Duc · 20/25 Freebucks left today" }],
+      options: [{ id: "current", label: "Duc · 20/25 left" }],
     });
     expect(features[1]).toMatchObject({ value: "ask" });
   });

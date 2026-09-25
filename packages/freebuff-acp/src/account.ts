@@ -50,14 +50,14 @@ export function accountStatusFromProbe(
   };
 }
 
-/** One line: "Duc Nguyen · 20/25 Freebucks left today · wallet 3". */
+/** One line: "Duc Nguyen · 20/25 left · wallet 3". */
 export function formatAccountSummary(accountName: string, status: AccountStatus | null): string {
   const parts = [accountName];
   if (status?.dailyRemaining != null) {
     parts.push(
       status.dailyLimit != null
-        ? `${status.dailyRemaining}/${status.dailyLimit} Freebucks left today`
-        : `${status.dailyRemaining} Freebucks left today`,
+        ? `${status.dailyRemaining}/${status.dailyLimit} left`
+        : `${status.dailyRemaining} left`,
     );
   }
   if (status?.walletBalance) parts.push(`wallet ${status.walletBalance}`);
