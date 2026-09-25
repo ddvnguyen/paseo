@@ -12,7 +12,9 @@ import {
 } from "./freebuff-agent.js";
 import {
   admitFreebuffSession,
+  probeSessionSeat,
   releaseFreebuffSession,
+  type AdmissionResult,
   type ModelSwitchInfo,
   type SessionOpenInfo,
 } from "./freebuff-session.js";
@@ -46,6 +48,8 @@ export interface RunTurnOptions {
   /**
    * Asked before the admission POST opens a NEW session (spends credit).
    * Omitted = auto-open; live-session reuse probes never consult it.
+   * F1: also asked with `probeUnknown: true` when the seat probe failed —
+   * a truthy answer is the explicit OK to claim blind.
    */
   confirmSessionOpen?: (info: SessionOpenInfo) => Promise<boolean>;
   /**
@@ -247,6 +251,223 @@ async function raceGrace(run: Promise<RunState>): Promise<RunState | null> {
 }
 
 /**
+ * F2 — process-wide seat registry (module-global singleton: the ACP adapter
+ * process has one turn lane, so a single mutable map is the atomic source of
+ * truth). Tracks every instanceId whose lifecycle this process owns:
+ *  - "claimed": opened by this process's admission POST (must be released).
+ *  - "adopted": instanceId seen live on a pre-POST probe and being reused
+ *    right now by exactly one turn — another turn adopting it too would
+ *    supersede the first run and release a live session out from under it.
+ * `adoptAdmittedSeatAtomically` does check-and-mark with no await in between,
+ * so two concurrent turns can never both adopt (or adopt-then-release) one seat.
+ */
+interface SeatRecord {
+  state: "claimed" | "adopted";
+  /** The turn (lane) currently holding the seat, for adopt/release symmetry. */
+  holder: symbol;
+}
+
+const seatRegistry = new Map<string, SeatRecord>();
+
+/** Registry holder for seats recovered after a lost POST response (F3). */
+const SEAT_RECOVERY_HOLDER = Symbol("freebuff-seat-recovery");
+
+function releaseSeat(instanceId: string, holder: symbol): void {
+  const record = seatRegistry.get(instanceId);
+  if (record && record.holder === holder) seatRegistry.delete(instanceId);
+}
+
+/**
+ * F2 — single atomic check-and-mark step. `admission` and `transition` run
+ * synchronously (no await between seatRegistry read and write), so the
+ * event loop cannot interleave another turn's transition between them.
+ */
+function adoptAdmittedSeatAtomically(
+  admission: { instanceId: string; reused: boolean },
+  holder: symbol,
+): { adopt: boolean; conflict?: string } {
+  if (!admission.reused) {
+    seatRegistry.set(admission.instanceId, { state: "claimed", holder });
+    return { adopt: true };
+  }
+  const record = seatRegistry.get(admission.instanceId);
+  if (!record) {
+    // Reused seat nobody here runs against (e.g. the CLI opened it): adopt
+    // it for this turn, but it is NOT ours to release afterwards.
+    seatRegistry.set(admission.instanceId, { state: "adopted", holder });
+    return { adopt: true };
+  }
+  if (record.state === "claimed" && record.holder === SEAT_RECOVERY_HOLDER) {
+    // F3: orphaned seat from a lost POST response — take it over so this
+    // turn's release path deletes it when done.
+    seatRegistry.set(admission.instanceId, { state: "claimed", holder });
+    return { adopt: true };
+  }
+  return {
+    adopt: false,
+    conflict:
+      record.state === "claimed"
+        ? "already claimed by a concurrent turn"
+        : "already adopted by a concurrent turn",
+  };
+}
+
+/**
+ * F3 — recovery after a lost admission POST response. The POST may have
+ * committed a new seat server-side even though this adapter never saw it.
+ * One extra probe: an `active` seat that this adapter did not hold before is
+ * registered as "claimed by us" so a later turn reusing it adopts it as its
+ * own and the release path deletes it.
+ */
+async function recoverOrphanedSeat(token: string, signal: AbortSignal): Promise<void> {
+  try {
+    const { probe } = await probeSessionSeat(token, signal);
+    if (probe?.status === "active" && probe.instanceId && !seatRegistry.has(probe.instanceId)) {
+      // Nothing here held it before: it came from the lost POST — ours to clean up.
+      seatRegistry.set(probe.instanceId, { state: "claimed", holder: SEAT_RECOVERY_HOLDER });
+    }
+  } catch {
+    // Best-effort: the server expires seats on their own.
+  }
+}
+
+/**
+ * Handle a failed admission (F1/F3/F4): a cancelled flow maps to a cancelled
+ * turn, an unknown seat surfaces the probe failure, a lost POST response
+ * triggers the one-shot orphaned-seat probe, and everything else is the
+ * standard waiting-room/terminal refusal message.
+ */
+async function admissionFailure(
+  admission: Exclude<AdmissionResult, { ok: true }>,
+  previousRun: Record<string, unknown> | null,
+  emit: SessionUpdateEmitter,
+  token: string,
+  signal: AbortSignal,
+): Promise<TurnResult> {
+  if ("cancelled" in admission && admission.cancelled) {
+    // F4: the caller aborted the admission flow — surface the user's
+    // stop, not a refusal ("Freebuff is busy") that misreports it.
+    return { stopReason: "cancelled", runState: previousRun };
+  }
+  if ("unknownSeat" in admission && admission.unknownSeat) {
+    // F1: seat probe failed (network/timeout/non-OK). Never claim
+    // blindly and never report "no active session" — surface the
+    // unknown-seat error and preserve conversation state for a retry.
+    const reason = admission.message ?? "seat probe failed";
+    emit({
+      sessionUpdate: "agent_message_chunk",
+      content: {
+        type: "text",
+        text:
+          `Freebuff could not determine the seat state: ${reason}. ` +
+          "A free session may already be open on this account, so no new one was started. Try again shortly.",
+      },
+    });
+    return { stopReason: "refusal", runState: previousRun };
+  }
+  if ("responseLost" in admission && admission.responseLost) {
+    // F3: the POST may have committed server-side despite the lost
+    // response; probe once and register the seat as claimed by us so a
+    // later turn that reuses it releases it.
+    await recoverOrphanedSeat(token, signal);
+  }
+  return admissionRefusal(admission, previousRun, emit);
+}
+
+/** F2: a concurrent turn already holds the admitted seat — refuse quietly. */
+function seatConflictRefusal(
+  admission: { instanceId: string },
+  conflict: string | undefined,
+  emit: SessionUpdateEmitter,
+  previousRun: Record<string, unknown> | null,
+): TurnResult {
+  emit({
+    sessionUpdate: "agent_message_chunk",
+    content: {
+      type: "text",
+      text:
+        `Freebuff seat ${admission.instanceId} is ${conflict ?? "in use"}; ` +
+        "waiting for that turn to finish before starting another.",
+    },
+  });
+  return { stopReason: "refusal", runState: previousRun };
+}
+
+/** The admitted model has no bundled root definition — refuse, no fallback. */
+function missingAgentRefusal(
+  runModel: string,
+  emit: SessionUpdateEmitter,
+  previousRun: Record<string, unknown> | null,
+): TurnResult {
+  emit({
+    sessionUpdate: "agent_message_chunk",
+    content: {
+      type: "text",
+      text:
+        `Freebuff admitted model "${runModel}" but no root agent is configured for it. ` +
+        "Add it to FREEBUFF_AGENT_ID_BY_MODEL, or set FREEBUFF_AGENT_ID to override.",
+    },
+  });
+  return { stopReason: "refusal", runState: previousRun };
+}
+
+/**
+ * Attach host + mcp.json MCP servers to every root definition so the
+ * SDK discovers tools via AgentDefinition.mcpServers (run() does not
+ * auto-load mcp.json).
+ */
+function attachMcpServers(
+  mcpServers: Record<string, CodebuffMcpConfig> | undefined,
+): NonNullable<Parameters<CodebuffClient["run"]>[0]["agentDefinitions"]> {
+  return (
+    Object.keys(mcpServers ?? {}).length > 0
+      ? FREEBUFF_ROOT_DEFINITIONS.map((def) => ({
+          ...def,
+          mcpServers: { ...def.mcpServers, ...mcpServers },
+        }))
+      : FREEBUFF_ROOT_DEFINITIONS
+  ) as NonNullable<Parameters<CodebuffClient["run"]>[0]["agentDefinitions"]>;
+}
+
+/**
+ * Never end a failed run silently: log it and tell the host why. Skipped
+ * when the turn was stopped — cancel wins over error.
+ */
+function reportRunError(runState: RunState, stopped: boolean, emit: SessionUpdateEmitter): void {
+  if (runState.output?.type !== "error" || stopped) return;
+  const reason = describeRunError(runState.output);
+  process.stderr.write(`freebuff-acp: run failed: ${reason}\n`);
+  emit({
+    sessionUpdate: "agent_message_chunk",
+    content: { type: "text", text: `Freebuff run failed: ${reason}` },
+  });
+}
+
+/**
+ * F2: only the turn holding the registry record may release the seat, and
+ * only a POST-claimed one is deleted — a reused open session belongs to its
+ * previous holder (CLI / second adapter); releasing it would steal their
+ * slot and re-block the next prompt. Awaited so the DELETE completes before
+ * the lane starts the next queued turn — keeps the next turn's GET probe
+ * deterministic instead of racing this turn's release.
+ */
+async function releaseAdmittedSeat(
+  token: string,
+  admission: { instanceId: string },
+  holder: symbol,
+): Promise<void> {
+  const record = seatRegistry.get(admission.instanceId);
+  if (record?.holder !== holder) return;
+  releaseSeat(admission.instanceId, holder);
+  if (record.state !== "claimed") return;
+  await releaseFreebuffSession({
+    token,
+    instanceId: admission.instanceId,
+    signal: AbortSignal.timeout(RELEASE_TIMEOUT_MS),
+  });
+}
+
+/**
  * Run one prompt turn against the Codebuff backend and translate the SDK's
  * print-mode event stream into ACP session updates.
  *
@@ -319,6 +540,9 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
     // subagent_chunk: subagents have no ACP surface; keep the pre-existing drop.
   };
 
+  // F2 — this turn's seat-holder identity for registry symmetry.
+  const seatHolder = Symbol("freebuff-seat-holder");
+
   try {
     // The CLI's free-mode protocol: hold a session slot BEFORE running.
     // Without the admitted instanceId the backend answers with
@@ -331,7 +555,15 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
       confirmSwitch: confirmModelSwitch,
     });
     if (!admission.ok) {
-      return admissionRefusal(admission, previousRun, emit);
+      return admissionFailure(admission, previousRun, emit, token, signal);
+    }
+
+    // F2 — atomic adopt: re-check the registry and mark the seat as ours in
+    // one synchronous step so two concurrent turns can never both adopt (or
+    // release) the same seat.
+    const adoption = adoptAdmittedSeatAtomically(admission, seatHolder);
+    if (!adoption.adopt) {
+      return seatConflictRefusal(admission, adoption.conflict, emit, previousRun);
     }
 
     try {
@@ -340,38 +572,15 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
       // that model or the backend rejects the run with model mismatch.
       const { runModel, agentId } = resolveAdmittedAgent(admission.model, model);
       if (!agentId) {
-        // The admitted model has no bundled root definition. The model is
-        // baked into the static AgentDefinition (client.run() has no
-        // separate model field) — silently falling back to the GLM root
-        // would run against a slot locked to a different model. Refuse
-        // instead, inside this try so the finally below still releases a
-        // slot we POST-claimed, exactly like the admission-failure path.
-        emit({
-          sessionUpdate: "agent_message_chunk",
-          content: {
-            type: "text",
-            text:
-              `Freebuff admitted model "${runModel}" but no root agent is configured for it. ` +
-              "Add it to FREEBUFF_AGENT_ID_BY_MODEL, or set FREEBUFF_AGENT_ID to override.",
-          },
-        });
-        return {
-          stopReason: "refusal",
-          runState: previousRun,
-        };
+        // The model is baked into the static AgentDefinition (client.run()
+        // has no separate model field) — silently falling back to the GLM
+        // root would run against a slot locked to a different model. Refuse
+        // inside this try so the finally below still releases a slot we
+        // POST-claimed, exactly like the admission-failure path.
+        return missingAgentRefusal(runModel, emit, previousRun);
       }
 
-      // Attach host + mcp.json MCP servers to every root definition so the
-      // SDK discovers tools via AgentDefinition.mcpServers (run() does not
-      // auto-load mcp.json).
-      const agentDefinitions = (
-        Object.keys(mcpServers ?? {}).length > 0
-          ? FREEBUFF_ROOT_DEFINITIONS.map((def) => ({
-              ...def,
-              mcpServers: { ...def.mcpServers, ...mcpServers },
-            }))
-          : FREEBUFF_ROOT_DEFINITIONS
-      ) as Parameters<CodebuffClient["run"]>[0]["agentDefinitions"];
+      const agentDefinitions = attachMcpServers(mcpServers);
 
       const run = client.run({
         agent: agentId,
@@ -397,35 +606,14 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
         // the signal): settle now with the pre-turn conversation state.
         return { stopReason: "cancelled", runState: previousRun };
       }
-      if (runState.output?.type === "error" && !cancelled && !signal.aborted) {
-        // Never end a failed run silently: the host would show an idle agent
-        // with no clue why.
-        const reason = describeRunError(runState.output);
-        process.stderr.write(`freebuff-acp: run failed: ${reason}\n`);
-        emit({
-          sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: `Freebuff run failed: ${reason}` },
-        });
-      }
+      reportRunError(runState, cancelled || signal.aborted, emit);
       return {
         ...turnResultFromRunState(runState, cancelled || signal.aborted),
         admittedModel: runModel,
         creditsUsed: turnStats.creditsUsed,
       };
     } finally {
-      // Only hand back a slot we claimed with POST. A reused open session
-      // belongs to another holder (CLI / second adapter) — releasing it would
-      // steal their slot and re-block the next prompt.
-      if (!admission.reused) {
-        // Await so the DELETE completes before the lane starts the next
-        // queued turn — keeps the next turn's GET probe deterministic
-        // instead of racing this turn's release.
-        await releaseFreebuffSession({
-          token,
-          instanceId: admission.instanceId,
-          signal: AbortSignal.timeout(RELEASE_TIMEOUT_MS),
-        });
-      }
+      await releaseAdmittedSeat(token, admission, seatHolder);
     }
   } catch (error) {
     if (signal.aborted || cancelled) {
