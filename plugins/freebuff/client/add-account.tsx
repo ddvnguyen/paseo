@@ -1,4 +1,5 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
+import type { RpcOutput } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
 import { copyText, useToast } from "@getpaseo/plugin/client/react-native";
 import {
@@ -33,6 +34,62 @@ interface LoginPanelProps {
 }
 
 type PollStatus = "pending" | "expired" | "success" | "none" | "error";
+type LoginPollResult = RpcOutput<typeof freebuffLoginPoll>;
+
+interface LoginOutcomeProps {
+  theme: PluginSurfaceProps["theme"];
+  pollData: LoginPollResult | undefined;
+  onGetNewLink(): void;
+  onStartOver(): void;
+}
+
+/** Terminal poll outcomes: logged in, expired link, failure, or cancelled. */
+function LoginOutcome({ theme, pollData, onGetNewLink, onStartOver }: LoginOutcomeProps) {
+  const pollStatus = pollData?.status;
+  const styles = useMemo(
+    () => ({
+      stack: { gap: 4 },
+      muted: { color: theme.colors.foregroundMuted },
+      success: { color: theme.colors.statusSuccess },
+    }),
+    [theme],
+  );
+  return (
+    <>
+      {pollStatus === "success" ? (
+        <Text style={styles.success}>
+          {`✓ Logged in as ${pollData?.name ?? "unknown"} (${pollData?.email ?? "unknown"})`}
+        </Text>
+      ) : null}
+      {pollStatus === "expired" ? (
+        <View style={styles.stack}>
+          <Text style={styles.muted}>This link expired.</Text>
+          <SettingsAction
+            label="Expired link"
+            actionLabel="Get a new link"
+            onPress={onGetNewLink}
+          />
+        </View>
+      ) : null}
+      {pollStatus === "error" ? (
+        <Text style={styles.muted}>{pollData?.reason ?? "Login failed."}</Text>
+      ) : null}
+      {pollStatus === "none" ? (
+        <View style={styles.stack}>
+          <Text style={styles.muted}>Login was cancelled.</Text>
+          <SettingsAction
+            label="Cancelled login"
+            actionLabel="Add another account"
+            onPress={onStartOver}
+          />
+        </View>
+      ) : null}
+      {pollStatus === "success" ? (
+        <SettingsAction label="Done" actionLabel="Add another account" onPress={onStartOver} />
+      ) : null}
+    </>
+  );
+}
 
 /** Browser login panel: link, copy, open, poll outcome, and cancel. */
 function LoginPanel({
@@ -86,6 +143,9 @@ function LoginPanel({
 
   const pollData = pollQuery.data;
   const pollStatus: PollStatus | undefined = pollData?.status;
+  // Waiting until the poll reports a terminal outcome; hides the wait text and
+  // Cancel once the login succeeded, expired, failed, or was cancelled.
+  const waiting = pollStatus === undefined || pollStatus === "pending";
 
   useEffect(() => {
     if (pollStatus !== undefined && pollStatus !== "pending") setSettledStatus(pollStatus);
@@ -134,52 +194,27 @@ function LoginPanel({
       <ExternalLink href={loginUrl} accessibilityLabel="Open the Freebuff login page">
         Open in browser
       </ExternalLink>
-      {pollStatus === "success" ? (
-        <Text style={styles.success}>
-          {`✓ Logged in as ${pollData?.name ?? "unknown"} (${pollData?.email ?? "unknown"})`}
-        </Text>
-      ) : (
-        <Text style={styles.muted}>Waiting for you to log in in the browser…</Text>
-      )}
+      {waiting ? <Text style={styles.muted}>Waiting for you to log in in the browser…</Text> : null}
       {pollStatus === "pending" && pollData?.httpStatus != null ? (
         <Text style={styles.muted}>
           {`Freebuff server answered HTTP ${pollData.httpStatus}; still waiting`}
         </Text>
       ) : null}
       {pollQuery.isError ? <Text accessibilityRole="alert">{pollQuery.error.message}</Text> : null}
-      {pollStatus === "expired" ? (
-        <View style={styles.stack}>
-          <Text style={styles.muted}>This link expired.</Text>
-          <SettingsAction
-            label="Expired link"
-            actionLabel="Get a new link"
-            onPress={onGetNewLink}
-          />
-        </View>
-      ) : null}
-      {pollStatus === "error" ? (
-        <Text style={styles.muted}>{pollData?.reason ?? "Login failed."}</Text>
-      ) : null}
-      {pollStatus === "none" ? (
-        <View style={styles.stack}>
-          <Text style={styles.muted}>Login was cancelled.</Text>
-          <SettingsAction
-            label="Cancelled login"
-            actionLabel="Add another account"
-            onPress={onStartOver}
-          />
-        </View>
-      ) : null}
-      {pollStatus === "success" ? (
-        <SettingsAction label="Done" actionLabel="Add another account" onPress={onStartOver} />
-      ) : (
+      <LoginOutcome
+        theme={theme}
+        pollData={pollData}
+        onGetNewLink={onGetNewLink}
+        onStartOver={onStartOver}
+      />
+      {waiting ? (
         <SettingsAction
           label="Waiting"
           actionLabel="Cancel"
           disabled={cancelMutation.isPending}
           onPress={cancelMutation.mutate}
         />
-      )}
+      ) : null}
     </SettingsSection>
   );
 }
