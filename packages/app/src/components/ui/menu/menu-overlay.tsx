@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useId, useMemo, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+  type ReactElement,
+  type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -15,6 +23,7 @@ import { Keyframe, runOnJS } from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
 import { FloatingScrollView, FloatingSurface } from "@/components/ui/floating";
 import { isWeb } from "@/constants/platform";
+import type { KeyboardFocusScope } from "@/keyboard/actions";
 import {
   getOverlayRoot,
   OverlayLayerProvider,
@@ -230,6 +239,7 @@ export interface AnchoredSurfaceProps {
   onPointerEnter?: () => void;
   onPointerLeave?: () => void;
   testID?: string;
+  keyboardFocusScope?: KeyboardFocusScope;
   children: ReactElement;
 }
 
@@ -258,6 +268,7 @@ export function AnchoredSurface({
   onPointerEnter,
   onPointerLeave,
   testID,
+  keyboardFocusScope,
   children,
 }: AnchoredSurfaceProps): ReactElement | null {
   const { t } = useTranslation();
@@ -280,6 +291,25 @@ export function AnchoredSurface({
     surfaceNativeID,
     revision,
   });
+
+  // The surface is placed once both measurements land. Until then it sits off-screen so it can
+  // be measured, and it must not animate: Reanimated's web entering path snapshots the element's
+  // rect when the animation ends and writes that rect back as inline top/left when it cleans the
+  // keyframe up 750ms later. If the animation ends before placement, the snapshot is the
+  // off-screen rect and the menu jumps back off-screen. Remounting on placement starts the
+  // animation from the final position.
+  const placed = position !== null;
+
+  useEffect(() => {
+    if (!isWeb || !open || !placed || typeof document === "undefined") return undefined;
+    const frame = requestAnimationFrame(() => {
+      document
+        .getElementById(surfaceNativeID)
+        ?.querySelector<HTMLElement>('[data-menu-item="true"]:not([data-menu-disabled="true"])')
+        ?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open, placed, surfaceNativeID]);
 
   const frameStyle = useMemo<StyleProp<ViewStyle>>(() => {
     const { width: screenWidth } = Dimensions.get("window");
@@ -315,6 +345,13 @@ export function AnchoredSurface({
     () => [visibleContentSize ? { height: visibleContentSize.height } : null],
     [visibleContentSize],
   );
+  const surfaceDataSet = useMemo(
+    () => ({
+      menuSurface: "true",
+      ...(keyboardFocusScope ? { keyboardScope: keyboardFocusScope } : null),
+    }),
+    [keyboardFocusScope],
+  );
 
   if (!open) return null;
 
@@ -333,6 +370,7 @@ export function AnchoredSurface({
     <>
       {backdrop ? (
         <Pressable
+          {...{ onContextMenu: onClose }}
           accessibilityRole="button"
           accessibilityLabel={t("menu.backdrop")}
           style={styles.backdrop}
@@ -341,15 +379,17 @@ export function AnchoredSurface({
         />
       ) : null}
       <FloatingSurface
+        key={placed ? "placed" : "measuring"}
         collapsable={false}
         tabIndex={-1}
         nativeID={surfaceNativeID}
         testID={testID}
+        dataSet={surfaceDataSet}
         style={styles.content}
         frameStyle={frameStyle}
-        entering={contentEntering}
+        entering={placed ? contentEntering : undefined}
         exiting={
-          isWeb || !onExited
+          !placed || isWeb || !onExited
             ? undefined
             : contentExiting.withCallback((finished) => {
                 "worklet";
@@ -384,21 +424,56 @@ export function AnchoredSurface({
 export function MenuOverlay({
   visible,
   onClose,
+  restoreFocusRef,
   children,
 }: {
   visible: boolean;
   onClose: () => void;
+  restoreFocusRef?: RefObject<View | null>;
   children: ReactElement | null;
 }): ReactElement | null {
   const floatingLayer = useOverlayLayer("floating");
 
   const handleWebOverlayKeyDown = useCallback(
     (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return false;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-      return true;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+        return true;
+      }
+
+      const target = event.target instanceof Element ? event.target : null;
+      const surface = target?.closest<HTMLElement>('[data-menu-surface="true"]');
+      if (!surface) return false;
+      const items = Array.from(
+        surface.querySelectorAll<HTMLElement>(
+          '[data-menu-item="true"]:not([data-menu-disabled="true"])',
+        ),
+      );
+      if (items.length === 0) return false;
+      const currentIndex = items.findIndex((item) => item === document.activeElement);
+      let nextIndex: number | null = null;
+      if (event.key === "ArrowDown")
+        nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
+      if (event.key === "ArrowUp")
+        nextIndex =
+          currentIndex < 0 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length;
+      if (event.key === "Home") nextIndex = 0;
+      if (event.key === "End") nextIndex = items.length - 1;
+      if (nextIndex !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        items[nextIndex]?.focus();
+        return true;
+      }
+      if ((event.key === "Enter" || event.key === " ") && currentIndex >= 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        items[currentIndex]?.click();
+        return true;
+      }
+      return false;
     },
     [onClose],
   );
@@ -406,6 +481,7 @@ export function MenuOverlay({
     active: isWeb && visible,
     layer: floatingLayer,
     onKeyDown: handleWebOverlayKeyDown,
+    restoreFocusRef,
   });
 
   if (!visible) return null;
@@ -413,6 +489,9 @@ export function MenuOverlay({
   const overlay = (
     <OverlayLayerProvider layer={floatingLayer}>
       <View
+        {...{
+          onContextMenu: (event: { preventDefault?: () => void }) => event.preventDefault?.(),
+        }}
         ref={setWebOverlayScope}
         collapsable={false}
         style={[

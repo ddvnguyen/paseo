@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import type { TerminalProfile } from "@getpaseo/protocol/messages";
+import { resolveTerminalProfileLaunch } from "@getpaseo/protocol/terminal-profiles";
 import type { WorkspaceDescriptor } from "@/stores/session-store";
 import { useTranslation } from "react-i18next";
 import { useReplicaQuery } from "@/data/query";
@@ -17,18 +19,14 @@ import {
   upsertCreatedTerminalPayload,
 } from "@/screens/workspace/terminals/state";
 
-interface TerminalProfileInput {
-  name: string;
-  command: string;
-  args?: string[];
-}
+export type TerminalTabDestination =
+  | { kind: "open"; paneId?: string }
+  | { kind: "replace"; tabId: string };
 
 interface PendingTerminalCreateInput {
-  paneId?: string;
-  profile?: TerminalProfileInput;
+  destination: TerminalTabDestination;
+  profile?: TerminalProfile;
 }
-
-export type { TerminalProfileInput };
 
 interface UseWorkspaceTerminalsInput {
   client: DaemonClient | null;
@@ -40,7 +38,7 @@ interface UseWorkspaceTerminalsInput {
   workspaceScripts: WorkspaceDescriptor["scripts"];
   hasHydratedWorkspaces: boolean;
   isMissingWorkspaceDirectory: boolean;
-  onTerminalCreated: (input: { terminalId: string; paneId?: string }) => void;
+  onTerminalCreated: (input: { terminalId: string; destination: TerminalTabDestination }) => void;
   onScriptTerminalSelected: (terminalId: string) => void;
   onWorkspacePathUnavailable: () => void;
   onTerminalCreateQueued: () => void;
@@ -67,6 +65,13 @@ export function useWorkspaceTerminals(input: UseWorkspaceTerminalsInput) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [pendingCreateInput, setPendingCreateInput] = useState<PendingTerminalCreateInput | null>(
+    null,
+  );
+  // A create that failed while the socket looked connected usually means the
+  // connection was already stale (idle cull, restart). Retrying immediately
+  // would hit the same dead socket, so hold the input and replay it once the
+  // client reports a fresh connection instead of leaving a dead terminal tab.
+  const [failedCreateInput, setFailedCreateInput] = useState<PendingTerminalCreateInput | null>(
     null,
   );
   const canCreateNow = useMemo(
@@ -131,14 +136,15 @@ export function useWorkspaceTerminals(input: UseWorkspaceTerminalsInput) {
   );
 
   const createMutation = useMutation({
-    mutationFn: async (_input?: PendingTerminalCreateInput) => {
+    mutationFn: async (_input: PendingTerminalCreateInput) => {
       if (!client || !workspaceDirectory) {
         throw new Error(t("workspace.terminal.hostDisconnected"));
       }
-      const payload = _input?.profile
-        ? await client.createTerminal(workspaceDirectory, _input.profile.name, undefined, {
-            command: _input.profile.command,
-            args: _input.profile.args,
+      const profile = _input.profile ? resolveTerminalProfileLaunch(_input.profile, "") : undefined;
+      const payload = profile
+        ? await client.createTerminal(workspaceDirectory, profile.name, undefined, {
+            command: profile.command,
+            args: profile.args,
             workspaceId: normalizedWorkspaceId || undefined,
           })
         : await client.createTerminal(workspaceDirectory, undefined, undefined, {
@@ -154,6 +160,9 @@ export function useWorkspaceTerminals(input: UseWorkspaceTerminalsInput) {
     },
     onSuccess: (payload, createInput) => {
       const createdTerminal = payload.terminal;
+      // Any successful create supersedes a held failure; without this a later
+      // reconnect would spawn a surprise duplicate terminal.
+      setFailedCreateInput(null);
       if (createdTerminal) {
         queryClient.setQueryData<ListTerminalsPayload>(queryKey, (current) =>
           upsertCreatedTerminalPayload({
@@ -168,11 +177,12 @@ export function useWorkspaceTerminals(input: UseWorkspaceTerminalsInput) {
       if (createdTerminal) {
         onTerminalCreated({
           terminalId: createdTerminal.id,
-          paneId: createInput?.paneId,
+          destination: createInput.destination,
         });
       }
     },
-    onError: (error: unknown) => {
+    onError: (error: unknown, failedInput) => {
+      setFailedCreateInput(failedInput);
       onTerminalCreateFailed(error instanceof Error ? error.message : String(error));
     },
   });
@@ -214,8 +224,33 @@ export function useWorkspaceTerminals(input: UseWorkspaceTerminalsInput) {
     pendingCreateInput,
   ]);
 
+  const wasConnectedRef = useRef(isConnected);
+  useEffect(() => {
+    const wasConnected = wasConnectedRef.current;
+    wasConnectedRef.current = isConnected;
+    // Only a real disconnect→reconnect cycle replays the held input. A
+    // failure with no subsequent drop is a genuine error (bad cwd, unknown
+    // profile) and must not retry. An explicit newer intent (pending input or
+    // an in-flight mutation) always wins over the stale failure.
+    if (wasConnected || !isConnected || !failedCreateInput) {
+      return;
+    }
+    if (pendingCreateInput || createMutation.isPending) {
+      setFailedCreateInput(null);
+      return;
+    }
+    if (!canCreateNow) {
+      return;
+    }
+    const retryInput = failedCreateInput;
+    setFailedCreateInput(null);
+    createMutation.mutate(retryInput);
+  }, [canCreateNow, createMutation, failedCreateInput, isConnected, pendingCreateInput]);
+
   const createTerminal = useCallback(
-    (createInput?: PendingTerminalCreateInput) => {
+    (createInput: PendingTerminalCreateInput) => {
+      // A fresh explicit intent supersedes any held failure.
+      setFailedCreateInput(null);
       if (createMutation.isPending || pendingCreateInput) {
         return;
       }
@@ -230,7 +265,7 @@ export function useWorkspaceTerminals(input: UseWorkspaceTerminalsInput) {
         return;
       }
 
-      setPendingCreateInput(createInput ?? {});
+      setPendingCreateInput(createInput);
       onTerminalCreateQueued();
     },
     [

@@ -85,6 +85,7 @@ import {
   type AgentTimelineItem,
   type AgentUsage,
   type FetchCatalogOptions,
+  type ProviderRefreshContext,
   type ImportableProviderSession,
   type ImportProviderSessionContext,
   type ImportProviderSessionInput,
@@ -97,6 +98,10 @@ import {
   type ToolCallTimelineItem,
 } from "../agent-sdk-types.js";
 import {
+  raceProviderRefreshAbort,
+  runProviderRefreshActivity,
+} from "../provider-refresh-deadline.js";
+import {
   isDefaultAgentCreateConfigUnattended,
   resolveDefaultAgentCreateConfig,
 } from "../create-agent-mode.js";
@@ -108,6 +113,11 @@ import {
   type ProviderRuntimeSettings,
 } from "../provider-launch-config.js";
 import { renderPromptAttachmentAsText } from "../prompt-attachments.js";
+import {
+  acpAnswersResponseMeta,
+  readAcpQuestions,
+  requiresExplicitApproval,
+} from "./acp-questions.js";
 import { appendOrReplaceGrowingAssistantMessage, runProviderTurn } from "./provider-runner.js";
 import {
   buildStringCommandShellInvocation,
@@ -137,6 +147,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isACPError(value: unknown): value is ACPError {
   return isRecord(value) && typeof value.message === "string" && typeof value.code === "number";
+}
+
+function isACPInvalidParams(error: unknown): boolean {
+  return isACPError(error) && error.code === -32602;
 }
 
 function extractACPErrorDataMessage(data: unknown): string | null {
@@ -225,9 +239,6 @@ function pushACPStderrRow(rows: DiagnosticEntry[], stderrChunks: string[]): void
 export const DEFAULT_ACP_CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: true,
   supportsSessionPersistence: true,
-  // ACP agents can list prior sessions via `session/list`. The runtime probe in
-  // listImportableSessions returns nothing for agents that don't advertise the
-  // capability, so enabling this here only makes the daemon query them.
   supportsSessionListing: true,
   supportsDynamicModes: true,
   supportsMcpServers: true,
@@ -238,12 +249,19 @@ export const DEFAULT_ACP_CAPABILITIES: AgentCapabilityFlags = {
   supportsRewindBoth: false,
 };
 
+function acpSessionListRequest(cursor: string | null | undefined, cwd: string | undefined) {
+  return {
+    ...(cursor ? { cursor } : {}),
+    ...(cwd ? { cwd } : {}),
+  };
+}
+
 const BASE_ACP_CLIENT_CAPABILITIES: ACPClientCapabilities = {
   fs: {
     readTextFile: false,
     writeTextFile: false,
   },
-  terminal: false,
+  terminal: true,
 };
 
 export type ACPClientCapabilityMeta = Record<string, unknown>;
@@ -267,8 +285,10 @@ export function buildACPClientCapabilities(
 // sign-in URL in the browser) when probing an ACP agent for models/modes.
 // NO_BROWSER is honored by Gemini CLI; other ACP agents ignore it.
 const PROBE_ENV: Record<string, string> = { NO_BROWSER: "true" };
-const ACP_CATALOG_TIMEOUT_MS = 60_000;
 const ACP_DIAGNOSTIC_PHASE_TIMEOUT_MS = 20_000;
+const ACP_PROBE_CLOSE_TIMEOUT_MS = 2_000;
+const ACP_IMPORT_HISTORY_LOAD_TIMEOUT_MS = 30_000;
+const ACP_IMPORT_HISTORY_BUDGET_MS = 60_000;
 
 function summarizeMalformedACPStdoutError(error: unknown): { type: string; message: string } {
   return {
@@ -375,12 +395,39 @@ export type ACPExtensionCommandsParser = (
   params: Record<string, unknown>,
 ) => AgentSlashCommand[] | null;
 
+/**
+ * Context handed to an {@link ACPCatalogModelResolver} during `fetchCatalog`. It exposes
+ * the already-derived models plus the live probe session so a resolver can refine them
+ * (e.g. switch through each model to read back per-model options) without re-implementing
+ * the catalog plumbing.
+ */
+export interface ACPCatalogModelResolverContext {
+  connection: Pick<ClientSideConnection, "setSessionConfigOption" | "extMethod">;
+  sessionId: string;
+  models: AgentModelDefinition[];
+  configOptions: SessionConfigOption[] | null | undefined;
+  runRequest: <T>(request: () => Promise<T>) => Promise<T>;
+  transformConfigOptions: (configOptions: SessionConfigOption[]) => SessionConfigOption[];
+  logger: Logger;
+  provider: string;
+}
+
+/**
+ * Providers own model discovery through this hook, including extension RPCs. Without a
+ * resolver, the base client derives models from the initial session response. The client
+ * owns the probe lifetime and refresh deadline; resolvers return the complete model list.
+ */
+export type ACPCatalogModelResolver = (
+  context: ACPCatalogModelResolverContext,
+) => Promise<AgentModelDefinition[]>;
+
 interface ACPAgentClientOptions {
   provider: string;
   logger: Logger;
   runtimeSettings?: ProviderRuntimeSettings;
   defaultCommand: [string, ...string[]];
   defaultModes?: AgentMode[];
+  catalogModelResolver?: ACPCatalogModelResolver;
   modelTransformer?: (models: AgentModelDefinition[]) => AgentModelDefinition[];
   sessionResponseTransformer?: (response: SessionStateResponse) => SessionStateResponse;
   configOptionsTransformer?: (configOptions: SessionConfigOption[]) => SessionConfigOption[];
@@ -403,6 +450,7 @@ interface ACPAgentClientOptions {
   waitForInitialCommands?: boolean;
   initialCommandsWaitTimeoutMs?: number;
   terminateProcess?: ProcessTerminator;
+  now?: () => number;
 }
 
 interface ACPAgentSessionOptions {
@@ -457,6 +505,78 @@ interface ACPProcessTransport {
   spawnError: Promise<never>;
 }
 
+interface ACPImportPromptPreviews {
+  firstPromptPreview: string | null;
+  lastPromptPreview: string | null;
+  hasConversation: boolean;
+}
+
+interface ACPImportPromptCacheEntry extends ACPImportPromptPreviews {
+  updatedAt: string | null;
+}
+
+class ACPImportHistoryCollector {
+  private readonly prompts = new Map<
+    string,
+    {
+      completed: string[];
+      current: { messageId: string | null; text: string } | null;
+      hasConversation: boolean;
+    }
+  >();
+
+  begin(sessionId: string): void {
+    this.prompts.set(sessionId, { completed: [], current: null, hasConversation: false });
+  }
+
+  accept(params: SessionNotification): void {
+    const state = this.prompts.get(params.sessionId);
+    if (!state) return;
+    const update = params.update;
+    if (isACPConversationUpdate(update)) state.hasConversation = true;
+    if (update.sessionUpdate !== "user_message_chunk") {
+      this.flushCurrent(state);
+      return;
+    }
+
+    const text = contentBlockToText(update.content);
+    if (!text) return;
+    const messageId = update.messageId ?? null;
+    if (state.current?.messageId && messageId !== state.current.messageId) {
+      this.flushCurrent(state);
+    }
+    state.current ??= { messageId, text: "" };
+    state.current.text += text;
+  }
+
+  finish(sessionId: string): ACPImportPromptPreviews {
+    const state = this.prompts.get(sessionId);
+    if (!state) {
+      return { firstPromptPreview: null, lastPromptPreview: null, hasConversation: false };
+    }
+    this.flushCurrent(state);
+    this.prompts.delete(sessionId);
+    return {
+      firstPromptPreview: normalizeACPImportPromptPreview(state.completed[0] ?? null),
+      lastPromptPreview: normalizeACPImportPromptPreview(state.completed.at(-1) ?? null),
+      hasConversation: state.hasConversation,
+    };
+  }
+
+  discard(sessionId: string): void {
+    this.prompts.delete(sessionId);
+  }
+
+  private flushCurrent(state: {
+    completed: string[];
+    current: { messageId: string | null; text: string } | null;
+    hasConversation: boolean;
+  }): void {
+    if (state.current?.text.trim()) state.completed.push(state.current.text);
+    state.current = null;
+  }
+}
+
 export interface ACPToolSnapshot {
   toolCallId: string;
   title: string;
@@ -500,7 +620,7 @@ interface TerminalEntry {
   rejectExit: (error: Error) => void;
 }
 
-interface ConfigOptionSelector {
+export interface ConfigOptionSelector {
   id: string;
   label: string;
   description?: string;
@@ -519,7 +639,7 @@ export interface ACPConfigFeatureOption {
   emptyOptionLabel?: string;
 }
 
-type SelectConfigOption = Extract<SessionConfigOption, { type: "select" }>;
+export type SelectConfigOption = Extract<SessionConfigOption, { type: "select" }>;
 interface SelectConfigChoice {
   value: string;
   name: string;
@@ -560,6 +680,27 @@ export interface ACPProviderModeWriteResult {
 
 export interface ACPBeforeModeWriteResult {
   configOptions?: SessionConfigOption[];
+}
+
+/**
+ * The turn's response usage, keeping the context-window fill reported earlier
+ * by `usage_update`. Only those two fields carry over; per-turn token counts
+ * always come from the latest response.
+ */
+function mergeAgentUsage(
+  current: AgentUsage | undefined,
+  next: AgentUsage | undefined,
+): AgentUsage | undefined {
+  if (!next) return current;
+  return {
+    ...next,
+    ...(current?.contextWindowUsedTokens !== undefined
+      ? { contextWindowUsedTokens: current.contextWindowUsedTokens }
+      : {}),
+    ...(current?.contextWindowMaxTokens !== undefined
+      ? { contextWindowMaxTokens: current.contextWindowMaxTokens }
+      : {}),
+  };
 }
 
 export function mapACPUsage(usage: Usage | null | undefined): AgentUsage | undefined {
@@ -763,6 +904,7 @@ export class ACPAgentClient implements AgentClient {
   protected readonly runtimeSettings?: ProviderRuntimeSettings;
   protected readonly defaultCommand: [string, ...string[]];
   protected readonly defaultModes: AgentMode[];
+  private readonly catalogModelResolver?: ACPCatalogModelResolver;
   private readonly modelTransformer?: (models: AgentModelDefinition[]) => AgentModelDefinition[];
   private readonly sessionResponseTransformer?: (
     response: SessionStateResponse,
@@ -789,6 +931,8 @@ export class ACPAgentClient implements AgentClient {
   private readonly waitForInitialCommands: boolean;
   private readonly initialCommandsWaitTimeoutMs: number;
   private readonly extensionCommandsParser?: ACPExtensionCommandsParser;
+  private readonly importPromptCache = new Map<string, ACPImportPromptCacheEntry>();
+  private readonly now: () => number;
   protected readonly terminateProcess: ProcessTerminator;
 
   constructor(options: ACPAgentClientOptions) {
@@ -802,6 +946,7 @@ export class ACPAgentClient implements AgentClient {
     this.runtimeSettings = options.runtimeSettings;
     this.defaultCommand = options.defaultCommand;
     this.defaultModes = options.defaultModes ?? [];
+    this.catalogModelResolver = options.catalogModelResolver;
     this.modelTransformer = options.modelTransformer;
     this.sessionResponseTransformer = options.sessionResponseTransformer;
     this.configOptionsTransformer = options.configOptionsTransformer;
@@ -816,6 +961,7 @@ export class ACPAgentClient implements AgentClient {
     this.waitForInitialCommands = options.waitForInitialCommands ?? false;
     this.initialCommandsWaitTimeoutMs = options.initialCommandsWaitTimeoutMs ?? 1500;
     this.extensionCommandsParser = options.extensionCommandsParser;
+    this.now = options.now ?? Date.now;
   }
 
   async createSession(
@@ -904,51 +1050,102 @@ export class ACPAgentClient implements AgentClient {
     return session;
   }
 
-  async fetchCatalog(options: FetchCatalogOptions): Promise<ProviderCatalog> {
+  async fetchCatalog(
+    options: FetchCatalogOptions,
+    context?: ProviderRefreshContext,
+  ): Promise<ProviderCatalog> {
     const cwd = options.scope === "global" ? homedir() : options.cwd;
-    const timeoutMs = options.timeoutMs ?? ACP_CATALOG_TIMEOUT_MS;
     let probe: UninitializedACPProcess | null = null;
-    try {
-      const catalogProbe = (async () => {
-        const initializedProbe = await this.spawnProcess(PROBE_ENV, {
-          initializeTimeoutMs: timeoutMs,
-          onSpawned: (spawned) => {
-            probe = spawned;
-          },
-        });
-        probe = initializedProbe;
-        const response = await this.runACPRequest(() =>
-          initializedProbe.connection.newSession({
-            cwd,
-            mcpServers: [],
-          }),
-        );
-        const transformed = this.transformSessionResponse(response);
-        const models = deriveModelDefinitionsFromACP(
-          this.provider,
-          transformed.models,
-          transformed.configOptions,
-        );
-        const modeInfo = deriveModesFromACP(
-          this.defaultModes,
-          transformed.modes,
-          transformed.configOptions,
-        );
-        return {
-          models: this.modelTransformer ? this.modelTransformer(models) : models,
-          modes: modeInfo.modes,
-        };
+    let probeSessionId: string | null = null;
+    let probeSessionPromise: Promise<NewSessionResponse> | null = null;
+    let closePromise: Promise<void> | null = null;
+    const closeProbe = (): Promise<void> => {
+      if (!probe) return Promise.resolve();
+      closePromise ??= (async () => {
+        if (!probeSessionId && probeSessionPromise) {
+          try {
+            probeSessionId = (
+              await withTimeout(
+                probeSessionPromise,
+                ACP_PROBE_CLOSE_TIMEOUT_MS,
+                `ACP probe session/new cleanup timed out after ${ACP_PROBE_CLOSE_TIMEOUT_MS}ms`,
+              )
+            ).sessionId;
+          } catch (error) {
+            this.logger.debug(
+              { err: error },
+              "ACP probe session/new did not finish during cleanup",
+            );
+          }
+        }
+        await this.closeProbe(probe, probeSessionId);
       })();
+      return closePromise;
+    };
+    const handleAbort = () => void closeProbe().catch(() => undefined);
+    context?.signal.addEventListener("abort", handleAbort, { once: true });
 
-      return await withTimeout(
-        catalogProbe,
-        timeoutMs,
-        `ACP catalog probe timed out after ${timeoutMs}ms`,
+    try {
+      const initializedProbe = await runProviderRefreshActivity(context, "initialize", () =>
+        raceProviderRefreshAbort(
+          context?.signal,
+          this.spawnProcess(PROBE_ENV, {
+            onSpawned: (spawned) => {
+              probe = spawned;
+              if (context?.signal.aborted) void closeProbe().catch(() => undefined);
+            },
+          }),
+        ),
       );
+      probe = initializedProbe;
+      probeSessionPromise = this.runACPRequest(() =>
+        initializedProbe.connection.newSession({
+          cwd,
+          mcpServers: [],
+        }),
+      );
+      const response = await runProviderRefreshActivity(context, "session/new", () =>
+        raceProviderRefreshAbort(context?.signal, probeSessionPromise!),
+      );
+      probeSessionId = response.sessionId;
+      const transformed = this.transformSessionResponse(response);
+      const derivedModels = deriveModelDefinitionsFromACP(
+        this.provider,
+        transformed.models,
+        transformed.configOptions,
+      );
+      const models = this.catalogModelResolver
+        ? await runProviderRefreshActivity(context, "catalog.resolve", () =>
+            raceProviderRefreshAbort(
+              context?.signal,
+              this.catalogModelResolver?.({
+                connection: initializedProbe.connection,
+                sessionId: response.sessionId,
+                models: derivedModels,
+                configOptions: transformed.configOptions,
+                runRequest: (request) => this.runACPRequest(request),
+                transformConfigOptions: (configOptions) =>
+                  this.configOptionsTransformer
+                    ? this.configOptionsTransformer(configOptions)
+                    : configOptions,
+                logger: this.logger,
+                provider: this.provider,
+              }) ?? Promise.resolve(derivedModels),
+            ),
+          )
+        : derivedModels;
+      const modeInfo = deriveModesFromACP(
+        this.defaultModes,
+        transformed.modes,
+        transformed.configOptions,
+      );
+      return {
+        models: this.modelTransformer ? this.modelTransformer(models) : models,
+        modes: modeInfo.modes,
+      };
     } finally {
-      if (probe) {
-        await this.closeProbe(probe);
-      }
+      context?.signal.removeEventListener("abort", handleAbort);
+      await closeProbe();
     }
   }
 
@@ -960,6 +1157,7 @@ export class ACPAgentClient implements AgentClient {
 
     this.assertProvider(config);
     const probe = await this.spawnProcess(PROBE_ENV);
+    let probeSessionId: string | null = null;
     try {
       const response = await this.runACPRequest(() =>
         probe.connection.newSession({
@@ -967,55 +1165,151 @@ export class ACPAgentClient implements AgentClient {
           mcpServers: [],
         }),
       );
+      probeSessionId = response.sessionId;
       const transformed = this.transformSessionResponse(response);
       return [
         autoAcceptFeature,
         ...deriveFeaturesFromACP(transformed.configOptions, this.configFeatureOptions),
       ];
     } finally {
-      await this.closeProbe(probe);
+      await this.closeProbe(probe, probeSessionId);
     }
   }
 
   async listImportableSessions(
     options?: ListImportableSessionsOptions,
   ): Promise<ImportableProviderSession[]> {
-    const probe = await this.spawnProcess(PROBE_ENV);
+    const history = new ACPImportHistoryCollector();
+    const probe = await this.spawnProcess(PROBE_ENV, {
+      client: this.buildProbeClient((params) => history.accept(params)),
+    });
     try {
       if (!probe.initialize.agentCapabilities?.sessionCapabilities?.list) {
         return [];
       }
 
       const sessions: ImportableProviderSession[] = [];
+      const resultLimit = options?.limit ?? Number.POSITIVE_INFINITY;
+      const scanLimit = Math.min(options?.scanLimit ?? 500, 500);
+      const canLoadHistory = probe.initialize.agentCapabilities.loadSession === true;
+      const historyDeadline = this.now() + ACP_IMPORT_HISTORY_BUDGET_MS;
+      let scanned = 0;
       let cursor: string | null | undefined;
       for (;;) {
         const page: ListSessionsResponse = await this.runACPRequest(() =>
-          probe.connection.listSessions({
-            ...(cursor ? { cursor } : {}),
-            // Filter by working directory at the source. Without this the agent
-            // returns globally-recent sessions, which the `limit` below can
-            // truncate before the current directory's sessions are reached.
-            ...(options?.cwd ? { cwd: options.cwd } : {}),
-          }),
+          probe.connection.listSessions(acpSessionListRequest(cursor, options?.cwd)),
         );
         for (const session of page.sessions) {
-          sessions.push({
-            providerHandleId: session.sessionId,
-            cwd: session.cwd,
-            title: session.title ?? null,
-            firstPromptPreview: null,
-            lastPromptPreview: null,
-            lastActivityAt: session.updatedAt ? new Date(session.updatedAt) : new Date(0),
-          });
+          if (scanned >= scanLimit || sessions.length >= resultLimit) break;
+          scanned += 1;
+          const descriptor = await this.describeImportableSession(
+            probe,
+            history,
+            session,
+            canLoadHistory,
+            historyDeadline,
+          );
+          if (descriptor) sessions.push(descriptor);
         }
         cursor = page.nextCursor ?? null;
         if (!cursor) break;
-        if (options?.limit && sessions.length >= options.limit) break;
+        if (scanned >= scanLimit || sessions.length >= resultLimit) break;
       }
 
-      return typeof options?.limit === "number" ? sessions.slice(0, options.limit) : sessions;
+      return sessions;
     } finally {
       await this.closeProbe(probe);
+    }
+  }
+
+  private async describeImportableSession(
+    probe: SpawnedACPProcess,
+    history: ACPImportHistoryCollector,
+    session: ListSessionsResponse["sessions"][number],
+    canLoadHistory: boolean,
+    historyDeadline: number,
+  ): Promise<ImportableProviderSession | null> {
+    const loadedPreviews = canLoadHistory
+      ? await this.loadImportPromptPreviews(probe, history, session, historyDeadline)
+      : null;
+    if (loadedPreviews?.hasConversation === false) return null;
+    return {
+      providerHandleId: session.sessionId,
+      cwd: session.cwd,
+      title: session.title ?? null,
+      firstPromptPreview: loadedPreviews?.firstPromptPreview ?? null,
+      lastPromptPreview: loadedPreviews?.lastPromptPreview ?? null,
+      lastActivityAt: session.updatedAt ? new Date(session.updatedAt) : new Date(0),
+    };
+  }
+
+  private async loadImportPromptPreviews(
+    probe: SpawnedACPProcess,
+    history: ACPImportHistoryCollector,
+    session: ListSessionsResponse["sessions"][number],
+    historyDeadline: number,
+  ): Promise<ACPImportPromptPreviews | null> {
+    const updatedAt = session.updatedAt ?? null;
+    const cached = this.importPromptCache.get(session.sessionId);
+    if (updatedAt !== null && cached?.updatedAt === updatedAt) {
+      return {
+        firstPromptPreview: cached.firstPromptPreview,
+        lastPromptPreview: cached.lastPromptPreview,
+        hasConversation: cached.hasConversation,
+      };
+    }
+
+    const remainingMs = historyDeadline - this.now();
+    if (remainingMs <= 0) return null;
+    const loadTimeoutMs = Math.min(ACP_IMPORT_HISTORY_LOAD_TIMEOUT_MS, remainingMs);
+
+    history.begin(session.sessionId);
+    try {
+      await withTimeout(
+        this.runACPRequest(() =>
+          probe.connection.loadSession({
+            sessionId: session.sessionId,
+            cwd: session.cwd,
+            mcpServers: [],
+          }),
+        ),
+        loadTimeoutMs,
+        `ACP import history load timed out after ${loadTimeoutMs}ms`,
+      );
+      const previews = history.finish(session.sessionId);
+      if (updatedAt !== null) {
+        this.importPromptCache.set(session.sessionId, { updatedAt, ...previews });
+      }
+      return previews;
+    } catch (error) {
+      history.discard(session.sessionId);
+      this.logger.debug(
+        { err: error, sessionId: session.sessionId },
+        "ACP import history load failed; keeping the session visible",
+      );
+      return null;
+    } finally {
+      await this.closeLoadedSession(probe, session.sessionId, historyDeadline);
+    }
+  }
+
+  private async closeLoadedSession(
+    probe: SpawnedACPProcess,
+    sessionId: string,
+    historyDeadline: number,
+  ): Promise<void> {
+    if (!probe.initialize.agentCapabilities?.sessionCapabilities?.close) return;
+    const remainingMs = historyDeadline - this.now();
+    if (remainingMs <= 0) return;
+    const closeTimeoutMs = Math.min(ACP_PROBE_CLOSE_TIMEOUT_MS, remainingMs);
+    try {
+      await withTimeout(
+        probe.connection.unstable_closeSession({ sessionId }),
+        closeTimeoutMs,
+        `ACP loaded session/close timed out after ${closeTimeoutMs}ms`,
+      );
+    } catch (error) {
+      this.logger.debug({ err: error, sessionId }, "ACP loaded session close failed");
     }
   }
 
@@ -1042,9 +1336,10 @@ export class ACPAgentClient implements AgentClient {
     options?: {
       initializeTimeoutMs?: number;
       onSpawned?: (probe: UninitializedACPProcess) => void;
+      client?: ACPClient;
     },
   ): Promise<SpawnedACPProcess> {
-    const transport = await this.spawnTransport(launchEnv);
+    const transport = await this.spawnTransport(launchEnv, options?.client);
     const probe: UninitializedACPProcess = {
       child: transport.child,
       connection: transport.connection,
@@ -1065,7 +1360,10 @@ export class ACPAgentClient implements AgentClient {
     }
   }
 
-  protected async spawnTransport(launchEnv?: Record<string, string>): Promise<ACPProcessTransport> {
+  protected async spawnTransport(
+    launchEnv?: Record<string, string>,
+    client: ACPClient = this.buildProbeClient(),
+  ): Promise<ACPProcessTransport> {
     const { command, args } = await this.resolveLaunchCommand();
     const child = spawnProcess(command, args, {
       cwd: process.cwd(),
@@ -1099,7 +1397,7 @@ export class ACPAgentClient implements AgentClient {
       Readable.toWeb(child.stdout),
       { logger: this.logger, provider: this.provider },
     );
-    const connection = new ClientSideConnection(() => this.buildProbeClient(), stream);
+    const connection = new ClientSideConnection(() => client, stream);
 
     return {
       child,
@@ -1145,12 +1443,16 @@ export class ACPAgentClient implements AgentClient {
     }
   }
 
-  protected buildProbeClient(): ACPClient {
+  protected buildProbeClient(
+    onSessionUpdate?: (params: SessionNotification) => void | Promise<void>,
+  ): ACPClient {
     return {
       async requestPermission(): Promise<RequestPermissionResponse> {
         return { outcome: { outcome: "cancelled" } };
       },
-      async sessionUpdate(): Promise<void> {},
+      async sessionUpdate(params): Promise<void> {
+        await onSessionUpdate?.(params);
+      },
       async readTextFile(params: ReadTextFileRequest) {
         const content = await fs.readFile(params.path, "utf8");
         return { content };
@@ -1166,11 +1468,20 @@ export class ACPAgentClient implements AgentClient {
     };
   }
 
-  protected async closeProbe(probe: UninitializedACPProcess): Promise<void> {
+  protected async closeProbe(
+    probe: UninitializedACPProcess,
+    sessionId: string | null = null,
+  ): Promise<void> {
     try {
-      if (probe.initialize?.agentCapabilities?.sessionCapabilities?.close) {
-        // No active session to close here; ignore capability.
+      if (sessionId && probe.initialize?.agentCapabilities?.sessionCapabilities?.close) {
+        await withTimeout(
+          probe.connection.unstable_closeSession({ sessionId }),
+          ACP_PROBE_CLOSE_TIMEOUT_MS,
+          `ACP probe session/close timed out after ${ACP_PROBE_CLOSE_TIMEOUT_MS}ms`,
+        );
       }
+    } catch (error) {
+      this.logger.debug({ err: error, sessionId }, "ACP probe closeSession failed during cleanup");
     } finally {
       await terminateChildProcess(probe.child, 2_000, this.terminateProcess);
     }
@@ -1194,6 +1505,8 @@ export class ACPAgentClient implements AgentClient {
     const phaseTimeoutMs = options.phaseTimeoutMs ?? ACP_DIAGNOSTIC_PHASE_TIMEOUT_MS;
     const cwd = options.cwd ?? homedir();
     let transport: ACPProcessTransport | null = null;
+    let initialize: InitializeResponse | null = null;
+    let probeSessionId: string | null = null;
 
     try {
       const spawnStartedAt = Date.now();
@@ -1219,7 +1532,7 @@ export class ACPAgentClient implements AgentClient {
 
       const initializeStartedAt = Date.now();
       try {
-        await this.initializeTransport(activeTransport, phaseTimeoutMs);
+        initialize = await this.initializeTransport(activeTransport, phaseTimeoutMs);
         rows.push({
           label: "ACP initialize",
           value: `ok (${formatDurationMs(initializeStartedAt)})`,
@@ -1245,6 +1558,7 @@ export class ACPAgentClient implements AgentClient {
           phaseTimeoutMs,
           `ACP session/new timed out after ${phaseTimeoutMs}ms`,
         );
+        probeSessionId = response.sessionId;
         const transformed = this.transformSessionResponse(response);
         const models = deriveModelDefinitionsFromACP(
           this.provider,
@@ -1277,7 +1591,15 @@ export class ACPAgentClient implements AgentClient {
       if (transport) {
         const cleanupStartedAt = Date.now();
         try {
-          await terminateChildProcess(transport.child, 2_000, this.terminateProcess);
+          await this.closeProbe(
+            {
+              child: transport.child,
+              connection: transport.connection,
+              stderrChunks: transport.stderrChunks,
+              ...(initialize ? { initialize } : {}),
+            },
+            probeSessionId,
+          );
           rows.push({
             label: "ACP cleanup",
             value: `ok (${formatDurationMs(cleanupStartedAt)})`,
@@ -1367,6 +1689,9 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   private readonly toolCalls = new Map<string, ACPToolSnapshot>();
   private readonly terminalEntries = new Map<string, TerminalEntry>();
   private readonly persistedHistory: AgentTimelineItem[] = [];
+  /** Context usage reported while a session was restored; published with the history. */
+  private restoredContextUsage: AgentUsage | undefined;
+  private capturingRestoredUsage = false;
   private readonly initialHandle?: AgentPersistenceHandle;
 
   private readonly config: AgentSessionConfig;
@@ -1450,8 +1775,10 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       this.sessionId = response.sessionId;
       this.bootstrapThreadEventPending = true;
       this.applySessionState(response);
+      this.capturingRestoredUsage = false;
       await this.applyConfiguredOverrides();
     } catch (error) {
+      this.capturingRestoredUsage = false;
       await this.closeAfterInitializationFailure(error);
     }
   }
@@ -1478,6 +1805,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       this.bootstrapThreadEventPending = true;
 
       const sessionCapabilities = this.agentCapabilities?.sessionCapabilities;
+      this.capturingRestoredUsage = true;
       if (this.agentCapabilities?.loadSession) {
         this.replayingHistory = true;
         const response = await this.runACPRequest(() =>
@@ -1603,14 +1931,18 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   }
 
   async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
-    if (!this.historyPending || this.persistedHistory.length === 0) {
-      return;
+    const restoredUsage = this.restoredContextUsage;
+    this.restoredContextUsage = undefined;
+    if (this.historyPending && this.persistedHistory.length > 0) {
+      const history = [...this.persistedHistory];
+      this.persistedHistory.length = 0;
+      this.historyPending = false;
+      for (const item of history) {
+        yield { type: "timeline", provider: this.provider, item };
+      }
     }
-    const history = [...this.persistedHistory];
-    this.persistedHistory.length = 0;
-    this.historyPending = false;
-    for (const item of history) {
-      yield { type: "timeline", provider: this.provider, item };
+    if (restoredUsage) {
+      yield { type: "usage_updated", provider: this.provider, usage: restoredUsage };
     }
   }
 
@@ -1985,7 +2317,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
 
     const option = findSelectConfigFeatureOption(this.configOptions, featureOption);
     if (!option) {
-      throw new Error(`${this.provider} does not expose ACP feature '${featureId}'`);
+      throw new Error(this.featureUnavailableMessage(featureId));
     }
 
     const requestedValue = normalizeConfigFeatureValue(value);
@@ -2061,6 +2393,10 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     }
 
     this.pendingPermissions.delete(requestId);
+    const answersMeta =
+      pending.request.kind === "question" && response.behavior === "allow"
+        ? acpAnswersResponseMeta(response.updatedInput)
+        : {};
     pending.resolve(
       selectedOption
         ? {
@@ -2068,6 +2404,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
               outcome: "selected",
               optionId: selectedOption.optionId,
             },
+            ...answersMeta,
           }
         : { outcome: { outcome: "cancelled" } },
     );
@@ -2166,7 +2503,10 @@ export class ACPAgentSession implements AgentSession, ACPClient {
 
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     const canAutoAccept =
-      isACPAutoAcceptEnabled(this.config) && !isACPChooserRequest(params.options);
+      isACPAutoAcceptEnabled(this.config) &&
+      !isACPChooserRequest(params.options) &&
+      !readAcpQuestions(params._meta) &&
+      !requiresExplicitApproval(params._meta);
     if (canAutoAccept) {
       const allowOption = selectPermissionOption(params.options, { behavior: "allow" });
       if (allowOption) {
@@ -2239,6 +2579,15 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   }
 
   private deliverTranslatedEvents(events: AgentStreamEvent[]): void {
+    if (this.capturingRestoredUsage) {
+      // No subscriber can exist before the restored session is returned, so
+      // the usage is held and published by streamHistory().
+      for (const event of events) {
+        if (event.type === "usage_updated") {
+          this.restoredContextUsage = event.usage;
+        }
+      }
+    }
     if (this.replayingHistory) {
       for (const event of events) {
         if (event.type === "timeline") {
@@ -2322,8 +2671,13 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       (params.env ?? []).map((entry: EnvVariable) => [entry.name, entry.value]),
     );
     const terminalCommand = resolveTerminalCommand(params.command, params.args);
+    // The terminal is a sibling of the agent process, not a child, so it inherits
+    // nothing from it. Carry the agent's launch environment the way spawnProcess
+    // does, keeping the requested terminal environment on top.
     const commandEnvOverlays =
-      terminalCommand.shell === false ? [env, createStringCommandShellEnvOverlay()] : [env];
+      terminalCommand.shell === false
+        ? [this.launchEnv, env, createStringCommandShellEnvOverlay()]
+        : [this.launchEnv, env];
     const child = spawnProcess(terminalCommand.command, terminalCommand.args, {
       cwd: params.cwd ?? this.config.cwd,
       ...createProviderEnvSpec({
@@ -2522,6 +2876,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       await this.setModeWithSelection({ modeId: configuredModeId, selection });
     }
     const configuredModelId = this.config.model;
+    let switchedModel = false;
     if (configuredModelId && configuredModelId !== this.currentModel) {
       const selection = resolveACPModelSelection({
         modelId: configuredModelId,
@@ -2530,6 +2885,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       });
       try {
         await this.setModelWithSelection({ modelId: configuredModelId, selection });
+        switchedModel = true;
       } catch (error) {
         if (!this.isModelSelectionUnavailableError(error)) {
           throw error;
@@ -2548,8 +2904,37 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       if (!Object.prototype.hasOwnProperty.call(configuredFeatureValues, featureOption.id)) {
         continue;
       }
-      await this.setFeature(featureOption.id, configuredFeatureValues[featureOption.id]);
+      try {
+        await this.setFeature(featureOption.id, configuredFeatureValues[featureOption.id]);
+      } catch (error) {
+        if (!this.isStaleFeatureValueError(error, featureOption.id, switchedModel)) {
+          throw error;
+        }
+        this.logger.warn(
+          { err: error, featureId: featureOption.id, model: this.currentModel },
+          `${this.provider} cannot apply ACP feature '${featureOption.id}' to the current model; using the provider default`,
+        );
+      }
     }
+  }
+
+  /**
+   * A stored feature value is a preference carried over from whichever model the user
+   * last configured, so the session it lands on may have no such option. Paseo's own
+   * guard says so when the session's options are accurate. A model switch answers with
+   * an empty response, leaving Paseo holding the previous model's options, and then the
+   * provider is the one that rejects the write as invalid params. Outside those two
+   * cases the write failed for a reason the user needs to see.
+   */
+  private isStaleFeatureValueError(
+    error: unknown,
+    featureId: string,
+    switchedModel: boolean,
+  ): boolean {
+    if (this.isFeatureUnavailableError(error, featureId)) {
+      return true;
+    }
+    return switchedModel && isACPInvalidParams(error);
   }
 
   private warnInvalidSelection(value: string, message: string): void {
@@ -2562,6 +2947,14 @@ export class ACPAgentSession implements AgentSession, ACPClient {
 
   private isModelSelectionUnavailableError(error: unknown): boolean {
     return error instanceof Error && error.message === this.modelSelectionUnavailableMessage();
+  }
+
+  private featureUnavailableMessage(featureId: string): string {
+    return `${this.provider} does not expose ACP feature '${featureId}'`;
+  }
+
+  private isFeatureUnavailableError(error: unknown, featureId: string): boolean {
+    return error instanceof Error && error.message === this.featureUnavailableMessage(featureId);
   }
 
   private translateSessionUpdate(update: SessionUpdate): AgentStreamEvent[] {
@@ -2615,8 +3008,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
         this.handleSessionInfoUpdate(update);
         return pendingUserEvents;
       case "usage_update":
-        this.handleUsageUpdate(update);
-        return pendingUserEvents;
+        return [...pendingUserEvents, ...this.handleUsageUpdate(update)];
       case "available_commands_update":
         this.cachedCommands = update.availableCommands.map((command) => ({
           name: command.name,
@@ -2776,12 +3168,21 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     }
   }
 
-  private handleUsageUpdate(update: UsageUpdate): void {
-    void update;
+  /**
+   * ACP `usage_update` reports the conversation's context fill: `used` tokens
+   * of a `size` window. A `size` of 0 means the agent does not know the window.
+   */
+  private handleUsageUpdate(update: UsageUpdate): AgentStreamEvent[] {
+    const usage: AgentUsage = {
+      contextWindowUsedTokens: update.used,
+      ...(update.size > 0 ? { contextWindowMaxTokens: update.size } : {}),
+    };
+    this.currentTurnUsage = { ...this.currentTurnUsage, ...usage };
+    return [{ type: "usage_updated", provider: this.provider, usage }];
   }
 
   private handlePromptResponse(response: PromptResponse, turnId: string): void {
-    this.currentTurnUsage = mapACPUsage(response.usage) ?? this.currentTurnUsage;
+    this.currentTurnUsage = mergeAgentUsage(this.currentTurnUsage, mapACPUsage(response.usage));
 
     switch (response.stopReason) {
       case "cancelled":
@@ -2930,7 +3331,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   }
 }
 
-function findSelectConfigOption({
+export function findSelectConfigOption({
   configOptions,
   category,
   id,
@@ -3036,7 +3437,7 @@ function normalizeConfigFeatureValue(value: unknown): string {
   throw new Error(`ACP feature value must be a string`);
 }
 
-function deriveSelectorOptions(
+export function deriveSelectorOptions(
   configOptions: SessionConfigOption[] | null | undefined,
   category: string,
 ): ConfigOptionSelector[] {
@@ -3158,6 +3559,23 @@ function contentBlockToText(content: ContentBlock): string {
     default:
       return "";
   }
+}
+
+function normalizeACPImportPromptPreview(text: string | null): string | null {
+  const normalized = text?.trim().replace(/\s+/g, " ") ?? "";
+  if (!normalized) return null;
+  return normalized.length > 160 ? normalized.slice(0, 160) : normalized;
+}
+
+function isACPConversationUpdate(update: SessionUpdate): boolean {
+  return (
+    update.sessionUpdate === "user_message_chunk" ||
+    update.sessionUpdate === "agent_message_chunk" ||
+    update.sessionUpdate === "agent_thought_chunk" ||
+    update.sessionUpdate === "tool_call" ||
+    update.sessionUpdate === "tool_call_update" ||
+    update.sessionUpdate === "plan"
+  );
 }
 
 function coalesceDefined<T>(next: T | undefined, previous: T | undefined, fallback: T): T {
@@ -3448,7 +3866,11 @@ function mapPermissionRequest(
   params: RequestPermissionRequest,
   snapshot: ACPToolSnapshot,
 ): AgentPermissionRequest {
-  const kind: AgentPermissionRequestKind = snapshot.kind === "switch_mode" ? "mode" : "tool";
+  const questions = readAcpQuestions(params._meta);
+  let kind: AgentPermissionRequestKind = snapshot.kind === "switch_mode" ? "mode" : "tool";
+  if (questions) {
+    kind = "question";
+  }
   const chooserText = isACPChooserRequest(params.options)
     ? extractToolText(params.toolCall.content)
     : undefined;
@@ -3458,6 +3880,7 @@ function mapPermissionRequest(
     name: snapshot.kind ?? snapshot.title,
     kind,
     title: params.toolCall.title ?? snapshot.title,
+    ...(questions ? { input: { questions } } : {}),
     detail: chooserText
       ? {
           type: "plain_text",

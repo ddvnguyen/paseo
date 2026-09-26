@@ -62,6 +62,7 @@ interface FakeAgentSessionOptions {
 }
 
 export interface TestAgentClientOptions {
+  beforeCreateSession?: () => Promise<void>;
   closeSession?: () => Promise<void>;
   onStartTurn?: (prompt: AgentPromptInput) => void;
   supportsMcpServers?: boolean;
@@ -79,7 +80,10 @@ function createDeferred<T>(): Deferred<T> {
 
 function isAskMode(config: AgentSessionConfig): boolean {
   const mode = (config.modeId ?? "").toLowerCase();
-  const policy = (config.approvalPolicy ?? "").toLowerCase();
+  const policy =
+    typeof config.providerOptions?.approval_policy === "string"
+      ? config.providerOptions.approval_policy.toLowerCase()
+      : "";
 
   // Default behavior for tests: ask unless explicitly bypassed.
   if (!mode && !policy) {
@@ -734,6 +738,16 @@ class FakeAgentSession implements AgentSession {
       await this.appendHistoryEvent(turnStarted);
       this.notifySubscribers(turnStarted);
 
+      if (textPrompt === "Emit a provider child") {
+        const child: AgentStreamEvent = {
+          type: "provider_subagent",
+          provider: this.providerName,
+          event: { type: "upsert", id: "fixture-child", title: "Fixture child", status: "running" },
+        };
+        await this.appendHistoryEvent(child);
+        this.notifySubscribers(child);
+      }
+
       if (textPrompt.toLowerCase().includes("emit a turn failure")) {
         const failed: AgentStreamEvent = {
           type: "turn_failed",
@@ -1151,7 +1165,10 @@ class FakeAgentSession implements AgentSession {
 
   private needsPermissionForTool(toolName: string, toolInput: Record<string, unknown>): boolean {
     const mode = (this.config.modeId ?? "").toLowerCase();
-    const policy = (this.config.approvalPolicy ?? "").toLowerCase();
+    const policy =
+      typeof this.config.providerOptions?.approval_policy === "string"
+        ? this.config.providerOptions.approval_policy.toLowerCase()
+        : "";
 
     if (policy === "never" || mode.includes("bypass") || mode.includes("full")) {
       return false;
@@ -1196,6 +1213,7 @@ class FakeAgentClient implements AgentClient {
     config: AgentSessionConfig,
     _launchContext?: AgentLaunchContext,
   ): Promise<AgentSession> {
+    await this.options.beforeCreateSession?.();
     return new FakeAgentSession({
       providerName: this.provider,
       config: { ...config },
@@ -1274,4 +1292,11 @@ export function createTestAgentClients(
     codex: new FakeAgentClient("codex", options),
     opencode: new FakeAgentClient("opencode", options),
   };
+}
+
+export function createTestAgentClient(
+  provider: string,
+  options: TestAgentClientOptions = {},
+): AgentClient {
+  return new FakeAgentClient(provider, options);
 }

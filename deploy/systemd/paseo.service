@@ -1,0 +1,47 @@
+# Paseo systemd --user unit: paseo.service (PROD daemon, :6767)
+#
+# Install:
+#   cp deploy/systemd/paseo.service        ~/.config/systemd/user/
+#   cp deploy/systemd/paseo-prestart.sh    ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now paseo.service
+#
+# Consolidation (2026-09): PASEO_HOME and the runtime tree now live together
+# under $HOME/paseo/PROD. The runtime node_modules are installed by the
+# "deploy-prod" pipeline stage (PROD_HOME=/home/ddv/paseo/PROD).
+[Unit]
+Description=Paseo coding-agent orchestrator daemon (hydra fork, PROD)
+After=network-online.target
+
+[Service]
+Type=simple
+# Hardening against the recurring EADDRINUSE crash-loop after unclean stops:
+#   - ExecStartPre kills any stale process still holding port 6767 before the
+#     new daemon starts (see paseo-prestart.sh).
+#   - KillMode=mixed: on stop, SIGTERM to the main process only; the rest of
+#     the cgroup (git worktree children, etc.) is SIGKILLed once the main
+#     process exits, instead of every child getting an independent 90s grace.
+#   - TimeoutStopSec=30: bound the stop; systemd stops waiting for D-state
+#     git children instead of hanging for the 90s default then SIGKILLing.
+Environment="PASEO_HOME=%h/paseo/PROD"
+Environment="PASEO_PID_FILE=%h/paseo/PROD/paseo.pid"
+Environment="PASEO_PRESTART_PORT=6767"
+Environment="PASEO_APP_BASE_URL=https://paseo.ddvnguyen.com"
+Environment="PASEO_WEB_UI_ENABLED=false"
+Environment="PASEO_RELAY_ENABLED=true"
+Environment="PASEO_RELAY_ENDPOINT=relay.paseo.sh:443"
+Environment="PASEO_RELAY_USE_TLS=true"
+Environment=PATH=%h/.bun/bin:%h/.nvm/versions/node/v24.15.0/bin:%h/.local/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/paseo/PROD
+ExecStartPre=%h/.config/systemd/user/paseo-prestart.sh
+ExecStart=%h/paseo/PROD/paseo-bun daemon start --foreground --listen 0.0.0.0:6767 --no-web-ui
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paseo
+
+[Install]
+WantedBy=default.target

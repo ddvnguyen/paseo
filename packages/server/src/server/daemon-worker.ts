@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { createPaseoDaemon } from "./bootstrap.js";
+import { createPaseoDaemon, formatListenTarget } from "./bootstrap.js";
 import { loadConfig } from "./config.js";
 import { resolvePaseoHome } from "./paseo-home.js";
 import { createRootLogger } from "./logger.js";
@@ -17,6 +17,7 @@ type SupervisorLifecycleMessage =
   | {
       type: "paseo:ready";
       listen: string;
+      serverId: string;
     }
   | {
       type: "paseo:restart";
@@ -88,28 +89,50 @@ function bootstrapFromEnvironment(): BootstrapResult {
 }
 
 function applyCliFlagOverrides(config: ReturnType<typeof loadConfig>): void {
+  const configReload = config.configReload;
+  if (!configReload) throw new Error("Loaded daemon config is missing reload metadata");
+  const cli = (configReload.cli ??= {});
+  const override = (configPath: string) => {
+    if (!configReload.overrideControlledPaths.includes(configPath)) {
+      configReload.overrideControlledPaths.push(configPath);
+    }
+  };
   if (process.argv.includes("--relay")) {
     config.relayEnabled = true;
     config.relayEnabledMutable = false;
+    cli.relayEnabled = true;
+    override("daemon.relay.enabled");
   }
   if (process.argv.includes("--no-relay")) {
     config.relayEnabled = false;
     config.relayEnabledMutable = false;
+    cli.relayEnabled = false;
+    override("daemon.relay.enabled");
   }
   if (process.argv.includes("--relay-use-tls")) {
     config.relayUseTls = true;
+    cli.relayUseTls = true;
+    override("daemon.relay.useTls");
   }
   if (process.argv.includes("--no-mcp")) {
     config.mcpEnabled = false;
+    cli.mcpEnabled = false;
+    override("daemon.mcp.enabled");
   }
   if (process.argv.includes("--no-inject-mcp")) {
     config.mcpInjectIntoAgents = false;
+    cli.mcpInjectIntoAgents = false;
+    override("daemon.mcp.injectIntoAgents");
   }
   if (process.argv.includes("--web-ui")) {
     config.webUi = { ...(config.webUi ?? { distDir: null }), enabled: true };
+    cli.webUiEnabled = true;
+    override("features.webUi.enabled");
   }
   if (process.argv.includes("--no-web-ui")) {
     config.webUi = { ...(config.webUi ?? { distDir: null }), enabled: false };
+    cli.webUiEnabled = false;
+    override("features.webUi.enabled");
   }
 }
 
@@ -254,18 +277,20 @@ async function main() {
     };
 
     process.on("message", (message: unknown) => {
-      if (
-        typeof message === "object" &&
-        message !== null &&
-        "type" in message &&
-        (message as SupervisorHeartbeatMessage).type === "paseo:supervisor-heartbeat"
-      ) {
+      if (typeof message !== "object" || message === null || !("type" in message)) {
+        return;
+      }
+      const type = (message as { type?: unknown }).type;
+      if (type === "paseo:supervisor-heartbeat") {
         lastSupervisorHeartbeatAt = Date.now();
-        // Reply so the supervisor can distinguish a responsive worker from a
-        // wedged one (event loop stuck, e.g. git-pool deadlock). Without this
-        // the supervisor only detects a dead worker, never a hung one.
-        const reply: WorkerHeartbeatMessage = { type: "paseo:worker-heartbeat" };
-        process.send?.(reply);
+interface SupervisorHeartbeatMessage {
+  type: "paseo:supervisor-heartbeat";
+}
+
+interface WorkerHeartbeatMessage {
+  type: "paseo:worker-heartbeat";
+}
+
       }
     });
     process.on("disconnect", () => exitAfterSupervisorLoss("ipc_disconnect_event"));
@@ -308,14 +333,15 @@ async function main() {
   try {
     await daemon.start();
     const listenTarget = daemon.getListenTarget();
-    const listen =
-      listenTarget?.type === "tcp"
-        ? `${listenTarget.host}:${listenTarget.port}`
-        : listenTarget?.path;
+    const listen = formatListenTarget(listenTarget);
     if (!listen) {
       throw new Error("Daemon did not expose a listen target after startup");
     }
-    sendSupervisorLifecycleMessage({ type: "paseo:ready", listen });
+    sendSupervisorLifecycleMessage({
+      type: "paseo:ready",
+      listen,
+      serverId: daemon.getServerId(),
+    });
   } catch (err) {
     logger.fatal({ err }, "Daemon failed to start listening");
     throw err;

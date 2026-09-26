@@ -9,6 +9,7 @@ import { expectWorkspaceTabVisible, openSessions } from "../support/helpers/arch
 import { daemonWsRoutePattern } from "../support/helpers/daemon-port";
 import { getServerId } from "../support/helpers/server-id";
 import { switchWorkspaceViaSidebar } from "../support/helpers/workspace-ui";
+import { expectMobileAgentSidebarVisible } from "../support/helpers/sidebar";
 
 const TEST_COMMANDS = [
   {
@@ -544,6 +545,88 @@ test.describe("Composer autocomplete", () => {
     }
   });
 
+  test("uses the live cursor when accepting a slash command", async ({ page }) => {
+    await installListCommandsStub(page);
+    const agent = await openReadyMockAgent(page);
+
+    try {
+      const input = composerLocator(page);
+      await expect(input).toBeEditable({ timeout: 30_000 });
+      await input.fill("/tdd");
+      await expect(
+        page
+          .getByTestId("composer-autocomplete-popover")
+          .getByText("/tdd", { exact: true })
+          .first(),
+      ).toBeVisible({ timeout: 30_000 });
+
+      await input.evaluate((element) => {
+        if (!(element instanceof HTMLTextAreaElement)) {
+          throw new Error("Composer input is not a textarea");
+        }
+        element.setSelectionRange(0, 0);
+        element.dispatchEvent(new Event("select", { bubbles: true }));
+        element.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Tab",
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+
+      await expect(input).toHaveValue("/tdd");
+      const selectionStart = await input.evaluate(
+        (element) => (element as HTMLTextAreaElement).selectionStart,
+      );
+      expect(selectionStart).toBe(0);
+    } finally {
+      await agent.cleanup();
+    }
+  });
+
+  test("uses the live input when clicking a slash command", async ({ page }) => {
+    await installListCommandsStub(page);
+    const agent = await openReadyMockAgent(page);
+
+    try {
+      const input = composerLocator(page);
+      await expect(input).toBeEditable({ timeout: 30_000 });
+      await input.fill("/td");
+      const option = page
+        .getByTestId("composer-autocomplete-popover")
+        .getByText("/tdd", { exact: true })
+        .first();
+      await expect(option).toBeVisible({ timeout: 30_000 });
+
+      await option.evaluate((element) => {
+        const textarea = document.querySelector('textarea[aria-label="Message agent..."]');
+        if (!(textarea instanceof HTMLTextAreaElement)) {
+          throw new Error("Composer input is not a textarea");
+        }
+        const valueSetter = Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value",
+        )?.set;
+        if (!valueSetter) throw new Error("Textarea value setter is unavailable");
+        valueSetter.call(textarea, "/tdd suffix");
+        textarea.setSelectionRange(4, 4);
+        textarea.dispatchEvent(
+          new InputEvent("input", {
+            bubbles: true,
+            data: "d suffix",
+            inputType: "insertText",
+          }),
+        );
+        (element as HTMLElement).click();
+      });
+
+      await expect(input).toHaveValue("/tdd suffix");
+    } finally {
+      await agent.cleanup();
+    }
+  });
+
   test("stays anchored to the composer when the desktop sidebar is open", async ({ page }) => {
     await installListCommandsStub(page);
     const agent = await openReadyMockAgent(page);
@@ -589,7 +672,7 @@ test.describe("Composer autocomplete", () => {
         });
 
         await page.getByRole("button", { name: "Open menu" }).click();
-        await expect(page.getByTestId("sidebar-sessions")).toBeInViewport({ timeout: 5_000 });
+        await expectMobileAgentSidebarVisible(page);
 
         const popoverBox = await popover.boundingBox();
         expect(popoverBox).not.toBeNull();

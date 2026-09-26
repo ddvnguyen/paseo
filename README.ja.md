@@ -118,7 +118,6 @@ npx skills add getpaseo/paseo
 どのエージェントとの会話でも使用できます。
 
 - `/paseo-handoff` — エージェント間で作業を引き継ぎます。私はこれを使って Claude で計画し、Codex に実装を引き継いでいます。
-- `/paseo-loop` — 明確な受け入れ基準に沿ってエージェントをループさせます（Ralph loops とも呼ばれます）。検証役を追加することもできます。
 - `/paseo-advisor` — 単一のエージェントをアドバイザーとして起動し、作業を委任せずにセカンドオピニオンを得ます。
 - `/paseo-committee` — 対照的な2つのエージェントで委員会を構成し、一歩引いた視点で根本原因を分析して計画を作成します。
 
@@ -152,12 +151,17 @@ npm run build:server
 npm run typecheck
 ```
 
+## スポンサー
+
+Paseo は一人で開発しており、使ってくれる人たちの支援で成り立っています。[GitHub Sponsors](https://github.com/sponsors/boudra) で支援できます。企業として毎月[スポンサー](https://paseo.sh/sponsor#spot)になっていただくと、ロゴをここと paseo.sh のホームページに掲載します。
+
+<!-- Sponsor logos go here, in the same order as packages/website/src/data/sponsors.ts -->
+
 ## 関連プロジェクト
 
 - [getpaseo/paseo-relay](https://github.com/getpaseo/paseo-relay) — Elixir 製の公式分散リレー
-- [paseo-skins](https://github.com/huangguang1999/paseo-skins) — Paseo デスクトップ向けコミュニティテーマと、Agent Skill 対応のゼロパッチテーマローダー
 - [paseo-vscode](https://marketplace.visualstudio.com/items?itemName=hinnes.paseo-vscode) — VS Code 拡張機能
 
 ## ライセンス
 
-AGPL-3.0
+Apache-2.0

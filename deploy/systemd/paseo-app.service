@@ -1,0 +1,26 @@
+# Paseo systemd --user unit: paseo-app.service
+#
+# Static file server for the Paseo web UI via Caddy.
+# Daemons run separately (TEST on :6868, PROD on :6767).
+# Clients connect to a daemon via the "Add host" flow in the web UI.
+#
+# Install:
+#   cp deploy/systemd/paseo-app.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now paseo-app.service
+#
+# Consolidation (2026-09): the app now lives at $HOME/paseo/app.
+
+[Unit]
+Description=Paseo — Static web UI server (Caddy)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/ddv/.local/bin/caddy run --config /home/ddv/paseo/app/Caddyfile --adapter caddyfile
+ExecReload=/home/ddv/.local/bin/caddy reload --config /home/ddv/paseo/app/Caddyfile --adapter caddyfile
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

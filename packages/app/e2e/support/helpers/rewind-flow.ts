@@ -160,7 +160,7 @@ export async function launchAgent(input: {
     model?: string;
     modeId?: string;
     featureValues?: Record<string, unknown>;
-    extra?: { codex?: { features?: { multi_agent_v2?: boolean } } };
+    providerOptions?: { features?: { multi_agent_v2?: boolean } };
   };
 }): Promise<AgentHandle> {
   execFileSync("git", ["init", "-b", "main"], { cwd: input.cwd, stdio: "ignore" });
@@ -318,9 +318,9 @@ export async function assertFileContains(filePath: string, text: string): Promis
 
 export async function assertComposerIdle(handle: Pick<AgentHandle, "page">): Promise<void> {
   await expectComposerEditable(handle.page);
-  await expect(handle.page.getByRole("button", { name: /stop|cancel/i })).toHaveCount(0, {
-    timeout: 30_000,
-  });
+  await expect(
+    handle.page.getByRole("button", { name: /^(?:Stop agent|Canceling agent)$/ }),
+  ).toHaveCount(0, { timeout: 30_000 });
   await expect(handle.page.getByTestId("turn-working-indicator")).toHaveCount(0, {
     timeout: 30_000,
   });

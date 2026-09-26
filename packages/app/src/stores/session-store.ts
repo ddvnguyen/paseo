@@ -2,13 +2,14 @@ import equal from "fast-deep-equal";
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import type { ViewedTimelineUiBridge } from "@/timeline/viewed-timeline-sync";
+import type { ViewedTimelineOwner } from "@/timeline/viewed-timeline-sync";
 import type { AgentDirectoryEntry } from "@/types/agent-directory";
 import {
   appendSubmittedUserMessage,
   handoffCreatedAgentUserMessageToStream,
   removeSubmittedUserMessage,
   type StreamItem,
+  type TodoEntry,
   type UserMessageItem,
 } from "@/types/stream";
 import {
@@ -53,54 +54,11 @@ import {
   type WorkspaceAgentActivity,
 } from "@/utils/workspace-agent-activity";
 import {
-  applyTurnLivenessTransition,
   resolveTurnPresentation,
   TURN_LIVENESS_IDLE,
   type TurnLiveness,
   type TurnPresentation,
-  type TurnLivenessTransition,
 } from "@/timeline/turn-liveness";
-
-// Re-export types that were in session-context
-export type MessageEntry =
-  | {
-      type: "user";
-      id: string;
-      timestamp: number;
-      message: string;
-    }
-  | {
-      type: "assistant";
-      id: string;
-      timestamp: number;
-      message: string;
-    }
-  | {
-      type: "activity";
-      id: string;
-      timestamp: number;
-      activityType: "system" | "info" | "success" | "error";
-      message: string;
-      metadata?: Record<string, unknown>;
-    }
-  | {
-      type: "artifact";
-      id: string;
-      timestamp: number;
-      artifactId: string;
-      artifactType: string;
-      title: string;
-    }
-  | {
-      type: "tool_call";
-      id: string;
-      timestamp: number;
-      toolName: string;
-      args: unknown;
-      result?: unknown;
-      error?: unknown;
-      status: "executing" | "completed" | "failed";
-    };
 
 export interface AgentRuntimeInfo {
   provider: AgentProvider;
@@ -116,7 +74,7 @@ export interface Agent {
   id: string;
   provider: AgentProvider;
   status: AgentLifecycleStatus;
-  activeTurn: { turnId: string | null; startedAt: Date | null } | null;
+  turn: TurnLiveness;
   createdAt: Date;
   updatedAt: Date;
   lastUserMessageAt: Date | null;
@@ -158,6 +116,7 @@ export interface WorkspaceDescriptor {
   name: string;
   title?: string | null;
   pinnedAt?: string | null;
+  labels?: string[];
   status: WorkspaceDescriptorPayload["status"];
   statusEnteredAt: Date | null;
   archivingAt: string | null;
@@ -194,6 +153,8 @@ export function normalizeWorkspaceDescriptor(
     name: payload.name,
     title: payload.title ?? null,
     pinnedAt: payload.pinnedAt ?? null,
+    // COMPAT(workspaceLabels): old daemons omit assignments.
+    labels: payload.labels ?? [],
     status: payload.status,
     statusEnteredAt,
     archivingAt: payload.archivingAt ?? null,
@@ -212,6 +173,7 @@ export interface ProjectDescriptor {
   projectDisplayName: string;
   projectCustomName: string | null;
   projectCustomIconRevision?: string | null;
+  projectIconRevision?: string;
   projectRootPath: string;
   projectKind: WorkspaceDescriptorPayload["projectKind"];
 }
@@ -225,6 +187,7 @@ export function normalizeProjectDescriptor(
     projectDisplayName: payload.projectDisplayName,
     projectCustomName: payload.projectCustomName ?? null,
     projectCustomIconRevision: payload.projectCustomIconRevision ?? null,
+    projectIconRevision: payload.projectIconRevision,
     projectRootPath: payload.projectRootPath,
     projectKind: payload.projectKind,
   };
@@ -240,21 +203,22 @@ function preserveWorkspaceDescriptorIdentity(
   return incoming;
 }
 
-function preserveWorkspaceMapIdentity(
-  existing: Map<string, WorkspaceDescriptor>,
-  incoming: Map<string, WorkspaceDescriptor>,
-): Map<string, WorkspaceDescriptor> {
+function preserveMapIdentity<Key, Value>(
+  existing: Map<Key, Value>,
+  incoming: Map<Key, Value>,
+): Map<Key, Value> {
   if (existing === incoming) {
     return existing;
   }
 
-  const next = new Map<string, WorkspaceDescriptor>();
+  const next = new Map<Key, Value>();
   let changed = existing.size !== incoming.size;
   const existingEntries = existing.entries();
 
   for (const [key, workspace] of incoming) {
     const existingWorkspace = existing.get(key);
-    const nextWorkspace = preserveWorkspaceDescriptorIdentity(workspace, existingWorkspace);
+    const nextWorkspace =
+      existingWorkspace && equal(existingWorkspace, workspace) ? existingWorkspace : workspace;
     next.set(key, nextWorkspace);
     const existingEntry = existingEntries.next().value;
     if (!existingEntry || existingEntry[0] !== key || existingEntry[1] !== nextWorkspace) {
@@ -263,17 +227,6 @@ function preserveWorkspaceMapIdentity(
   }
 
   return changed ? next : existing;
-}
-
-function projectMapsEqual(
-  left: ReadonlyMap<string, ProjectDescriptor>,
-  right: ReadonlyMap<string, ProjectDescriptor>,
-): boolean {
-  if (left.size !== right.size) return false;
-  for (const [projectId, project] of right) {
-    if (!equal(left.get(projectId), project)) return false;
-  }
-  return true;
 }
 
 export type ExplorerEntryKind = "file" | "directory";
@@ -343,18 +296,6 @@ export interface AgentTimelineCursorState {
   }>;
 }
 
-export interface SessionReplicaTimeline {
-  agentId: string;
-  items: StreamItem[];
-}
-
-export interface SessionReplica {
-  agents: Map<string, Agent>;
-  workspaces: Map<string, WorkspaceDescriptor>;
-  projects: Map<string, ProjectDescriptor>;
-  timeline: SessionReplicaTimeline | null;
-}
-
 export type AgentTimelineState =
   | { status: "cold" }
   | { status: "painted"; items: StreamItem[] }
@@ -389,9 +330,31 @@ export function selectAgentTurnPresentation(
   agentId: string,
 ): TurnPresentation {
   return resolveTurnPresentation(
-    session?.agentTurnLiveness.get(agentId) ?? TURN_LIVENESS_IDLE,
+    session?.agents.get(agentId)?.turn ??
+      session?.agentDetails.get(agentId)?.turn ??
+      TURN_LIVENESS_IDLE,
     getActiveMessageSubmissions(session?.messageSubmissions.get(agentId)).length > 0,
   );
+}
+
+function latestTasksFromStream(items: readonly StreamItem[]): TodoEntry[] {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.kind === "todo_list") return item.items;
+  }
+  return [];
+}
+
+function updateAgentTasks(
+  current: Map<string, TodoEntry[]>,
+  agentId: string,
+  taskSnapshot: TodoEntry[] | undefined,
+): Map<string, TodoEntry[]> {
+  if (taskSnapshot === undefined || equal(current.get(agentId) ?? [], taskSnapshot)) return current;
+  const next = new Map(current);
+  if (taskSnapshot.length > 0) next.set(agentId, taskSnapshot);
+  else next.delete(agentId);
+  return next;
 }
 
 export type WorkspaceRestoreStatus = "restoring" | "failed" | "needs-host-upgrade";
@@ -403,7 +366,7 @@ export interface SessionState {
   // Daemon client (immutable reference)
   client: DaemonClient | null;
   clientGeneration: number;
-  viewedTimelineSync: ViewedTimelineUiBridge | null;
+  viewedTimelineSync: ViewedTimelineOwner | null;
 
   // Server metadata (from server_info handshake)
   serverInfo: DaemonServerInfo | null;
@@ -411,6 +374,7 @@ export interface SessionState {
   // Hydration status
   hasHydratedAgents: boolean;
   hasHydratedWorkspaces: boolean;
+  hasWorkspaceDirectorySnapshot: boolean;
 
   // Audio state
   isPlayingAudio: boolean;
@@ -419,14 +383,10 @@ export interface SessionState {
   focusedAgentId: string | null;
   focusedTerminalId: string | null;
 
-  // Messages
-  messages: MessageEntry[];
-  currentAssistantMessage: string;
-
   // Stream state (head/tail model)
   agentStreamTail: Map<string, StreamItem[]>;
   agentStreamHead: Map<string, StreamItem[]>;
-  agentTurnLiveness: Map<string, TurnLiveness>;
+  agentTasks: Map<string, TodoEntry[]>;
   messageSubmissions: Map<string, MessageSubmissionRecord[]>;
   agentTimelineCursor: Map<string, AgentTimelineCursorState>;
   agentTimelineHasOlder: Map<string, boolean>;
@@ -479,11 +439,10 @@ interface SessionStoreActions {
     client: DaemonClient | null,
     clientGeneration?: number,
   ) => void;
-  restoreSessionReplica: (serverId: string, replica: SessionReplica) => void;
   clearSession: (serverId: string) => void;
   getSession: (serverId: string) => SessionState | undefined;
   updateSessionClient: (serverId: string, client: DaemonClient, clientGeneration?: number) => void;
-  setViewedTimelineSync: (serverId: string, sync: ViewedTimelineUiBridge | null) => void;
+  setViewedTimelineSync: (serverId: string, sync: ViewedTimelineOwner | null) => void;
   updateSessionServerInfo: (serverId: string, info: DaemonServerInfo) => void;
 
   // Audio state
@@ -492,16 +451,6 @@ interface SessionStoreActions {
   // Focus
   setFocusedAgentId: (serverId: string, agentId: string | null) => void;
   setFocusedTerminalId: (serverId: string, terminalId: string | null) => void;
-
-  // Messages
-  setMessages: (
-    serverId: string,
-    messages: MessageEntry[] | ((prev: MessageEntry[]) => MessageEntry[]),
-  ) => void;
-  setCurrentAssistantMessage: (
-    serverId: string,
-    message: string | ((prev: string) => string),
-  ) => void;
 
   // Stream state (head/tail model)
   setAgentStreamTail: (
@@ -523,16 +472,9 @@ interface SessionStoreActions {
       tail?: StreamItem[];
       head?: StreamItem[];
       acknowledgedClientMessageIds?: readonly string[];
+      taskSnapshot?: TodoEntry[];
     },
   ) => void;
-  applyAgentTurnLiveness: (
-    serverId: string,
-    agentId: string,
-    transition: TurnLivenessTransition | readonly TurnLivenessTransition[],
-  ) => void;
-  beginAgentCancellation: (serverId: string, agentId: string) => number;
-  settleAgentCancellation: (serverId: string, agentId: string, requestId: number) => void;
-  clearAgentTurnLiveness: (serverId: string) => void;
   beginAgentMessageSubmission: (
     serverId: string,
     agentId: string,
@@ -662,6 +604,7 @@ interface SessionStoreActions {
   // Hydration
   setHasHydratedAgents: (serverId: string, hydrated: boolean) => void;
   setHasHydratedWorkspaces: (serverId: string, hydrated: boolean) => void;
+  setHasWorkspaceDirectorySnapshot: (serverId: string, available: boolean) => void;
 
   // Agent directory (derived from agents)
   getAgentDirectory: (serverId: string) => AgentDirectoryEntry[] | undefined;
@@ -685,14 +628,13 @@ function createInitialSessionState(
     serverInfo: null,
     hasHydratedAgents: false,
     hasHydratedWorkspaces: false,
+    hasWorkspaceDirectorySnapshot: false,
     isPlayingAudio: false,
     focusedAgentId: null,
     focusedTerminalId: null,
-    messages: [],
-    currentAssistantMessage: "",
     agentStreamTail: new Map(),
     agentStreamHead: new Map(),
-    agentTurnLiveness: new Map(),
+    agentTasks: new Map(),
     messageSubmissions: new Map(),
     agentTimelineCursor: new Map(),
     agentTimelineHasOlder: new Map(),
@@ -759,7 +701,6 @@ function isSessionServerInfoUnchanged(input: {
 
 export const useSessionStore = create<SessionStore>()(
   subscribeWithSelector((set, get) => {
-    let nextCancellationRequestId = 0;
     const commitActivityUpdates: AgentLastActivityCommitter = (updates) => {
       set((prev) => {
         let nextActivity: Map<string, Date> | null = null;
@@ -800,39 +741,6 @@ export const useSessionStore = create<SessionStore>()(
               ...prev.sessions,
               [serverId]: createInitialSessionState(serverId, client, clientGeneration),
             },
-          };
-        });
-      },
-
-      restoreSessionReplica: (serverId, replica) => {
-        set((prev) => {
-          if (prev.sessions[serverId]) {
-            return prev;
-          }
-          const session = createInitialSessionState(serverId, null);
-          const timeline = replica.timeline;
-          const agentStreamTail = new Map<string, StreamItem[]>();
-          if (timeline) {
-            agentStreamTail.set(timeline.agentId, timeline.items);
-          }
-          const agentLastActivity = new Map(prev.agentLastActivity);
-          for (const agent of replica.agents.values()) {
-            agentLastActivity.set(agent.id, agent.lastActivityAt);
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                agents: replica.agents,
-                workspaceAgentActivity: buildWorkspaceAgentActivityIndex(replica.agents),
-                workspaces: replica.workspaces,
-                projects: replica.projects,
-                agentStreamTail,
-              },
-            },
-            agentLastActivity,
           };
         });
       },
@@ -1022,49 +930,6 @@ export const useSessionStore = create<SessionStore>()(
         });
       },
 
-      // Messages
-      setMessages: (serverId, messages) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextMessages =
-            typeof messages === "function" ? messages(session.messages) : messages;
-          if (session.messages === nextMessages) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, messages: nextMessages },
-            },
-          };
-        });
-      },
-
-      setCurrentAssistantMessage: (serverId, message) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextMessage =
-            typeof message === "function" ? message(session.currentAssistantMessage) : message;
-          if (session.currentAssistantMessage === nextMessage) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, currentAssistantMessage: nextMessage },
-            },
-          };
-        });
-      },
-
       // Stream state (head/tail model)
       setAgentStreamTail: (serverId, state) => {
         set((prev) => {
@@ -1149,8 +1014,10 @@ export const useSessionStore = create<SessionStore>()(
             state.acknowledgedClientMessageIds ?? [],
           );
           const changedSubmissions = observedSubmissions !== currentSubmissions;
+          const agentTasks = updateAgentTasks(session.agentTasks, agentId, state.taskSnapshot);
+          const changedTasks = agentTasks !== session.agentTasks;
 
-          if (!changedTail && !changedHead && !changedSubmissions) {
+          if (!changedTail && !changedHead && !changedSubmissions && !changedTasks) {
             return prev;
           }
 
@@ -1172,59 +1039,9 @@ export const useSessionStore = create<SessionStore>()(
                 ...session,
                 agentStreamTail: nextTail,
                 agentStreamHead: nextHead,
+                agentTasks,
                 messageSubmissions,
               },
-            },
-          };
-        });
-      },
-
-      applyAgentTurnLiveness: (serverId, agentId, transition) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) return prev;
-          const agentTurnLiveness = applyTurnLivenessTransition(
-            session.agentTurnLiveness,
-            agentId,
-            transition,
-          );
-          if (agentTurnLiveness === session.agentTurnLiveness) return prev;
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, agentTurnLiveness },
-            },
-          };
-        });
-      },
-
-      beginAgentCancellation: (serverId, agentId) => {
-        nextCancellationRequestId += 1;
-        const requestId = nextCancellationRequestId;
-        get().applyAgentTurnLiveness(serverId, agentId, {
-          type: "cancellation_started",
-          requestId,
-        });
-        return requestId;
-      },
-
-      settleAgentCancellation: (serverId, agentId, requestId) => {
-        get().applyAgentTurnLiveness(serverId, agentId, {
-          type: "cancellation_settled",
-          requestId,
-        });
-      },
-
-      clearAgentTurnLiveness: (serverId) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session || session.agentTurnLiveness.size === 0) return prev;
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, agentTurnLiveness: new Map() },
             },
           };
         });
@@ -1601,6 +1418,10 @@ export const useSessionStore = create<SessionStore>()(
             nextAuthoritative.set(agentId, true);
             nextSyncGeneration.set(agentId, session.historySyncGeneration);
           }
+          const tasks = latestTasksFromStream([...state.items, ...state.head]);
+          const agentTasks = new Map(session.agentTasks);
+          if (tasks.length > 0) agentTasks.set(agentId, tasks);
+          else agentTasks.delete(agentId);
 
           return {
             ...prev,
@@ -1610,6 +1431,7 @@ export const useSessionStore = create<SessionStore>()(
                 ...session,
                 agentStreamTail: nextTail,
                 agentStreamHead: nextHead,
+                agentTasks,
                 agentTimelineCursor: nextCursor,
                 agentTimelineHasOlder: nextHasOlder,
                 agentTimelineHasNewer: nextHasNewer,
@@ -1699,10 +1521,7 @@ export const useSessionStore = create<SessionStore>()(
           }
           const nextWorkspaces =
             typeof workspaces === "function" ? workspaces(session.workspaces) : workspaces;
-          const preservedWorkspaces = preserveWorkspaceMapIdentity(
-            session.workspaces,
-            nextWorkspaces,
-          );
+          const preservedWorkspaces = preserveMapIdentity(session.workspaces, nextWorkspaces);
           if (session.workspaces === preservedWorkspaces) {
             return prev;
           }
@@ -1721,10 +1540,15 @@ export const useSessionStore = create<SessionStore>()(
         for (const project of projects) next.set(project.projectId, project);
         set((prev) => {
           const session = prev.sessions[serverId];
-          if (!session || projectMapsEqual(session.projects, next)) return prev;
+          if (!session) return prev;
+          const preservedProjects = preserveMapIdentity(session.projects, next);
+          if (session.projects === preservedProjects) return prev;
           return {
             ...prev,
-            sessions: { ...prev.sessions, [serverId]: { ...session, projects: next } },
+            sessions: {
+              ...prev.sessions,
+              [serverId]: { ...session, projects: preservedProjects },
+            },
           };
         });
       },
@@ -2007,6 +1831,20 @@ export const useSessionStore = create<SessionStore>()(
         });
       },
 
+      setHasWorkspaceDirectorySnapshot: (serverId, available) => {
+        set((prev) => {
+          const session = prev.sessions[serverId];
+          if (!session || session.hasWorkspaceDirectorySnapshot === available) return prev;
+          return {
+            ...prev,
+            sessions: {
+              ...prev.sessions,
+              [serverId]: { ...session, hasWorkspaceDirectorySnapshot: available },
+            },
+          };
+        });
+      },
+
       // Agent directory - derived from agents (computed on-demand)
       getAgentDirectory: (serverId) => {
         const state = get();
@@ -2024,6 +1862,7 @@ export const useSessionStore = create<SessionStore>()(
             serverId,
             title: agent.title ?? null,
             status: agent.status,
+            turn: agent.turn,
             lastActivityAt,
             cwd: agent.cwd,
             provider: agent.provider,

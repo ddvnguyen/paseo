@@ -128,7 +128,6 @@ npx skills add getpaseo/paseo
 그런 다음 어떤 에이전트 대화에서든 아래 명령을 사용할 수 있습니다.
 
 - `/paseo-handoff` — 에이전트 간에 작업을 넘깁니다. Claude로 계획을 세운 뒤 Codex에 구현을 넘길 때 이 기능을 씁니다.
-- `/paseo-loop` — 명확한 완료 조건을 기준으로 에이전트를 반복 실행합니다(Ralph loop). 검증 에이전트를 추가할 수도 있습니다.
 - `/paseo-advisor` — 작업 자체를 넘기지 않고, 에이전트 하나를 조언자로 띄워 두 번째 의견을 받습니다.
 - `/paseo-committee` — 서로 다른 관점의 에이전트 두 개로 위원회를 구성해, 한 발 물러나 근본 원인을 분석하고 계획을 세웁니다.
 
@@ -162,6 +161,12 @@ npm run build:server
 npm run typecheck
 ```
 
+## 스폰서
+
+Paseo는 한 사람이 개발하며, 사용하는 분들의 후원으로 운영됩니다. [GitHub Sponsors](https://github.com/sponsors/boudra)로 후원할 수 있습니다. 회사는 매월 [Paseo를 후원](https://paseo.sh/sponsor#spot)하고 로고를 이곳과 paseo.sh 홈페이지에 게재할 수 있습니다.
+
+<!-- Sponsor logos go here, in the same order as packages/website/src/data/sponsors.ts -->
+
 ## 관련 프로젝트
 
 - [getpaseo/paseo-relay](https://github.com/getpaseo/paseo-relay) — Elixir로 작성한 공식 분산형 릴레이
@@ -170,4 +175,4 @@ npm run typecheck
 
 ## 라이선스
 
-AGPL-3.0
+Apache-2.0

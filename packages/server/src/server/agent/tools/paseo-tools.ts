@@ -1,9 +1,12 @@
+import { stat } from "node:fs/promises";
 import { z } from "zod";
 import { ensureValidJson } from "../../json-utils.js";
 import type { Logger } from "pino";
 
-import type { AgentMode, AgentProvider } from "../agent-sdk-types.js";
+import type { AgentMode, AgentProvider, AgentSessionConfig } from "../agent-sdk-types.js";
 import type { AgentManager } from "../agent-manager.js";
+import { AgentProfileSchema } from "@getpaseo/protocol/messages";
+import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import {
   AgentFeatureSchema,
   AgentPermissionRequestPayloadSchema,
@@ -90,6 +93,8 @@ import type {
   PaseoToolExecutionContext,
   PaseoToolResult,
 } from "./types.js";
+import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
+import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 
 export interface PaseoToolHostDependencies {
   agentManager: AgentManager;
@@ -98,6 +103,7 @@ export interface PaseoToolHostDependencies {
   getDaemonTcpPort?: () => number | null;
   scheduleService?: ScheduleService | null;
   providerSnapshotManager: ProviderSnapshotManager;
+  daemonConfigStore?: Pick<DaemonConfigStore, "get">;
   github?: ForgeService;
   workspaceGitService?: Pick<
     WorkspaceGitService,
@@ -125,6 +131,7 @@ export interface PaseoToolHostDependencies {
   ) => Promise<string>;
   browserToolsEnabled?: boolean;
   browserToolsBroker?: BrowserToolsBroker | null;
+  paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
   worktreesRoot?: string;
   /**
@@ -215,6 +222,20 @@ function assertOptionsAbsent(
   if (options.some(([, value]) => value !== undefined)) {
     throw new Error(message);
   }
+}
+
+async function isExistingDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  return error.code === "ENOENT" || error.code === "ENOTDIR";
 }
 
 function resolveWorkspaceWorktreeTarget(input: WorkspaceWorktreeOptions): WorkspaceWorktreeTarget {
@@ -543,6 +564,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     workspaceScripts,
     scheduleService,
     providerSnapshotManager,
+    daemonConfigStore,
     callerAgentId,
     resolveSpeakHandler,
     resolveCallerContext,
@@ -551,18 +573,47 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
   const callerContext = callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
 
+  // HYDRA PATCH: LLMs sometimes send discriminated union args as JSON strings
+  // (e.g. target="{\"kind\":\"checkout-branch\"}" instead of target={kind:"checkout-branch"}).
+  // This pre-parses any string values that look like JSON objects/arrays.
+  const preprocessStringifiedArgs = (input: unknown): unknown => {
+    if (typeof input !== "object" || input === null) {
+      return input;
+    }
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+      if (typeof value === "string" && value.length > 1) {
+        const trimmed = value.trim();
+        if (
+          (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+          (trimmed.startsWith("[") && trimmed.endsWith("]"))
+        ) {
+          try {
+            result[key] = JSON.parse(trimmed);
+            continue;
+          } catch {
+            // Not valid JSON, keep as-is
+          }
+        }
+      }
+      result[key] = value;
+    }
+    return result;
+  };
+
   const parseToolInput = async (tool: PaseoToolDefinition, input: unknown): Promise<unknown> => {
     const inputSchema = tool.inputSchema;
     if (!inputSchema) {
       return input;
     }
+    const preprocessed = preprocessStringifiedArgs(input);
     const schema =
       typeof inputSchema === "object" &&
       inputSchema !== null &&
       typeof (inputSchema as { safeParseAsync?: unknown }).safeParseAsync === "function"
         ? (inputSchema as z.ZodType)
         : z.object(inputSchema as z.ZodRawShape).passthrough();
-    return schema.parseAsync(input);
+    return schema.parseAsync(preprocessed);
   };
 
   const tools = new Map<string, PaseoToolDefinition>();
@@ -572,6 +623,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Tool handlers are schema-validated at registration boundaries.
     handler: (input: any, context: PaseoToolExecutionContext) => Promise<PaseoToolResult>,
   ) => {
+    if (!isPaseoToolEnabled(options.paseoToolPolicy, name)) {
+      return;
+    }
     tools.set(name, {
       name,
       title: config.title,
@@ -630,6 +684,16 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       throw new Error(`Parent agent ${callerAgentId} not found`);
     }
     return parentAgent;
+  };
+
+  const resolveInheritedProviderConfig = (
+    selectedProvider: string,
+  ): Pick<AgentSessionConfig, "providerOptions"> | undefined => {
+    const callerAgent = resolveCallerAgent();
+    if (callerAgent?.provider !== selectedProvider || !callerAgent.config?.providerOptions) {
+      return undefined;
+    }
+    return { providerOptions: callerAgent.config.providerOptions };
   };
 
   const resolveScopedCwd = (requestedCwd?: string, opts?: { required?: boolean }): string => {
@@ -691,22 +755,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
 
   const buildCallerAgentScheduleConfigExtras = (
     callerAgent: NonNullable<ReturnType<typeof resolveCallerAgent>>,
+    resolvedProvider: string,
   ): Record<string, unknown> => {
     return {
       ...(callerAgent.config.thinkingOptionId
         ? { thinkingOptionId: callerAgent.config.thinkingOptionId }
         : {}),
-      ...(callerAgent.config.approvalPolicy
-        ? { approvalPolicy: callerAgent.config.approvalPolicy }
+      ...(callerAgent.provider === resolvedProvider && callerAgent.config.providerOptions
+        ? { providerOptions: callerAgent.config.providerOptions }
         : {}),
-      ...(callerAgent.config.sandboxMode ? { sandboxMode: callerAgent.config.sandboxMode } : {}),
-      ...(typeof callerAgent.config.networkAccess === "boolean"
-        ? { networkAccess: callerAgent.config.networkAccess }
-        : {}),
-      ...(typeof callerAgent.config.webSearch === "boolean"
-        ? { webSearch: callerAgent.config.webSearch }
-        : {}),
-      ...(callerAgent.config.extra ? { extra: callerAgent.config.extra } : {}),
       ...(callerAgent.config.featureValues
         ? { featureValues: callerAgent.config.featureValues }
         : {}),
@@ -742,7 +799,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           }
         : {}),
       ...(resolvedModel ? { model: resolvedModel } : {}),
-      ...buildCallerAgentScheduleConfigExtras(callerAgent),
+      ...buildCallerAgentScheduleConfigExtras(callerAgent, resolvedProvider),
     };
   };
 
@@ -1212,7 +1269,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         path: z
           .string()
           .optional()
-          .describe("Local directory or source checkout. Defaults to your current workspace."),
+          .describe(
+            "Local directory or source checkout. Defaults to your current workspace. Local isolation adopts an existing directory and never creates one.",
+          ),
         projectId: z.string().optional().describe("Existing project id to own the workspace."),
         title: z.string().trim().min(1).optional(),
         mode: z
@@ -1264,6 +1323,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       let workspace: PersistedWorkspaceRecord;
       if (isolation === "local") {
         const cwd = resolveScopedCwd(path, { required: true });
+        if (!(await isExistingDirectory(cwd))) {
+          throw new Error(`Directory not found: ${cwd}`);
+        }
         assertOptionsAbsent(
           [
             ["mode", mode],
@@ -1422,6 +1484,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         requestedBackground = resolvedArgs.parsedArgs.background;
         notifyOnFinish = resolvedArgs.parsedArgs.notifyOnFinish ?? false;
       }
+      const selectedProvider = resolveRequiredProviderModel(parsedArgs.provider).provider;
+      const inheritedConfig = resolveInheritedProviderConfig(selectedProvider);
       const {
         snapshot,
         background: createdInBackground,
@@ -1445,6 +1509,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           provider: parsedArgs.provider,
           title: parsedArgs.title,
           initialPrompt: parsedArgs.initialPrompt,
+          config: inheritedConfig,
           cwd: resolvedArgs.cwd,
           workspaceId: resolvedArgs.workspaceId,
           thinking: parsedArgs.settings?.thinkingOptionId,
@@ -2909,6 +2974,30 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           provider,
           models,
         }),
+      };
+    },
+  );
+
+  registerTool(
+    "list_profiles",
+    {
+      title: "List agent profiles",
+      description:
+        "List agent profiles: named provider/model/mode bundles a human configured for specific " +
+        "kinds of work. Read each profile's `notes` to pick the one that fits the task you're " +
+        "delegating, then copy its `provider`, `model`, `modeId`, `thinkingOptionId`, and " +
+        "`featureValues` into create_agent (there is no `profile` parameter). Returns an empty " +
+        "list if none are configured.",
+      inputSchema: {},
+      outputSchema: {
+        profiles: z.array(AgentProfileSchema),
+      },
+    },
+    async () => {
+      const profiles = daemonConfigStore?.get().agentProfiles ?? [];
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ profiles }),
       };
     },
   );

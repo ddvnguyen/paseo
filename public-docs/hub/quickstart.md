@@ -1,6 +1,6 @@
 ---
 title: Hub quickstart
-description: Sign in, connect GitHub, register a daemon, and get an agent starting from a mention.
+description: Run Hub locally and answer a Slack mention with an agent on your machine.
 nav: Quickstart
 order: 61
 category: Hub
@@ -8,91 +8,89 @@ category: Hub
 
 # Hub quickstart
 
-From an empty Hub to an agent that starts when someone mentions it. Each step links to the page that covers it properly.
+Run Hub on your machine, connect it to Slack without a public server, and answer a mention with an agent in your repository. Hub's browser setup hands off to your terminal, and `paseo hub init` writes and deploys a starter trigger for you.
 
-## 1. Sign in
+You need [Paseo installed and running](/docs), Node.js, and a Slack workspace where you can create an app.
 
-Open your Hub and sign in with the owner account created during deployment. Replace its temporary password when prompted. Your connections, daemons, and projects all live inside its organization.
-
-## 2. Connect GitHub
-
-Open **Connections** and connect GitHub. Choose the account or organization whose repositories you want to use.
-
-The connection appears with a generated slug like `yourname-github`.
-
-## 3. Register a daemon
-
-On the machine that will run agents:
+## 1. Start Hub
 
 ```sh
-paseo hub connect https://your-hub.example.com
+npx @getpaseo/hub
 ```
 
-The CLI prints a verification code. In Hub, open **Daemons → Register a daemon**, enter the code, and choose a friendly slug. Hub normalizes `Build Studio` to `build-studio`. See [Daemons](/docs/hub/daemons).
+Open the address it prints, normally <http://localhost:3000>, and create the operator account Hub asks for.
 
-## 4. Create a project
+The first run needs no database, Docker, environment variables, or API keys. Hub creates an embedded database and your organization.
 
-Open **Projects → New project**. On its **Configuration** tab, pick a repository and choose **Use for configuration**. Hub now reads `.paseo/hub.yml` from that repository's default branch.
+## 2. Connect Slack
 
-## 5. Commit the configuration
+**Set up your apps** explains how to create the Slack app and gives you a manifest to paste into Slack. Keep **Socket Mode** selected. It connects out from Hub and needs no public address or HTTPS.
 
-Add `.paseo/hub.yml` to that repository:
+Paste the App-level token and Bot token back into Hub, then choose **Connect Slack**. Invite the bot to the channel where you will use it:
 
-```yaml
-project: your-project
-
-environments:
-  - name: dev
-    kind: daemon
-    daemon: my-daemon
-    cwd: /Users/you/code/your-repo
-
-triggers:
-  - name: mention
-    on: github.issue_comment
-    max_runtime: 2h
-    filters:
-      repo: yourname/your-repo
-      contains: "@paseo"
-      from_users: [your-github-login]
-    steps:
-      - id: work
-        environment: dev
-        max_runtime: 90m
-        idle_timeout: 10m
-        agent:
-          provider: codex
-          mode: full-access
-        prompt:
-          - text: |
-              Someone asked for help.
-              ${{ paseo.prompt }}
+```text
+/invite @Paseo
 ```
 
-`project` is the project slug from step 4. The deploy CLI reads it as deployment metadata; it does not affect workflow behavior. `daemon` is the normalized slug from step 3. `cwd` is a directory on that machine.
+GitHub and Discord can wait. Their setup stays available under **Apps**.
 
-If a prompt uses an `include` block, store the file below `.paseo/partials/`. The deploy CLI bundles only the files referenced by `.paseo/hub.yml`; nested include-looking text inside a partial is not resolved.
+## 3. Connect the machine your code is on
 
-## 6. Push
-
-Push to the default branch. Hub fetches the file at that commit, validates it, and activates it. The **Configuration** tab shows the active revision and the last sync.
-
-If the file is invalid, Hub records the failure and keeps the previous revision active.
-
-To deploy the file directly instead, create an organization API key with the `configuration:install` scope, then run:
+**Connect a daemon** shows one command with this Hub's address already in it:
 
 ```sh
-export PASEO_HUB_URL=https://your-hub.example.com
-export PASEO_HUB_API_KEY=paseo_pk_...
-paseo hub deploy
+paseo hub login http://localhost:3000
 ```
 
-The command reads exactly `.paseo/hub.yml` from the current directory. It does not search parent directories. Use `paseo hub deploy path/to/config.yml` for another file. `-p, --project <slug>` overrides the file's `project` metadata. See [Hub configuration](/docs/hub/configuration#deploy-from-the-cli) for every deploy option and the current authentication limits.
+Run it on the machine where your code lives, in the repository the agent should work in. Run the initializer below from that directory so it becomes the trigger's working directory.
 
-## 7. Trigger it
+Approve the login in the browser tab that opens. Leave the Hub tab open: it watches for the daemon and shows **Daemon connected** by itself. Choose **Continue** when the daemon is connected.
 
-Comment `@paseo have a look at this` on an issue in that repository, from the account you listed in `from_users`.
+## 4. Create the starter trigger
 
-Open the project's **Activity** tab. You should see the event received and routed, and an execution in **Executions**. The agent itself appears in the Paseo app on that machine.
+After approving login, answer **Yes** to **Connect this daemon to Paseo Hub?** and **Allow Hub automations to run agents on this daemon?**. Execution permission defaults to no, so enable it explicitly for this setup.
 
-Nothing happened? [Activity](/docs/hub/activity) has the checklist.
+Then run:
+
+```sh
+paseo hub init
+```
+
+Choose **Custom endpoint** and confirm `http://localhost:3000`. Setup reuses your login and daemon connection, then lists the app connections ready for this trigger. With one Slack workspace connected, it selects that connection automatically. With several usable connections, choose the **Trigger connection**. If none is ready, setup sends you to **Hub → Apps** and stops before selecting an agent or writing files.
+
+| Question                                | What it wants                                                                          |
+| --------------------------------------- | -------------------------------------------------------------------------------------- |
+| Starter agent provider, model, and mode | A runtime available on your daemon. Suggested model and mode entries are its defaults. |
+| Your Slack member ID                    | `U01234567`, the only account allowed to trigger the bot.                              |
+| Deploy now?                             | Yes, to activate this trigger in Hub.                                                  |
+
+Providers must expose a selectable model and execution mode. If there is no default mode, choose the one the agent should use. [Find your Slack IDs](/docs/hub/triggers/slack#find-your-slack-ids) explains how to copy your member ID. The Slack workspace comes from the selected app connection.
+
+Setup validates the trigger and writes:
+
+```text
+.paseo/
+└── triggers/
+    └── slack-help.yml
+```
+
+If `slack-help.yml` already exists, setup asks before replacing that file. Other files remain in place. If you decline deployment, run `paseo hub deploy` from this repository when ready.
+
+## 5. Mention the bot
+
+In the channel you invited the bot to:
+
+```text
+@Paseo have a look
+```
+
+Hub starts the agent on your daemon and posts its reply in the Slack thread. The terminal links to **Triggers**, where you can manage the trigger and inspect its runs. If nothing runs, [Activity](/docs/hub/activity) tells a filtered mention from one that never matched a trigger.
+
+## Next
+
+- [How Hub works](/docs/hub/concepts) — how an event becomes a workflow run on your daemon.
+- [Generated starter trigger](/docs/hub/configuration#generated-starter-trigger) — the file setup wrote, field by field.
+- [Workflows](/docs/hub/workflows) — routing, prompts, and provider replies.
+- [Hub security](/docs/hub/security) — read this before widening `from_users` or giving an agent GitHub authority.
+
+Hub keeps its local state in your user data directory, normally `~/.local/share/paseo-hub`. [Self-hosting](/docs/hub/self-hosting) covers deployment and advanced configuration when you outgrow the local run.

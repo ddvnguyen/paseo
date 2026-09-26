@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { createExternalProcessEnv } from "../server/paseo-env.js";
 import { writePrivateFileAtomicSync } from "../server/private-files.js";
 import { findExecutable } from "../executable-resolution/executable-resolution.js";
+import { getBunRuntime, spawnBunPtyProcess } from "./bun-pty.js";
+import type { PtyProcessLike } from "./bun-pty.js";
 import type { TerminalCell, TerminalState } from "@getpaseo/protocol/messages";
 import { TerminalInputModeTracker } from "@getpaseo/protocol/terminal-input-mode";
 import { TerminalActivityTracker } from "./activity/terminal-activity-tracker.js";
@@ -882,6 +884,31 @@ function extractLastOutputLinesFromText(text: string, limit: number): string[] {
   return lines.slice(-limit);
 }
 
+function spawnPtyProcess(input: {
+  command: string;
+  args: string[] | string;
+  cols: number;
+  rows: number;
+  cwd: string;
+  env: Record<string, string>;
+}): PtyProcessLike {
+  // node-pty shells die under Bun 1.4 (POSIX-proven); Bun.Terminal holds them.
+  // Keep node-pty for win32 and for the pre-escaped cmd.exe line (a string
+  // shape only node-pty's quoting bypass understands).
+  const bunSpawnArgs = typeof input.args === "string" ? null : input.args;
+  const bunRuntime = process.platform === "win32" || bunSpawnArgs === null ? null : getBunRuntime();
+  if (bunRuntime && bunSpawnArgs) {
+    return spawnBunPtyProcess({ ...input, args: bunSpawnArgs }, bunRuntime);
+  }
+  return pty.spawn(input.command, input.args, {
+    name: "xterm-256color",
+    cols: input.cols,
+    rows: input.rows,
+    cwd: input.cwd,
+    env: input.env,
+  });
+}
+
 export async function createTerminal(options: CreateTerminalOptions): Promise<TerminalSession> {
   const {
     cwd,
@@ -941,19 +968,21 @@ export async function createTerminal(options: CreateTerminalOptions): Promise<Te
   const { command: spawnCommand, args: spawnArgs } = command
     ? await resolveTerminalSpawnCommand(command, args)
     : { command: resolvedShell, args: [] as string[] };
-  const ptyProcess = pty.spawn(spawnCommand, spawnArgs, {
-    name: "xterm-256color",
+  const spawnEnv = buildTerminalEnvironment({
+    shell: spawnCommand,
+    env: {
+      ...env,
+      ...activityEnv,
+      PASEO_WORKSPACE_ID: workspaceId,
+    },
+  });
+  const ptyProcess = spawnPtyProcess({
+    command: spawnCommand,
+    args: spawnArgs,
     cols,
     rows,
     cwd,
-    env: buildTerminalEnvironment({
-      shell: spawnCommand,
-      env: {
-        ...env,
-        ...activityEnv,
-        PASEO_WORKSPACE_ID: workspaceId,
-      },
-    }),
+    env: spawnEnv,
   });
 
   function emitTitleChange(nextTitle: string | undefined): void {

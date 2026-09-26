@@ -47,6 +47,14 @@ Run agents in parallel on your own machines. Ship from your phone or your desk.
 - **Cross-device:** iOS, Android, desktop, web, and CLI. Start work at your desk, check in from your phone, script it from the terminal.
 - **Privacy-first:** Paseo doesn't have any telemetry, tracking, or forced log-ins.
 
+## Plugins
+
+Add themes, workspace panels, commands, settings screens, and coding-agent providers with trusted
+TypeScript plugins. Install from npm, Git, or a local directory with `paseo plugin install <source>`.
+
+Start with the [plugin quickstart](https://paseo.sh/docs/plugins). Plugins run with access to your daemon
+machine and inside connected clients; install only code you trust.
+
 ## Getting Started
 
 Paseo runs a local server called the daemon that manages your coding agents. Clients like the desktop app, mobile app, web app, and CLI connect to it.
@@ -105,17 +113,41 @@ Everything you can do in the app, you can do from the terminal.
 
 ```bash
 paseo run --provider claude/opus-4.6 "implement user authentication"
-paseo run --provider codex/gpt-5.4 --worktree feature-x "implement feature X"
+paseo run --provider codex/gpt-5.5 --worktree feature-x "implement feature X"
 
 paseo ls                           # list running agents
 paseo attach abc123                # stream live output
 paseo send abc123 "also add tests" # follow-up task
 
-# run on a remote daemon
-paseo --host workstation.local:6767 run "run the full test suite"
+# run on a remote daemon; --cwd is a path on that host
+paseo run --host workstation.local:6767 --cwd /workspace "run the full test suite"
 ```
 
 See the [full CLI reference](https://paseo.sh/docs/cli) for more.
+
+## TypeScript SDK
+
+Build issue integrations, dashboards, and orchestration services with `@getpaseo/client`:
+
+```ts
+import { createPaseoClient } from "@getpaseo/client";
+
+const client = createPaseoClient({ url: "ws://127.0.0.1:6767/ws" });
+await client.connect();
+
+const agent = await client.agents.create({
+  config: { provider: "codex/gpt-5.5" },
+  cwd: "/Users/me/dev/storefront",
+  prompt: "Review the current diff and name the riskiest change.",
+});
+
+const result = await agent.waitForFinish();
+console.log(result.lastMessage);
+
+await client.close();
+```
+
+See the [SDK quickstart](https://paseo.sh/docs/sdk/quickstart), [recipes](https://paseo.sh/docs/sdk/recipes), and [API reference](https://paseo.sh/docs/sdk/reference).
 
 ## Skills
 
@@ -128,7 +160,6 @@ npx skills add getpaseo/paseo
 Then use them in any agent conversation:
 
 - `/paseo-handoff` — hand off work between agents. I use this to plan with Claude and then handoff to Codex to implement.
-- `/paseo-loop` — loop an agent against clear acceptance criteria (aka Ralph loops), optionally with a verifier.
 - `/paseo-advisor` — spin up a single agent as an advisor for a second opinion, without delegating the work itself.
 - `/paseo-committee` — form a committee of two contrasting agents to step back, do root cause analysis, and produce a plan.
 
@@ -162,12 +193,17 @@ npm run build:server
 npm run typecheck
 ```
 
+## Sponsors
+
+Paseo is built by one person and funded by the people who use it. Support the work on [GitHub Sponsors](https://github.com/sponsors/boudra). Companies can [sponsor Paseo](https://paseo.sh/sponsor#spot) monthly and have their logo shown here and on the paseo.sh homepage.
+
+<!-- Sponsor logos go here, in the same order as packages/website/src/data/sponsors.ts -->
+
 ## Related projects
 
 - [getpaseo/paseo-relay](https://github.com/getpaseo/paseo-relay) — official distributed relay, written in Elixir
-- [paseo-skins](https://github.com/huangguang1999/paseo-skins) — community themes and a zero-patch desktop theme loader with an Agent Skill
 - [paseo-vscode](https://marketplace.visualstudio.com/items?itemName=hinnes.paseo-vscode) — VS Code extension
 
 ## License
 
-AGPL-3.0
+Apache-2.0

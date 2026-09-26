@@ -1,0 +1,28 @@
+{
+  "name": "paseo-plugin-freebuff",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Freebuff (free coding models) as a Paseo provider, with multi-account quota and model check",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^0.17.1",
+    "@codebuff/sdk": "file:vendor/codebuff-sdk-0.10.7-paseo.3.tgz",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "^0.9.2",
+    "@tanstack/react-query": "^5.0.0",
+    "@types/react": "~19.1.0",
+    "react": "~19.1.0",
+    "react-native": ">=0.81.5"
+  },
+  "overrides": {
+    "zod": "4.4.3"
+  }
+}

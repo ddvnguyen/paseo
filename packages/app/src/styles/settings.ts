@@ -13,7 +13,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   sectionHeaderTitle: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.normal,
   },
   sectionHeaderLink: {
@@ -23,7 +23,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   sectionHeaderLinkText: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
   },
   card: {
     backgroundColor: theme.colors.surface1,
@@ -34,6 +34,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   row: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "space-between",
     paddingVertical: theme.spacing[4],
@@ -45,7 +46,11 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   rowContent: {
     flex: 1,
+    minWidth: "50%",
     marginRight: theme.spacing[3],
+  },
+  rowValue: {
+    flexShrink: 0,
   },
   rowTitle: {
     color: theme.colors.foreground,
@@ -53,12 +58,12 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   rowHint: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     marginTop: theme.spacing[1],
   },
   rowError: {
     color: theme.colors.statusDanger,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     marginTop: theme.spacing[1],
   },
 }));

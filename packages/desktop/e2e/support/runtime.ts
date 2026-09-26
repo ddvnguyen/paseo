@@ -58,9 +58,13 @@ export interface DesktopRuntimeConfig {
   updateAvailable?: boolean;
   latestVersion?: string;
   updateReadyToInstall?: boolean;
+  manualUpdateBypassesRollout?: boolean;
   slowInstall?: boolean;
   /** Initial PID reported by desktop_daemon_status. Defaults to null. */
   daemonPid?: number | null;
+  daemonHome?: string;
+  /** Current-session ownership, independent of the legacy management flag. */
+  ownedByDesktop?: boolean;
   daemonVersion?: string | null;
   daemonLogPath?: string;
   /** Initial manageBuiltInDaemon setting. Defaults to false. */
@@ -138,123 +142,9 @@ export async function installDesktopRuntime(
     let manageDaemon = cfg.manageBuiltInDaemon ?? false;
     let daemonRunning = true;
     let currentPid: number | null = cfg.daemonPid ?? null;
-    let startCount = 0;
-    let nextTransportSessionId = 0;
-    const transportSessions = new Map<string, WebSocket>();
-    const desktopEventHandlers = new Map<string, Set<(payload: unknown) => void>>();
+    let ownedByDesktop = cfg.ownedByDesktop ?? false;
+    let manualUpdateAdmitted = false;
     window.__desktopDaemonStartRequested = false;
-
-    function emitDesktopEvent(event: string, payload: unknown) {
-      for (const handler of desktopEventHandlers.get(event) ?? []) {
-        handler(payload);
-      }
-    }
-
-    function bytesToBase64(bytes: Uint8Array): string {
-      let binary = "";
-      for (const byte of bytes) {
-        binary += String.fromCharCode(byte);
-      }
-      return btoa(binary);
-    }
-
-    function base64ToBytes(base64: string): Uint8Array {
-      const binary = atob(base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index += 1) {
-        bytes[index] = binary.charCodeAt(index);
-      }
-      return bytes;
-    }
-
-    function parseWebSocketTransportTarget(args?: Record<string, unknown>): {
-      url: string;
-      protocols: string[];
-    } {
-      const url = typeof args?.url === "string" ? args.url : "";
-      const protocols = Array.isArray(args?.protocols)
-        ? args.protocols.filter((protocol): protocol is string => typeof protocol === "string")
-        : [];
-      const headers =
-        args?.headers && typeof args.headers === "object"
-          ? Object.entries(args.headers as Record<string, unknown>)
-          : [];
-      const passwordProtocol = protocols.find((protocol) => protocol.startsWith("paseo.bearer."));
-      const supportsHeaders =
-        headers.length === 0 ||
-        (headers.length === 1 &&
-          headers[0][0].toLowerCase() === "authorization" &&
-          typeof headers[0][1] === "string" &&
-          passwordProtocol !== undefined &&
-          headers[0][1] === `Bearer ${passwordProtocol.slice("paseo.bearer.".length)}`);
-
-      if (!url || !supportsHeaders) {
-        throw new Error("The browser-backed desktop E2E transport cannot attach custom headers.");
-      }
-      return { url, protocols };
-    }
-
-    async function openWebSocketTransport(args?: Record<string, unknown>): Promise<string> {
-      const target = parseWebSocketTransportTarget(args);
-      const sessionId = `e2e-websocket-session-${++nextTransportSessionId}`;
-      const socket = new WebSocket(target.url, target.protocols);
-      socket.binaryType = "arraybuffer";
-      transportSessions.set(sessionId, socket);
-
-      return await new Promise<string>((resolve, reject) => {
-        let opened = false;
-
-        socket.addEventListener("open", () => {
-          opened = true;
-          resolve(sessionId);
-          emitDesktopEvent("local-daemon-transport-event", { sessionId, kind: "open" });
-        });
-        socket.addEventListener("message", async (event) => {
-          if (typeof event.data === "string") {
-            emitDesktopEvent("local-daemon-transport-event", {
-              sessionId,
-              kind: "message",
-              text: event.data,
-            });
-            return;
-          }
-          const buffer =
-            event.data instanceof ArrayBuffer
-              ? event.data
-              : await (event.data as Blob).arrayBuffer();
-          emitDesktopEvent("local-daemon-transport-event", {
-            sessionId,
-            kind: "message",
-            binaryBase64: bytesToBase64(new Uint8Array(buffer)),
-          });
-        });
-        socket.addEventListener("close", (event) => {
-          transportSessions.delete(sessionId);
-          if (!opened) {
-            reject(new Error("Desktop E2E WebSocket closed before opening."));
-            return;
-          }
-          emitDesktopEvent("local-daemon-transport-event", {
-            sessionId,
-            kind: "close",
-            code: event.code,
-            reason: event.reason,
-          });
-        });
-        socket.addEventListener("error", () => {
-          if (!opened) {
-            transportSessions.delete(sessionId);
-            reject(new Error("Desktop E2E WebSocket failed to open."));
-            return;
-          }
-          emitDesktopEvent("local-daemon-transport-event", {
-            sessionId,
-            kind: "error",
-            error: "Desktop E2E WebSocket transport error.",
-          });
-        });
-      });
-    }
 
     function buildDaemonStatus() {
       return {
@@ -263,7 +153,9 @@ export async function installDesktopRuntime(
         listen: cfg.daemonListen ?? "127.0.0.1:6767",
         hostname: null,
         pid: currentPid,
-        home: "",
+        home: cfg.daemonHome ?? "",
+        startedAt: currentPid === null ? null : "2026-09-01T00:00:00.000Z",
+        ownedByDesktop,
         version: cfg.daemonVersion ?? null,
         desktopManaged: manageDaemon,
         error: null,
@@ -275,11 +167,11 @@ export async function installDesktopRuntime(
       if (cfg.hangDaemonStart) {
         return new Promise(() => undefined);
       }
-      startCount += 1;
+      if (!daemonRunning) {
+        currentPid = (cfg.daemonPid ?? 10000) + 1000;
+        ownedByDesktop = true;
+      }
       daemonRunning = true;
-      // First start (bootstrap) returns the configured PID; subsequent starts
-      // (after a stop) get a fresh PID so tests can observe the change.
-      currentPid = (cfg.daemonPid ?? 10000) + (startCount - 1) * 1000;
       return buildDaemonStatus();
     }
 
@@ -290,54 +182,32 @@ export async function installDesktopRuntime(
       }
     }
 
-    function patchDesktopSettings(args?: Record<string, unknown>) {
-      const daemon = args?.daemon;
-      if (
-        daemon !== null &&
-        typeof daemon === "object" &&
-        "manageBuiltInDaemon" in daemon &&
-        typeof daemon.manageBuiltInDaemon === "boolean"
-      ) {
-        manageDaemon = daemon.manageBuiltInDaemon;
-      }
+    function buildAppUpdateCheckResult(hasUpdate: boolean, readyToInstall: boolean) {
       return {
-        releaseChannel: "stable",
-        daemon: { manageBuiltInDaemon: manageDaemon, keepRunningAfterQuit: true },
+        hasUpdate,
+        readyToInstall,
+        currentVersion: "1.0.0",
+        latestVersion: hasUpdate ? (cfg.latestVersion ?? "1.2.3") : null,
+        body: null,
+        date: null,
       };
     }
 
-    function sendWebSocketTransportMessage(args?: Record<string, unknown>): null {
-      const sessionId = typeof args?.sessionId === "string" ? args.sessionId : "";
-      const socket = transportSessions.get(sessionId);
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
-        throw new Error(`Desktop E2E WebSocket session is not open: ${sessionId}`);
+    function checkAppUpdate(intent: unknown) {
+      if (!cfg.manualUpdateBypassesRollout) {
+        return buildAppUpdateCheckResult(
+          cfg.updateAvailable === true,
+          cfg.updateAvailable === true && (cfg.updateReadyToInstall ?? true),
+        );
       }
-      if (typeof args?.text === "string") {
-        socket.send(args.text);
-        return null;
-      }
-      if (typeof args?.binaryBase64 === "string") {
-        socket.send(base64ToBytes(args.binaryBase64));
-        return null;
-      }
-      throw new Error("Desktop E2E WebSocket send requires a payload.");
-    }
 
-    function closeWebSocketTransport(args?: Record<string, unknown>): null {
-      const sessionId = typeof args?.sessionId === "string" ? args.sessionId : "";
-      transportSessions.get(sessionId)?.close();
-      transportSessions.delete(sessionId);
-      return null;
-    }
+      if (intent === "manual") {
+        manualUpdateAdmitted = true;
+        return buildAppUpdateCheckResult(true, false);
+      }
 
-    const webSocketTransportCommandHandlers: Record<
-      string,
-      (args?: Record<string, unknown>) => unknown
-    > = {
-      open_websocket_daemon_transport: openWebSocketTransport,
-      send_local_daemon_transport_message: sendWebSocketTransportMessage,
-      close_local_daemon_transport: closeWebSocketTransport,
-    };
+      return buildAppUpdateCheckResult(manualUpdateAdmitted, manualUpdateAdmitted);
+    }
 
     const desktopBridge: {
       platform: string;
@@ -347,10 +217,7 @@ export async function installDesktopRuntime(
         open: (options?: Record<string, unknown>) => Promise<string | string[] | null>;
       };
       getPendingOpenProject: () => Promise<string | null>;
-      opener: { openUrl: (url: string) => Promise<void> };
-      events: {
-        on: (event: string, handler: (payload: unknown) => void) => Promise<() => void>;
-      };
+      events: { on: () => Promise<() => void> };
       editor?: {
         listTargets: () => Promise<DesktopEditorTargetConfig[]>;
         openTarget: (input: DesktopEditorOpenRecord) => Promise<void>;
@@ -359,23 +226,7 @@ export async function installDesktopRuntime(
       platform: "darwin",
       invoke: async (command: string, args?: Record<string, unknown>) => {
         if (command === "check_app_update") {
-          return cfg.updateAvailable
-            ? {
-                hasUpdate: true,
-                readyToInstall: cfg.updateReadyToInstall ?? true,
-                currentVersion: "1.0.0",
-                latestVersion: cfg.latestVersion ?? "1.2.3",
-                body: null,
-                date: null,
-              }
-            : {
-                hasUpdate: false,
-                readyToInstall: false,
-                currentVersion: "1.0.0",
-                latestVersion: null,
-                body: null,
-                date: null,
-              };
+          return checkAppUpdate(args?.intent);
         }
 
         if (command === "install_app_update") {
@@ -406,10 +257,23 @@ export async function installDesktopRuntime(
         }
 
         if (command === "patch_desktop_settings") {
-          return patchDesktopSettings(args);
+          const daemon = args?.daemon;
+          if (
+            daemon !== null &&
+            typeof daemon === "object" &&
+            "manageBuiltInDaemon" in daemon &&
+            typeof daemon.manageBuiltInDaemon === "boolean"
+          ) {
+            manageDaemon = daemon.manageBuiltInDaemon;
+          }
+          return {
+            releaseChannel: "stable",
+            daemon: { manageBuiltInDaemon: manageDaemon, keepRunningAfterQuit: true },
+          };
         }
 
         if (command === "stop_desktop_daemon") {
+          ownedByDesktop = false;
           daemonRunning = false;
           currentPid = null;
           return buildDaemonStatus();
@@ -417,11 +281,6 @@ export async function installDesktopRuntime(
 
         if (command === "start_desktop_daemon") {
           return startDesktopDaemon();
-        }
-
-        const transportCommandHandler = webSocketTransportCommandHandlers[command];
-        if (transportCommandHandler) {
-          return await transportCommandHandler(args);
         }
 
         return null;
@@ -440,24 +299,7 @@ export async function installDesktopRuntime(
         },
       },
       getPendingOpenProject: async () => null,
-      opener: {
-        openUrl: async (url) => {
-          localStorage.setItem("@paseo:e2e-opened-url", url);
-        },
-      },
-      events: {
-        on: async (event, handler) => {
-          const handlers = desktopEventHandlers.get(event) ?? new Set();
-          handlers.add(handler);
-          desktopEventHandlers.set(event, handlers);
-          return () => {
-            handlers.delete(handler);
-            if (handlers.size === 0) {
-              desktopEventHandlers.delete(event);
-            }
-          };
-        },
-      },
+      events: { on: async () => () => undefined },
     };
 
     if (cfg.editorTargets) {
@@ -530,6 +372,14 @@ export async function expectPendingUpdateCheckResult(page: Page, version: string
   await expect(page.getByRole("button", { name: "Update" })).toBeDisabled();
 }
 
+export async function expectReadyUpdateCheckResult(page: Page, version: string): Promise<void> {
+  const normalizedVersion = `v${version.replace(/^v/i, "")}`;
+  await expect(page.getByText(`Ready to install: ${normalizedVersion}`)).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByRole("button", { name: `Update to ${normalizedVersion}` })).toBeEnabled();
+}
+
 export async function clickInstallUpdate(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Install & restart" }).click();
 }
@@ -552,6 +402,12 @@ export async function interceptDaemonManagementConfirmDialog(
   return page.evaluate(() => window.__capturedDialogCall!);
 }
 
+export async function interceptDaemonStopConfirmDialog(page: Page): Promise<ConfirmDialogCall> {
+  await page.getByRole("button", { name: "Stop daemon", exact: true }).click();
+  await page.waitForFunction(() => !!window.__capturedDialogCall);
+  return page.evaluate(() => window.__capturedDialogCall!);
+}
+
 export async function toggleDaemonManagement(
   page: Page,
   _action: "enable" | "disable",
@@ -561,7 +417,9 @@ export async function toggleDaemonManagement(
 
 export function expectDaemonManagementConfirmDialog(args: ConfirmDialogCall): void {
   expect(args.title).toBe("Pause built-in daemon");
-  expect(args.message).toContain("stop the built-in daemon immediately");
+  expect(args.message).toBe(
+    "This will stop the built-in daemon immediately. Running agents and terminals connected to the built-in daemon will be stopped.",
+  );
 }
 
 export async function expectDaemonManagementEnabled(page: Page): Promise<void> {

@@ -13,14 +13,16 @@ import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 import { WorkspaceScreen } from "@/screens/workspace/workspace-screen";
 import { useWorkspaceLayoutStoreHydrated } from "@/stores/workspace-layout-store";
 import {
-  areWorkspaceSelectionListsEqual,
+  areRetainedWorkspaceSelectionListsEqual,
   areWorkspaceSelectionsEqual,
+  getNextWorkspaceDeckExpirationDelay,
   getWorkspaceSelectionKey,
   orderWorkspaceSelectionsForStableRender,
-  pruneMountedWorkspaceSelections,
+  reconcileRetainedWorkspaceSelections,
+  resolveWorkspaceDeckRetentionLimit,
+  type RetainedWorkspaceSelection,
   resolveWorkspaceDeckEntries,
   shouldKeepWorkspaceDeckEntryMounted,
-  WORKSPACE_DECK_MAX_MOUNTED_WORKSPACES,
 } from "@/screens/workspace/workspace-deck-retention";
 import {
   decodeWorkspaceIdFromPathSegment,
@@ -32,7 +34,8 @@ import {
   stripHostWorkspaceRouteEchoSearchFromBrowserUrlAfterCommit,
 } from "@/utils/host-route-browser";
 import { prepareWorkspaceTab } from "@/utils/workspace-navigation";
-import { isWeb } from "@/constants/platform";
+import { isNative, isWeb } from "@/constants/platform";
+import { RenderProfile } from "@/utils/render-profiler";
 
 function getParamValue(value: string | string[] | undefined): string {
   if (typeof value === "string") {
@@ -112,8 +115,7 @@ function HostWorkspaceRouteContent() {
   const hasHydratedWorkspaces = useHasHydratedWorkspaces(serverId);
   const workspaceExists = useWorkspaceExists(serverId, workspaceId);
   const openIntent = useMemo(() => parseWorkspaceOpenIntent(openValue), [openValue]);
-  const recoveryAgentId = openIntent?.kind === "agent" ? openIntent.agentId : null;
-  const isAgentOpenIntent = recoveryAgentId !== null;
+  const isAgentOpenIntent = openIntent?.kind === "agent";
   const isOpenIntentWaitingForWorkspace = Boolean(
     isAgentOpenIntent && (!hasHydratedWorkspaces || !workspaceExists),
   );
@@ -188,40 +190,37 @@ function HostWorkspaceRouteContent() {
     return null;
   }
 
-  return <WorkspaceDeck recoveryRequested={isAgentOpenIntent} recoveryAgentId={recoveryAgentId} />;
+  return <WorkspaceDeck recoveryRequested={isAgentOpenIntent} />;
 }
 
-function WorkspaceDeck({
-  recoveryRequested,
-  recoveryAgentId,
-}: {
-  recoveryRequested: boolean;
-  recoveryAgentId: string | null;
-}) {
+function WorkspaceDeck({ recoveryRequested }: { recoveryRequested: boolean }) {
   const activeSelection = useActiveWorkspaceSelection();
-  const [mountedSelections, setMountedSelections] = useState<ActiveWorkspaceSelection[]>(() =>
-    activeSelection ? [activeSelection] : [],
+  const [retainedSelections, setRetainedSelections] = useState<RetainedWorkspaceSelection[]>(() =>
+    activeSelection ? [{ selection: activeSelection, inactiveSince: null }] : [],
   );
   const unmountWorkspaceSelection = useCallback((selection: ActiveWorkspaceSelection) => {
-    setMountedSelections((current) =>
-      current.filter(
-        (mountedSelection) => !areWorkspaceSelectionsEqual(mountedSelection, selection),
-      ),
+    setRetainedSelections((current) =>
+      current.filter((entry) => !areWorkspaceSelectionsEqual(entry.selection, selection)),
     );
   }, []);
 
-  const nextMountedSelections = useMemo(
+  const reconciliationNow = Date.now();
+  const nextRetainedSelections = useMemo(
     () =>
-      pruneMountedWorkspaceSelections({
-        currentSelections: mountedSelections,
+      reconcileRetainedWorkspaceSelections({
+        currentEntries: retainedSelections,
         activeSelection,
-        maxMountedWorkspaces: WORKSPACE_DECK_MAX_MOUNTED_WORKSPACES,
+        now: reconciliationNow,
+        maxMountedWorkspaces: resolveWorkspaceDeckRetentionLimit({ isNative }),
       }),
-    [activeSelection, mountedSelections],
+    [activeSelection, reconciliationNow, retainedSelections],
   );
   const renderedSelections = useMemo(
-    () => orderWorkspaceSelectionsForStableRender(nextMountedSelections),
-    [nextMountedSelections],
+    () =>
+      orderWorkspaceSelectionsForStableRender(
+        nextRetainedSelections.map((entry) => entry.selection),
+      ),
+    [nextRetainedSelections],
   );
   const renderedEntries = useMemo(
     () => resolveWorkspaceDeckEntries({ selections: renderedSelections, activeSelection }),
@@ -229,26 +228,49 @@ function WorkspaceDeck({
   );
 
   useLayoutEffect(() => {
-    if (!areWorkspaceSelectionListsEqual(mountedSelections, nextMountedSelections)) {
-      setMountedSelections(nextMountedSelections);
+    if (!areRetainedWorkspaceSelectionListsEqual(retainedSelections, nextRetainedSelections)) {
+      setRetainedSelections(nextRetainedSelections);
     }
-  }, [mountedSelections, nextMountedSelections]);
+  }, [nextRetainedSelections, retainedSelections]);
+
+  useEffect(() => {
+    const expirationDelay = getNextWorkspaceDeckExpirationDelay({
+      entries: nextRetainedSelections,
+      activeSelection,
+      now: reconciliationNow,
+    });
+    if (expirationDelay === null) {
+      return;
+    }
+    const timeout = setTimeout(() => {
+      setRetainedSelections((current) =>
+        reconcileRetainedWorkspaceSelections({
+          currentEntries: current,
+          activeSelection,
+          now: Date.now(),
+          maxMountedWorkspaces: resolveWorkspaceDeckRetentionLimit({ isNative }),
+        }),
+      );
+    }, expirationDelay + 1);
+    return () => clearTimeout(timeout);
+  }, [activeSelection, nextRetainedSelections, reconciliationNow]);
 
   return (
-    <View style={styles.deck}>
-      {renderedEntries.map(({ selection, active }) => {
-        return (
-          <WorkspaceDeckEntry
-            key={getWorkspaceSelectionKey(selection)}
-            selection={selection}
-            active={active}
-            recoveryRequested={recoveryRequested}
-            recoveryAgentId={recoveryAgentId}
-            onUnmountInactive={unmountWorkspaceSelection}
-          />
-        );
-      })}
-    </View>
+    <RenderProfile id="WorkspaceDeck">
+      <View style={styles.deck}>
+        {renderedEntries.map(({ selection, active }) => {
+          return (
+            <WorkspaceDeckEntry
+              key={getWorkspaceSelectionKey(selection)}
+              selection={selection}
+              active={active}
+              recoveryRequested={recoveryRequested}
+              onUnmountInactive={unmountWorkspaceSelection}
+            />
+          );
+        })}
+      </View>
+    </RenderProfile>
   );
 }
 
@@ -256,13 +278,11 @@ function WorkspaceDeckEntry({
   selection,
   active,
   recoveryRequested,
-  recoveryAgentId,
   onUnmountInactive,
 }: {
   selection: ActiveWorkspaceSelection;
   active: boolean;
   recoveryRequested: boolean;
-  recoveryAgentId: string | null;
   onUnmountInactive: (selection: ActiveWorkspaceSelection) => void;
 }) {
   const hasHydratedWorkspaces = useHasHydratedWorkspaces(selection.serverId);
@@ -293,7 +313,6 @@ function WorkspaceDeckEntry({
         workspaceId={selection.workspaceId}
         isRouteFocused={active}
         recoveryRequested={active && recoveryRequested}
-        recoveryAgentId={active ? recoveryAgentId : null}
       />
     </RetainedPanel>
   );

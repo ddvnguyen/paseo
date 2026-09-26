@@ -16,14 +16,39 @@ import {
   DEFAULT_APP_SETTINGS,
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_CODE_FONT_SIZE,
+  DEFAULT_CONTENT_FONT_SIZE,
+  DEFAULT_CONTENT_SPACING_SCALE,
+  DEFAULT_DEBUG_CONVERSATION_SPACING,
+  DEFAULT_LINE_HEIGHT_SCALE,
+  DEFAULT_SPACING_SCALE,
   DEFAULT_TERMINAL_SCROLLBACK_LINES,
-  DEFAULT_UI_FONT_SIZE,
+  DEFAULT_THEME_PREFERENCE,
+  DEFAULT_UI_BASE_FONT_SIZE,
+  DEFAULT_UI_SCALE,
+  DEFAULT_ICON_SCALE,
+  ICON_SCALE_STEP,
+  LINE_HEIGHT_SCALE_STEP,
   MAX_CODE_FONT_SIZE,
+  MAX_CONTENT_FONT_SIZE,
+  MAX_CONTENT_SPACING_SCALE,
+  MAX_ICON_SCALE,
+  MAX_LINE_HEIGHT_SCALE,
+  MAX_SPACING_SCALE,
   MAX_TERMINAL_SCROLLBACK_LINES,
-  MAX_UI_FONT_SIZE,
+  MAX_UI_BASE_FONT_SIZE,
+  MAX_UI_SCALE,
   MIN_CODE_FONT_SIZE,
+  MIN_CONTENT_FONT_SIZE,
+  MIN_CONTENT_SPACING_SCALE,
+  MIN_ICON_SCALE,
+  MIN_LINE_HEIGHT_SCALE,
+  MIN_SPACING_SCALE,
   MIN_TERMINAL_SCROLLBACK_LINES,
-  MIN_UI_FONT_SIZE,
+  MIN_UI_BASE_FONT_SIZE,
+  MIN_UI_SCALE,
+  CONTENT_SPACING_SCALE_STEP,
+  SPACING_SCALE_STEP,
+  UI_SCALE_STEP,
   loadAppSettingsFromStorage as loadAppSettingsFromStoragePure,
   loadSettingsFromStorage as loadSettingsFromStoragePure,
   normalizeAppSettings,
@@ -32,6 +57,9 @@ import {
   sanitizeFontFamily,
   saveAppSettings as saveAppSettingsPure,
   type AppSettings,
+  type AppSettingsUpdate,
+  type OpenInSidePanePreferences,
+  type PullRequestOpenLocation,
   type DesktopSettingsBridge,
   type KeyValueStorage,
   type ReleaseChannel,
@@ -48,21 +76,49 @@ export {
   DEFAULT_APP_SETTINGS,
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_CODE_FONT_SIZE,
+  DEFAULT_CONTENT_FONT_SIZE,
+  DEFAULT_CONTENT_SPACING_SCALE,
+  DEFAULT_DEBUG_CONVERSATION_SPACING,
+  DEFAULT_LINE_HEIGHT_SCALE,
+  DEFAULT_SPACING_SCALE,
   DEFAULT_TERMINAL_SCROLLBACK_LINES,
-  DEFAULT_UI_FONT_SIZE,
+  DEFAULT_THEME_PREFERENCE,
+  DEFAULT_UI_BASE_FONT_SIZE,
+  DEFAULT_UI_SCALE,
+  DEFAULT_ICON_SCALE,
+  ICON_SCALE_STEP,
+  LINE_HEIGHT_SCALE_STEP,
   MAX_CODE_FONT_SIZE,
+  MAX_CONTENT_FONT_SIZE,
+  MAX_CONTENT_SPACING_SCALE,
+  MAX_ICON_SCALE,
+  MAX_LINE_HEIGHT_SCALE,
+  MAX_SPACING_SCALE,
   MAX_TERMINAL_SCROLLBACK_LINES,
-  MAX_UI_FONT_SIZE,
+  MAX_UI_BASE_FONT_SIZE,
+  MAX_UI_SCALE,
   MIN_CODE_FONT_SIZE,
+  MIN_CONTENT_FONT_SIZE,
+  MIN_CONTENT_SPACING_SCALE,
+  MIN_ICON_SCALE,
+  MIN_LINE_HEIGHT_SCALE,
+  MIN_SPACING_SCALE,
   MIN_TERMINAL_SCROLLBACK_LINES,
-  MIN_UI_FONT_SIZE,
+  MIN_UI_BASE_FONT_SIZE,
+  MIN_UI_SCALE,
+  CONTENT_SPACING_SCALE_STEP,
+  SPACING_SCALE_STEP,
+  UI_SCALE_STEP,
   parseClampedFontSize,
   parseTerminalScrollbackLines,
   sanitizeFontFamily,
 };
 export type {
   AppSettings,
+  AppSettingsUpdate,
   AppLanguage,
+  OpenInSidePanePreferences,
+  PullRequestOpenLocation,
   DesktopSettingsBridge,
   KeyValueStorage,
   ReleaseChannel,
@@ -104,7 +160,7 @@ export interface UseAppSettingsReturn {
   settings: AppSettings;
   isLoading: boolean;
   error: unknown;
-  updateSettings: (updates: Partial<AppSettings>) => Promise<void>;
+  updateSettings: (updates: AppSettingsUpdate) => Promise<void>;
   resetSettings: () => Promise<void>;
 }
 
@@ -128,7 +184,7 @@ export function useAppSettings(): UseAppSettingsReturn {
   });
 
   const updateSettings = useCallback(
-    async (updates: Partial<AppSettings>) => {
+    async (updates: AppSettingsUpdate) => {
       try {
         await saveAppSettings({ queryClient, updates });
       } catch (err) {
@@ -230,7 +286,7 @@ export async function persistAppSettings(updates: Partial<AppSettings>): Promise
 
 export async function saveAppSettings(input: {
   queryClient: QueryClient;
-  updates: Partial<AppSettings>;
+  updates: AppSettingsUpdate;
   deps?: SettingsDeps;
 }): Promise<void> {
   await saveAppSettingsPure({

@@ -1,0 +1,13 @@
+# Slim EAS upload: docs only. NEVER exclude packages/*, scripts/, or
+# patches/ — the monorepo install (postinstall-patches.mjs) and the
+# eas-build-post-install hook (build:app-deps) need them on the builder.
+.github/
+.dev/
+*.md
+.gitignore
+.easignore
+
+# Local toolchain is bun 1.4.2 (lockfileVersion 2). EAS cloud runners pin
+# their own bun; keep bun.lock excluded so EAS uses npm + package-lock.json.
+bun.lock
+bun.lockb

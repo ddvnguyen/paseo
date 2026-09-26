@@ -2,7 +2,7 @@
 
 Paseo supports configuring custom agent providers through `config.json` (located at `$PASEO_HOME/config.json`, typically `~/.paseo/config.json`). You can extend built-in providers with different API backends, add ACP-compatible agents, set custom binaries, disable providers, and create multiple profiles for the same underlying provider.
 
-All provider configuration lives under `agents.providers` in config.json:
+Provider definitions live under `agents.providers` in config.json:
 
 ```json
 {
@@ -16,6 +16,20 @@ All provider configuration lives under `agents.providers` in config.json:
 ```
 
 Provider IDs must be lowercase alphanumeric with hyphens (`/^[a-z][a-z0-9-]*$/`).
+
+Each provider catalog refresh waits up to 2 minutes. If a provider loads many plugins or a large
+agent catalog during startup, raise the limit in milliseconds:
+
+```json
+{
+  "agents": {
+    "catalogRefreshTimeoutMs": 180000
+  }
+}
+```
+
+The limit applies independently to every provider refresh and covers availability plus the entire
+catalog probe. `PASEO_PROVIDER_REFRESH_TIMEOUT_MS` sets it when the config field is absent.
 
 ---
 
@@ -245,6 +259,8 @@ requires_openai_auth = false
 
 You can create multiple entries that extend the same built-in provider. Each gets its own entry in the provider list with independent credentials, models, and environment.
 
+"Profile" here means a provider alias, and it is not an **Agent profile** — that is a named bundle of provider, model, mode, thinking option and features, stored under `daemon.agentProfiles`. See [glossary.md](glossary.md) for all four senses of the word.
+
 Example: two different Anthropic accounts as separate profiles:
 
 ```json
@@ -377,6 +393,7 @@ Custom OMP profiles should extend `omp`. They inherit the OMP adapter's `rpc-ui`
         },
         "params": {
           "sessionDir": "~/.local/state/omp-work/omp/agent/sessions",
+          "rpcTimeoutMs": 60000,
           "smolModel": "openai/gpt-5-mini",
           "slowModel": "anthropic/claude-opus-4-1",
           "planModel": "openai/o3"
@@ -387,7 +404,7 @@ Custom OMP profiles should extend `omp`. They inherit the OMP adapter's `rpc-ui`
 }
 ```
 
-`params.sessionDir` is used only for importing sessions that were started outside Paseo. If `command` or XDG env vars move OMP's state directory, set `params.sessionDir` to the resulting OMP JSONL session directory; launching and resuming still go through the configured command.
+`params.sessionDir` is used only for importing sessions that were started outside Paseo. If `command` or XDG env vars move OMP's state directory, set `params.sessionDir` to the resulting OMP JSONL session directory; launching and resuming still go through the configured command. OMP waits 20 seconds for its initial `ready` frame and 60 seconds for later control-plane RPCs by default. `params.rpcTimeoutMs` overrides both deadlines.
 
 For other providers that keep Pi's `--mode rpc` API but write sessions somewhere else, extend `pi`, replace the command, and provide the JSONL session directory:
 
@@ -400,7 +417,8 @@ For other providers that keep Pi's `--mode rpc` API but write sessions somewhere
         "label": "My Pi Fork",
         "command": ["my-pi-fork"],
         "params": {
-          "sessionDir": "~/.my-pi-fork/sessions"
+          "sessionDir": "~/.my-pi-fork/sessions",
+          "rpcTimeoutMs": 60000
         }
       }
     }
@@ -408,7 +426,7 @@ For other providers that keep Pi's `--mode rpc` API but write sessions somewhere
 }
 ```
 
-This session directory is also import-only. Launching and resuming still go through the configured command, so this example resumes with `my-pi-fork --mode rpc --session <session-file>`.
+This session directory is also import-only. Launching and resuming still go through the configured command, so this example resumes with `my-pi-fork --mode rpc --session <session-file>`. `params.rpcTimeoutMs` overrides the 60-second Pi control-plane RPC deadline.
 
 ---
 
@@ -485,25 +503,25 @@ Paseo tools such as subagent creation come from the shared internal tool catalog
 }
 ```
 
-ACP agents execute filesystem and terminal operations in their own environment
-by default. To let a compliant agent delegate those operations to Paseo instead,
-enable the corresponding client capabilities:
+ACP agents execute filesystem operations in their own environment by default,
+while terminal operations run through Paseo on the host. To customize which
+operations Paseo handles, configure client capabilities in provider params:
 
 ```json
 {
   "agents": {
     "providers": {
-      "local-agent": {
+      "container-agent": {
         "extends": "acp",
-        "label": "Local Agent",
-        "command": ["local-agent", "acp"],
+        "label": "Container Agent",
+        "command": ["container-agent", "acp"],
         "params": {
           "clientCapabilities": {
             "fs": {
-              "readTextFile": true,
-              "writeTextFile": true
+              "readTextFile": false,
+              "writeTextFile": false
             },
-            "terminal": true
+            "terminal": false
           }
         }
       }
@@ -512,9 +530,11 @@ enable the corresponding client capabilities:
 }
 ```
 
-Only enable capabilities Paseo should execute. When the agent and Paseo run in
-different environments, configure equivalent absolute workspace paths before
-delegating filesystem or terminal operations to Paseo.
+When an agent runs in a container or remote environment that manages its own
+terminal, set `terminal: false` to keep command execution inside the agent
+container. When delegating filesystem operations to Paseo (`fs.readTextFile: true`
+or `fs.writeTextFile: true`), ensure the agent and Paseo share equivalent
+absolute workspace paths.
 
 ### Generic ACP diagnostics
 
@@ -523,6 +543,32 @@ Paseo diagnostics for `extends: "acp"` providers report the configured command, 
 For package-runner commands such as `npx -y @google/gemini-cli --acp`, the version probe keeps the package spec and runs `npx -y @google/gemini-cli --version`. This diagnoses the actual agent package instead of only proving that `npx` exists.
 
 ACP probes use short timeouts and browser-suppression environment variables so agents that enter an auth/browser flow fail as a diagnostic error instead of hanging the provider screen.
+
+### Example: Freebuff
+
+[Freebuff](https://freebuff.com) is the free coding agent by Codebuff. Its CLI is a terminal UI with no ACP mode, so Paseo ships a dedicated adapter that bridges the Codebuff backend to ACP via `@codebuff/sdk`.
+
+1. Install and log in once: `npm install -g freebuff && freebuff login` (credentials land in `~/.config/manicode/credentials.json`), or set `FREEBUFF_API_KEY` / `CODEBUFF_API_KEY` instead
+2. Add to config.json:
+
+```json
+{
+  "agents": {
+    "providers": {
+      "freebuff": {
+        "extends": "acp",
+        "label": "Freebuff",
+        "description": "The free coding agent (via @codebuff/sdk)",
+        "command": ["npx", "-y", "@getpaseo/freebuff-acp@0.1.0"]
+      }
+    }
+  }
+}
+```
+
+The adapter is also available in Paseo's in-app ACP provider catalog (Settings → Providers → "Freebuff"), which creates the same config. Sessions stream text, thinking, tool calls and results; `session/cancel` aborts the running turn. Model choice lives on Freebuff's backend (the free catalog), so the adapter exposes a single `lite` session mode.
+
+Ref: [`packages/freebuff-acp`](../packages/freebuff-acp) in this repo — the adapter is first-party and works with any ACP host (Zed, etc.).
 
 ### Example: Google Gemini CLI
 
@@ -694,7 +740,7 @@ Each entry in the `models` array:
 
 ### Claude settings.json model discovery
 
-The built-in `claude` provider appends concrete model IDs from `~/.claude/settings.json` to its first-party Claude model list. Paseo reads the top-level `model` field and these `env` keys: `ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL`.
+The built-in `claude` provider appends concrete model IDs from `~/.claude/settings.json` to its first-party Claude model list. Paseo reads the top-level `model` field and these `env` keys: `ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_FABLE_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL`.
 
 This lets users who already configured Claude Code for Bedrock, OpenRouter, ollama, Z.AI, or another Anthropic-compatible gateway select the exact model ID in Paseo. Explicit model IDs are passed unchanged to Claude Code, even when the same string is a compatibility alias for a built-in model. When `agents.providers.claude.models` is set it **replaces** both the hardcoded first-party Claude list and any settings.json-discovered entries; use `agents.providers.claude.additionalModels` to keep the first-party list and append curated entries on top.
 
