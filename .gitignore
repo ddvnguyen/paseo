@@ -93,3 +93,7 @@ app.json
 
 # Heap snapshots dumped by --heapsnapshot-near-heap-limit; keep them for debugging.
 *.heapsnapshot
+
+# temporary local vitest harnesses (leader/worker test runs)
+vt.tmp.config.mts
+vt2.tmp.mts
