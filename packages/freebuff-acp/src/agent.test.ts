@@ -1566,7 +1566,7 @@ describe("account, quota and session-open switch", () => {
     const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
     const account = session.configOptions?.find((option) => option.id === "account");
     expect(account).toMatchObject({ type: "select" });
-    expect(JSON.stringify(account)).toContain("20/25 left");
+    expect(JSON.stringify(account)).toContain("20/25 daily");
     const bunny = session.models?.availableModels.find(
       (model) => model.modelId === "stealth/space-bunny-alpha",
     );
@@ -1661,8 +1661,8 @@ describe("multiple accounts", () => {
     };
     expect(account.currentValue).toBe("default");
     expect(account.options.map((option) => option.value)).toEqual(["default", "work"]);
-    expect(account.options[0]?.name).toContain("20/25 left");
-    expect(account.options[1]?.name).toContain("Work · 7/25 left");
+    expect(account.options[0]?.name).toContain("20/25 daily");
+    expect(account.options[1]?.name).toContain("Work · 7/25 daily");
 
     const response = await agent.setSessionConfigOption({
       sessionId: session.sessionId,
@@ -2109,7 +2109,7 @@ describe("quota refresh robustness (F8)", () => {
       const agent = new FreebuffAcpAgent(makeConn(), testEnv());
       stubClient(agent, makeClient({ type: "success" }));
       const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
-      expect(JSON.stringify(session.configOptions)).toContain("20/25 left");
+      expect(JSON.stringify(session.configOptions)).toContain("20/25 daily");
 
       // The quota server now hangs; the 5s bound must free session calls.
       (agent as unknown as { refreshStatus: () => Promise<void> }).refreshStatus = () =>
@@ -2123,7 +2123,7 @@ describe("quota refresh robustness (F8)", () => {
       const response = await pending;
 
       const account = response.configOptions.find((option) => option.id === "account");
-      expect(JSON.stringify(account)).toContain("20/25 left");
+      expect(JSON.stringify(account)).toContain("20/25 daily");
       expect(errSpy.mock.calls.map((call) => String(call[0])).join("")).toContain(
         "keeping the last known status",
       );
