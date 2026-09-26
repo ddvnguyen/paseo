@@ -27,7 +27,10 @@ export interface ToolCallSheetData {
 }
 
 interface ToolCallSheetContextValue {
-  openToolCall: (data: ToolCallSheetData) => void;
+  /** `owner` identifies the row that opened the sheet so it can keep it current. */
+  openToolCall: (data: ToolCallSheetData, owner?: object) => void;
+  /** Replaces the shown data while `owner` is still the row the sheet was opened from. */
+  updateToolCall: (owner: object, data: ToolCallSheetData) => void;
   closeToolCall: () => void;
 }
 
@@ -89,12 +92,21 @@ interface ToolCallSheetProviderProps {
 export function ToolCallSheetProvider({ children }: ToolCallSheetProviderProps) {
   const [sheetData, setSheetData] = React.useState<ToolCallSheetData | null>(null);
   const [isSheetOpen, setIsSheetOpen] = React.useState(false);
+  // The sheet shows a copy of the row's data, so a row that is still streaming (thinking text,
+  // running command output) must push its newer data in or the sheet stays frozen at tap time.
+  const sheetOwnerRef = React.useRef<object | null>(null);
 
   const snapPoints = useMemo(() => ["60%", "95%"], []);
 
-  const openToolCall = useCallback((data: ToolCallSheetData) => {
+  const openToolCall = useCallback((data: ToolCallSheetData, owner?: object) => {
+    sheetOwnerRef.current = owner ?? null;
     setSheetData(data);
     setIsSheetOpen(true);
+  }, []);
+
+  const updateToolCall = useCallback((owner: object, data: ToolCallSheetData) => {
+    if (sheetOwnerRef.current !== owner) return;
+    setSheetData(data);
   }, []);
 
   const closeToolCall = useCallback(() => {
@@ -112,6 +124,7 @@ export function ToolCallSheetProvider({ children }: ToolCallSheetProviderProps) 
 
   const handleToolCallSheetDismiss = useCallback(() => {
     handleSheetDismiss();
+    sheetOwnerRef.current = null;
     setSheetData(null);
   }, [handleSheetDismiss]);
 
@@ -123,8 +136,8 @@ export function ToolCallSheetProvider({ children }: ToolCallSheetProviderProps) 
   );
 
   const contextValue = useMemo(
-    () => ({ openToolCall, closeToolCall }),
-    [openToolCall, closeToolCall],
+    () => ({ openToolCall, updateToolCall, closeToolCall }),
+    [openToolCall, updateToolCall, closeToolCall],
   );
 
   return (
