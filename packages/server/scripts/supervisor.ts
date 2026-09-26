@@ -302,7 +302,9 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
         workerPid: currentChild.pid ?? null,
       });
       log(`Worker unresponsive for ${hangMs}ms. Killing for restart...`);
-      signalWorker("SIGKILL", "worker_hung_watchdog");
+      void signalProcessTree(currentChild, "SIGKILL").catch((error) => {
+        log(`Worker kill failed: ${String(error)}`);
+      });
     }, 1000);
     watchdog.unref();
 
