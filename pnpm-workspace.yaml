@@ -1,0 +1,12 @@
+packages:
+  - "packages/*"
+allowBuilds:
+  dtrace-provider: true
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  lefthook: true
+  node-pty: true
+  sharp: true
+  unrs-resolver: true
+  workerd: true

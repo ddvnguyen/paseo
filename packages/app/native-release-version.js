@@ -1,8 +1,24 @@
 const versionPattern = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?(?:-[0-9a-f]{7,})?$/;
 const stableIosBuildSlot = 999;
+const FDROID_ABI_VERSION_CODE_SUFFIXES = {
+  "armeabi-v7a": 1,
+  "arm64-v8a": 2,
+  x86: 3,
+  x86_64: 4,
+};
 
 function getNativeReleaseVersion(version) {
-  const match = versionPattern.exec(version);
+  // Strip any trailing build-metadata suffix the workspace stamp appends
+  // (e.g. -hub-abcdef, -e19868364, -rc1) so the upstream semver core — the
+  // only thing the native release codes should be derived from — survives.
+  // The pattern keeps an optional "-beta.N" but drops anything that follows.
+  const coreVersionPattern = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.\d+)?/;
+  const coreMatch = coreVersionPattern.exec(version);
+  if (!coreMatch) {
+    throw new Error(`Cannot derive native release version from unsupported version: ${version}`);
+  }
+  const normalizedVersion = coreMatch[0];
+  const match = versionPattern.exec(normalizedVersion);
   if (!match) {
     throw new Error(`Cannot derive native release version from unsupported version: ${version}`);
   }
@@ -21,7 +37,11 @@ function getNativeReleaseVersion(version) {
   }
 
   const versionCode = major * 1_000_000 + minor * 1_000 + patch;
-  if (!Number.isSafeInteger(versionCode) || versionCode <= 0 || versionCode > 2_100_000_000) {
+  if (
+    !Number.isSafeInteger(versionCode) ||
+    versionCode <= 0 ||
+    versionCode * 10 + 9 > 2_100_000_000
+  ) {
     throw new Error(`Derived Android versionCode is out of range: ${versionCode}`);
   }
 
@@ -38,4 +58,16 @@ function getNativeReleaseVersion(version) {
   };
 }
 
-module.exports = { getNativeReleaseVersion };
+function getFdroidVersionCodes(version) {
+  const { androidVersionCode } = getNativeReleaseVersion(version);
+  return Object.entries(FDROID_ABI_VERSION_CODE_SUFFIXES).map(([abi, suffix]) => ({
+    abi,
+    versionCode: androidVersionCode * 10 + suffix,
+  }));
+}
+
+module.exports = {
+  FDROID_ABI_VERSION_CODE_SUFFIXES,
+  getFdroidVersionCodes,
+  getNativeReleaseVersion,
+};

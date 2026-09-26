@@ -20,7 +20,50 @@ env:
   SOURCE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
 
 jobs:
+  ensure-release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Resolve release tag
+        shell: bash
+        run: node scripts/emit-release-env.mjs --source-tag "$SOURCE_TAG" >> "$GITHUB_ENV"
+
+      - name: Ensure GitHub release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if node scripts/github-release.mjs --repo "${{ github.repository }}" --tag "$RELEASE_TAG" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          release_args=(
+            release create "$RELEASE_TAG"
+            --repo "${{ github.repository }}"
+            --title "Paseo $RELEASE_TAG"
+            --notes ""
+            --draft
+          )
+
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            release_args+=(--prerelease)
+          fi
+
+          if ! gh "${release_args[@]}"; then
+            echo "Release creation raced with another workflow; continuing."
+            node scripts/github-release.mjs --repo "${{ github.repository }}" --tag "$RELEASE_TAG" >/dev/null
+          fi
+
   publish-android-apk:
+    needs: [ensure-release]
     permissions:
       contents: write
       packages: read
@@ -35,32 +78,6 @@ jobs:
       - name: Resolve release tag
         shell: bash
         run: node scripts/emit-release-env.mjs --source-tag "$SOURCE_TAG" >> "$GITHUB_ENV"
-
-      - name: Ensure GitHub release exists
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            exit 0
-          fi
-
-          release_args=(
-            release create "$RELEASE_TAG"
-            --repo "${{ github.repository }}"
-            --title "Paseo $RELEASE_TAG"
-            --notes ""
-          )
-
-          if [[ "$IS_PRERELEASE" == "true" ]]; then
-            release_args+=(--prerelease)
-          fi
-
-          if ! gh "${release_args[@]}"; then
-            echo "Release creation raced with another workflow; continuing."
-          fi
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -84,11 +101,37 @@ jobs:
       - name: Build Android APK on EAS
         id: eas_build
         shell: bash
+        env:
+          EAS_ANDROID_KEYSTORE_BASE64: ${{ secrets.EAS_ANDROID_KEYSTORE_BASE64 }}
+          EAS_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.EAS_ANDROID_KEYSTORE_PASSWORD }}
+          EAS_ANDROID_KEY_ALIAS: ${{ secrets.EAS_ANDROID_KEY_ALIAS }}
+          EAS_ANDROID_KEY_PASSWORD: ${{ secrets.EAS_ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+
+          # Strip bun.lock from the repo so EAS doesn't try bun install.
+          # EAS detects bun workspace from bun.lock before .easignore applies.
+          rm -f bun.lock bun.lockb
+
           cd packages/app
 
+          # Write keystore INSIDE the project so EAS uploads it to cloud
+          echo "$EAS_ANDROID_KEYSTORE_BASE64" | base64 -d > .release.keystore
+          cat > credentials.json <<CREDS
+          {
+            "android": {
+              "keystore": {
+                "keystorePath": ".release.keystore",
+                "keystorePassword": "$EAS_ANDROID_KEYSTORE_PASSWORD",
+                "keyAlias": "$EAS_ANDROID_KEY_ALIAS",
+                "keyPassword": "$EAS_ANDROID_KEY_PASSWORD"
+              }
+            }
+          }
+          CREDS
+
           build_json="$(npx eas build --platform android --profile production-apk --non-interactive --wait --json)"
+          rm -f credentials.json .release.keystore
           echo "$build_json" > "$RUNNER_TEMP/eas-build.json"
 
           build_id="$(jq -r 'if type == "array" then .[0].id // empty else .id // empty end' "$RUNNER_TEMP/eas-build.json")"
@@ -117,7 +160,7 @@ jobs:
             exit 1
           fi
 
-          asset_name="paseo-${RELEASE_TAG}-android.apk"
+          asset_name="hydra-paseo-${RELEASE_TAG}-android.apk"
           asset_path="$RUNNER_TEMP/$asset_name"
 
           curl --fail --location --output "$asset_path" "$artifact_url"
@@ -129,4 +172,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "$RELEASE_TAG" "${{ steps.artifact.outputs.asset_path }}" --clobber --repo "${{ github.repository }}"
+          release_lookup="$(node scripts/github-release.mjs --repo "${{ github.repository }}" --tag "$RELEASE_TAG")"
+          gh release upload "$release_lookup" "${{ steps.artifact.outputs.asset_path }}" --clobber --repo "${{ github.repository }}"

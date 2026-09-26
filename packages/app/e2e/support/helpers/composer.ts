@@ -8,6 +8,16 @@ import { selectWorkspaceInSidebar } from "./sidebar";
 import { getServerId } from "./server-id";
 import { waitForTabBar } from "./launcher";
 import { waitForSettledPosition } from "./sheet-layout";
+import { installDaemonWebSocketGate } from "./daemon-websocket-gate";
+
+export async function controlFileUploadCompletion(page: Page) {
+  const gate = await installDaemonWebSocketGate(page);
+  return {
+    hold: () => gate.holdNextServerMessage("file.upload.response"),
+    waitForUpload: () => gate.waitForHeldServerMessage("file.upload.response"),
+    complete: () => gate.releaseHeldServerMessage("file.upload.response"),
+  };
+}
 
 function composerInput(page: Page) {
   return page.getByRole("textbox", { name: "Message agent..." }).first();
@@ -38,6 +48,10 @@ export async function expectComposerEditable(page: Page): Promise<void> {
   await expect(composerInput(page)).toBeEditable({ timeout: 15_000 });
 }
 
+export async function expectComposerFocused(page: Page): Promise<void> {
+  await expect(composerInput(page)).toBeFocused();
+}
+
 export async function submitMessage(page: Page, text: string): Promise<void> {
   const input = composerInput(page);
   await expect(input).toBeEditable({ timeout: 30_000 });
@@ -47,6 +61,10 @@ export async function submitMessage(page: Page, text: string): Promise<void> {
 
 export async function fillComposerDraft(page: Page, text: string): Promise<void> {
   await composerInput(page).fill(text);
+}
+
+export async function typeIntoFocusedComposer(page: Page, text: string): Promise<void> {
+  await page.keyboard.type(text);
 }
 
 export async function sendDraftToQueue(page: Page): Promise<void> {
@@ -82,7 +100,7 @@ export async function openAttachmentMenu(page: Page): Promise<void> {
 export async function expectAttachmentSheetRowsOnTitleRail(page: Page): Promise<void> {
   const title = page.getByText("Add attachment", { exact: true });
   const firstItemGlyph = page
-    .getByRole("button", { name: "Add image", exact: true })
+    .getByRole("menuitem", { name: "Add image", exact: true })
     .locator("svg")
     .first();
   await waitForSettledPosition(title);
@@ -115,6 +133,16 @@ export async function attachImageFromMenu(
 
 export async function expectAttachmentPill(page: Page, testID: string): Promise<void> {
   await expect(page.getByTestId(testID).first()).toBeVisible({ timeout: 10_000 });
+}
+
+export async function attachFileFromMenu(
+  page: Page,
+  file: { name: string; mimeType: string; buffer: Buffer },
+): Promise<void> {
+  await openAttachmentMenu(page);
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("menuitem", { name: "Upload file", exact: true }).click();
+  await (await chooserPromise).setFiles(file);
 }
 
 export async function dropFileOnComposer(
@@ -158,7 +186,7 @@ export async function expectGithubAttachmentPill(
   page: Page,
   input: { number: number; title: string },
 ): Promise<void> {
-  const pill = page.getByTestId("composer-github-attachment-pill").first();
+  const pill = page.getByTestId("composer-github-attachment-pill").filter({ hasText: input.title });
   await expect(pill).toBeVisible({ timeout: 10_000 });
   await expect(pill).toContainText(`#${input.number}`);
   await expect(pill).toContainText(input.title);
@@ -180,7 +208,7 @@ export async function openGithubPickerFromMenu(page: Page): Promise<void> {
   await expect(page.getByTestId("combobox-desktop-container")).toBeVisible({ timeout: 5_000 });
 }
 
-/** Open picker, type a query, wait for the matching option by id (e.g. "issue:3", "pr:1"), and click it. */
+/** Open picker, type a query, wait for the matching option by id (e.g. "issue:3", "change_request:1"), and click it. */
 export async function selectGithubOption(
   page: Page,
   searchTerm: string,
@@ -198,13 +226,20 @@ export async function selectGithubOption(
 export interface MockAgentSetup {
   client: SeedDaemonClient;
   repo: Awaited<ReturnType<typeof createTempGitRepo>>;
+  workspaceId: string;
+  agentId: string;
   cleanup: () => Promise<void>;
 }
 
 /** Create a temp repo, start a mock agent, navigate to it, and wait for it to be running. */
 export async function startRunningMockAgent(
   page: Page,
-  opts: { prefix: string; model: string; prompt: string },
+  opts: {
+    prefix: string;
+    model: string;
+    prompt: string;
+    featureValues?: Record<string, unknown>;
+  },
 ): Promise<MockAgentSetup> {
   const serverId = getServerId();
 
@@ -222,6 +257,7 @@ export async function startRunningMockAgent(
     cwd: repo.path,
     workspaceId: workspace.id,
     model: opts.model,
+    featureValues: opts.featureValues,
   });
   const agentUrl = `${buildHostWorkspaceRoute(serverId, workspace.id)}?open=${encodeURIComponent(`agent:${agent.id}`)}`;
   await page.goto(agentUrl);
@@ -233,6 +269,8 @@ export async function startRunningMockAgent(
   return {
     client,
     repo,
+    workspaceId: workspace.id,
+    agentId: agent.id,
     cleanup: async () => {
       await client.removeProject(workspace.projectId).catch(() => undefined);
       await client.close().catch(() => undefined);

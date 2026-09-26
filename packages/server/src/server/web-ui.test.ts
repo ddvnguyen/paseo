@@ -197,6 +197,19 @@ describe("daemon web UI route module", () => {
     expect(res.body).toBe("body { color: red; }");
   });
 
+  test("serves .webmanifest with the spec-mandated MIME type", async () => {
+    await writeFile(
+      path.join(distDir, "manifest.webmanifest"),
+      '{"name":"Test","start_url":"/","display":"standalone","icons":[]}',
+    );
+    const app = createApp({ enabled: true, distDir, publicDir });
+
+    const res = await request(app, "GET", "/manifest.webmanifest");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/manifest+json");
+  });
+
   test("selects brotli precompressed asset when accepted", async () => {
     const app = createApp({ enabled: true, distDir, publicDir });
 

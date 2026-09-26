@@ -8,6 +8,7 @@ import {
   RequestError,
   ndJsonStream,
   type Agent,
+  type CreateTerminalRequest,
   PermissionOption,
   PromptResponse,
   RequestPermissionRequest,
@@ -45,20 +46,24 @@ import { GenericACPAgentClient } from "./generic-acp-agent.js";
 import { parseKiroExtensionCommands } from "./kiro-acp-agent.js";
 import { transformPiModels } from "./pi/agent.js";
 import type { AgentStreamEvent } from "../agent-sdk-types.js";
-import type { AgentCapabilityFlags, AgentPersistenceHandle } from "../agent-sdk-types.js";
+import type {
+  AgentCapabilityFlags,
+  AgentPersistenceHandle,
+  ProviderRefreshContext,
+} from "../agent-sdk-types.js";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { buildStringCommandShellInvocation } from "../../../utils/string-command-shell.js";
 import { asInternals } from "../../test-utils/class-mocks.js";
 import * as spawnUtils from "../../../utils/spawn.js";
 
 describe("buildACPClientCapabilities", () => {
-  test("keeps filesystem and terminal execution with the agent by default", () => {
+  test("enables terminal execution on the host while keeping filesystem operations with the agent by default", () => {
     expect(buildACPClientCapabilities()).toEqual({
       fs: {
         readTextFile: false,
         writeTextFile: false,
       },
-      terminal: false,
+      terminal: true,
     });
   });
 
@@ -70,7 +75,7 @@ describe("buildACPClientCapabilities", () => {
           fs: {
             readTextFile: true,
           },
-          terminal: true,
+          terminal: false,
         },
       ),
     ).toEqual({
@@ -78,7 +83,7 @@ describe("buildACPClientCapabilities", () => {
         readTextFile: true,
         writeTextFile: false,
       },
-      terminal: true,
+      terminal: false,
       _meta: { source: "provider" },
     });
   });
@@ -124,7 +129,13 @@ interface ACPConfiguredOverrideInternals {
   applyConfiguredOverrides(): Promise<void>;
 }
 
-function createSession(terminateProcess?: ProcessTerminator): ACPAgentSession {
+function createSession(
+  options: {
+    terminateProcess?: ProcessTerminator;
+    launchEnv?: Record<string, string>;
+  } = {},
+): ACPAgentSession {
+  const { terminateProcess, launchEnv } = options;
   return new ACPAgentSession(
     {
       provider: "claude-acp",
@@ -144,6 +155,7 @@ function createSession(terminateProcess?: ProcessTerminator): ACPAgentSession {
         supportsToolInvocations: true,
       },
       ...(terminateProcess ? { terminateProcess } : {}),
+      ...(launchEnv ? { launchEnv } : {}),
     },
   );
 }
@@ -654,6 +666,114 @@ describe("ACPAgentSession terminal tools", () => {
       ["status", "--short"],
       expect.objectContaining({ cwd: "/repo" }),
     );
+  });
+
+  // Terminals the daemon opens for an agent are siblings of the agent process, so
+  // they inherit nothing from it. They carry the agent's identity only if the
+  // session puts its launch environment on them, the way its transport spawn does.
+  describe("agent launch environment", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    const readLaunchIdentityArgs = [
+      "-e",
+      "process.stdout.write(JSON.stringify({ id: process.env.PASEO_AGENT_ID ?? null, cwd: process.env.PASEO_AGENT_CWD ?? null, extra: process.env.PASEO_TEST_EXTRA ?? null }))",
+    ];
+
+    async function readLaunchIdentity(
+      session: ACPAgentSession,
+      params: Partial<CreateTerminalRequest> = {},
+    ): Promise<{ id: string | null; cwd: string | null; extra: string | null }> {
+      const terminal = await session.createTerminal({
+        sessionId: "session-1",
+        command: process.execPath,
+        args: readLaunchIdentityArgs,
+        cwd: process.cwd(),
+        ...params,
+      });
+      await session.waitForTerminalExit({
+        sessionId: "session-1",
+        terminalId: terminal.terminalId,
+      });
+      const { output } = await session.terminalOutput({
+        sessionId: "session-1",
+        terminalId: terminal.terminalId,
+      });
+      return JSON.parse(output.trim());
+    }
+
+    test("gives the terminal the agent's identity", async () => {
+      // The daemon itself does not run inside a Paseo agent.
+      vi.stubEnv("PASEO_AGENT_ID", undefined);
+      vi.stubEnv("PASEO_AGENT_CWD", undefined);
+      const session = createSession({
+        launchEnv: {
+          PASEO_AGENT_ID: "agent-1",
+          PASEO_AGENT_CWD: "/repo",
+        },
+      });
+
+      await expect(readLaunchIdentity(session)).resolves.toMatchObject({
+        id: "agent-1",
+        cwd: "/repo",
+      });
+    });
+
+    test("prefers the agent's identity over the daemon's own environment", async () => {
+      // A daemon started from inside another Paseo agent carries that agent's id.
+      vi.stubEnv("PASEO_AGENT_ID", "daemon-host-agent");
+      vi.stubEnv("PASEO_AGENT_CWD", "/elsewhere");
+      const session = createSession({
+        launchEnv: {
+          PASEO_AGENT_ID: "agent-1",
+          PASEO_AGENT_CWD: "/repo",
+        },
+      });
+
+      await expect(readLaunchIdentity(session)).resolves.toMatchObject({
+        id: "agent-1",
+        cwd: "/repo",
+      });
+    });
+
+    test("lets the requested terminal environment win over the launch environment", async () => {
+      const session = createSession({
+        launchEnv: {
+          PASEO_AGENT_ID: "agent-1",
+          PASEO_TEST_EXTRA: "from-launch",
+        },
+      });
+
+      await expect(
+        readLaunchIdentity(session, {
+          env: [{ name: "PASEO_TEST_EXTRA", value: "from-request" }],
+        }),
+      ).resolves.toMatchObject({ id: "agent-1", extra: "from-request" });
+    });
+
+    test("carries the agent's identity into single-string shell commands", async () => {
+      const child = createTerminalChildStub();
+      const spawn = vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
+      const session = createSession({ launchEnv: { PASEO_AGENT_ID: "agent-1" } });
+
+      await session.createTerminal({
+        sessionId: "session-1",
+        command: "paseo heartbeat create --every 5m",
+        cwd: "/repo",
+      });
+
+      expect(spawn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Array),
+        expect.objectContaining({
+          envOverlay: expect.objectContaining({
+            PASEO_AGENT_ID: "agent-1",
+            BASH_ENV: undefined,
+          }),
+        }),
+      );
+    });
   });
 
   test("surfaces spawn errors through terminal output and waitForTerminalExit", async () => {
@@ -1234,6 +1354,89 @@ describe("ACPAgentSession Zed parity", () => {
     });
   });
 
+  test("maps _meta paseo/questions to a question permission and returns typed answers", async () => {
+    const session = createSessionWithConfig({
+      provider: "generic-acp",
+      featureValues: { auto_accept: true },
+    });
+    const events: AgentStreamEvent[] = [];
+
+    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
+    session.subscribe((event) => events.push(event));
+
+    const questions = [
+      {
+        question: "Which targets?",
+        header: "Targets",
+        options: [{ label: "web" }, { label: "ios" }],
+        multiSelect: true,
+        allowOther: true,
+      },
+    ];
+    const permission = session.requestPermission({
+      sessionId: "session-1",
+      toolCall: { toolCallId: "ask-1", title: "Which targets?", status: "pending" },
+      options: [
+        { optionId: "ask-user-0-0", name: "web", kind: "allow_once" },
+        { optionId: "ask-user-submit", name: "Submit answers", kind: "allow_once" },
+        { optionId: "ask-user-skip", name: "Skip", kind: "reject_once" },
+      ],
+      _meta: { "paseo/questions": questions },
+    } satisfies RequestPermissionRequest);
+
+    await Promise.resolve();
+
+    // A question is never auto-accepted, even with auto_accept on.
+    const requested = events.find((event) => event.type === "permission_requested");
+    expect(requested).toMatchObject({
+      type: "permission_requested",
+      request: { kind: "question", input: { questions } },
+    });
+    if (requested?.type !== "permission_requested") {
+      throw new Error("Expected permission request");
+    }
+
+    await session.respondToPermission(requested.request.id, {
+      behavior: "allow",
+      selectedActionId: "ask-user-submit",
+      updatedInput: { answers: { Targets: "web, ios, watchOS" } },
+    });
+    await expect(permission).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "ask-user-submit" },
+      _meta: { "paseo/answers": { Targets: "web, ios, watchOS" } },
+    });
+  });
+
+  test("never auto-accepts a request marked paseo/requireApproval", async () => {
+    const session = createSessionWithConfig({
+      provider: "generic-acp",
+      featureValues: { auto_accept: true },
+    });
+    const events: AgentStreamEvent[] = [];
+    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
+    session.subscribe((event) => events.push(event));
+
+    const permission = session.requestPermission({
+      sessionId: "session-1",
+      toolCall: { toolCallId: "spend-1", title: "Open session", status: "pending" },
+      options: [
+        { optionId: "open-session", name: "Open session", kind: "allow_once" },
+        { optionId: "cancel-open", name: "Cancel", kind: "reject_once" },
+      ],
+      _meta: { "paseo/requireApproval": true },
+    } satisfies RequestPermissionRequest);
+    await Promise.resolve();
+
+    const requested = events.find((event) => event.type === "permission_requested");
+    if (requested?.type !== "permission_requested") {
+      throw new Error("Expected the request to wait for a person");
+    }
+    await session.respondToPermission(requested.request.id, { behavior: "deny" });
+    await expect(permission).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "cancel-open" },
+    });
+  });
+
   test("preserves ACP permission requests after invalid selected actions", async () => {
     const session = createSessionWithConfig({ provider: "generic-acp" });
     const events: AgentStreamEvent[] = [];
@@ -1788,6 +1991,72 @@ describe("ACPAgentClient modelTransformer", () => {
   });
 });
 
+describe("ACPAgentClient catalog discovery without a model resolver", () => {
+  test("never switches models during catalog discovery even with multiple models and a thinking picker", async () => {
+    // Model discovery extensions live on providers that opt in. The base
+    // client ships no catalog model resolver, so a slow or nonconforming ACP can't
+    // stall its catalog probe on extra setSessionConfigOption round trips.
+    const setSessionConfigOption = vi.fn();
+
+    class TestACPAgentClient extends ACPAgentClient {
+      protected override async spawnProcess(): Promise<SpawnedACPProcess> {
+        return {
+          child: { kill: vi.fn(), exitCode: 0, signalCode: null, once: vi.fn() },
+          connection: {
+            newSession: vi.fn().mockResolvedValue({
+              sessionId: "session-1",
+              configOptions: [
+                {
+                  id: "model",
+                  name: "Model",
+                  category: "model",
+                  type: "select",
+                  currentValue: "model-a",
+                  options: [
+                    { value: "model-a", name: "Model A" },
+                    { value: "model-b", name: "Model B" },
+                  ],
+                },
+                {
+                  id: "thinking",
+                  name: "Thinking",
+                  category: "thought_level",
+                  type: "select",
+                  currentValue: "off",
+                  options: [
+                    { value: "off", name: "Off" },
+                    { value: "on", name: "On" },
+                  ],
+                },
+              ],
+            }),
+            setSessionConfigOption,
+          },
+          initialize: { agentCapabilities: {} },
+        } as unknown as SpawnedACPProcess;
+      }
+
+      protected override async closeProbe(): Promise<void> {}
+    }
+
+    const client = new TestACPAgentClient({
+      provider: "acp",
+      logger: createTestLogger(),
+      defaultCommand: ["acp-agent"],
+      defaultModes: [],
+    });
+
+    const catalog = await client.fetchCatalog({
+      scope: "workspace",
+      cwd: "/tmp/acp-generic-catalog",
+      force: false,
+    });
+
+    expect(setSessionConfigOption).not.toHaveBeenCalled();
+    expect(catalog.models.map((model) => model.id)).toEqual(["model-a", "model-b"]);
+  });
+});
+
 describe("ACPAgentClient config features", () => {
   test("enables Auto Accept for unattended ACP creation", () => {
     const client = new ACPAgentClient({
@@ -2139,6 +2408,22 @@ describe("ACPAgentClient listImportableSessions", () => {
     await client.listImportableSessions({ limit: 20 });
 
     expect(listSessions).toHaveBeenCalledWith({});
+  });
+
+  test("stops at the requested session limit after a source-scoped page", async () => {
+    const listSessions = vi.fn().mockResolvedValue({
+      sessions: [
+        { sessionId: "s1", cwd: "/Users/moonshot", title: null, updatedAt: null },
+        { sessionId: "s2", cwd: "/Users/moonshot", title: null, updatedAt: null },
+      ],
+      nextCursor: "later",
+    });
+    const client = makeClient({ listSessions });
+
+    await expect(
+      client.listImportableSessions({ cwd: "/Users/moonshot", limit: 1 }),
+    ).resolves.toHaveLength(1);
+    expect(listSessions).toHaveBeenCalledTimes(1);
   });
 
   test("forwards cwd alongside the pagination cursor across pages", async () => {
@@ -3241,7 +3526,7 @@ describe("ACPAgentSession close() tree-kill", () => {
 
   test("close() terminates the main child process via the process tree", async () => {
     const terminator = new FakeTerminator();
-    const session = createSession(terminator.terminate);
+    const session = createSession({ terminateProcess: terminator.terminate });
     const internals = asInternals<ACPCloseInternals>(session);
 
     const child = createTerminalChildStub();
@@ -3259,7 +3544,7 @@ describe("ACPAgentSession close() tree-kill", () => {
 
   test("close() terminates running terminal child processes", async () => {
     const terminator = new FakeTerminator();
-    const session = createSession(terminator.terminate);
+    const session = createSession({ terminateProcess: terminator.terminate });
 
     const terminalChild = createTerminalChildStub();
     await startTerminal(session, terminalChild);
@@ -3272,7 +3557,7 @@ describe("ACPAgentSession close() tree-kill", () => {
 
   test("close() terminates terminal child processes in parallel", async () => {
     const terminator = new FakeTerminator("deferred");
-    const session = createSession(terminator.terminate);
+    const session = createSession({ terminateProcess: terminator.terminate });
 
     const firstChild = createTerminalChildStub();
     const secondChild = createTerminalChildStub();
@@ -3290,7 +3575,7 @@ describe("ACPAgentSession close() tree-kill", () => {
 
   test("killTerminal terminates the terminal process tree without a direct SIGTERM", async () => {
     const terminator = new FakeTerminator();
-    const session = createSession(terminator.terminate);
+    const session = createSession({ terminateProcess: terminator.terminate });
 
     const child = createTerminalChildStub();
     const terminalId = await startTerminal(session, child);
@@ -3303,7 +3588,7 @@ describe("ACPAgentSession close() tree-kill", () => {
 
   test("releaseTerminal terminates and removes a running terminal", async () => {
     const terminator = new FakeTerminator();
-    const session = createSession(terminator.terminate);
+    const session = createSession({ terminateProcess: terminator.terminate });
 
     const child = createTerminalChildStub();
     const terminalId = await startTerminal(session, child);
@@ -3433,6 +3718,246 @@ describe("ACPAgentClient probe cleanup", () => {
     expect(child.stdout.destroyed).toBe(true);
     expect(child.stderr.destroyed).toBe(true);
   });
+
+  test("closes the native catalog probe session before terminating its process", async () => {
+    const terminator = new FakeTerminator();
+    const child = createProbeChildStub();
+    const closeSession = vi.fn().mockImplementation(async () => {
+      expect(terminator.terminated).toEqual([]);
+      return {};
+    });
+
+    class TestACPAgentClient extends ACPAgentClient {
+      protected override async spawnProcess(): Promise<SpawnedACPProcess> {
+        return {
+          child,
+          connection: {
+            newSession: vi.fn().mockResolvedValue({
+              sessionId: "catalog-probe-session",
+              modes: null,
+              models: null,
+              configOptions: [],
+            }),
+            unstable_closeSession: closeSession,
+          },
+          initialize: { agentCapabilities: { sessionCapabilities: { close: {} } } },
+        } as unknown as SpawnedACPProcess;
+      }
+    }
+
+    const client = new TestACPAgentClient({
+      provider: "claude-acp",
+      logger: createTestLogger(),
+      defaultCommand: ["claude", "--acp"],
+      defaultModes: [],
+      terminateProcess: terminator.terminate,
+    });
+
+    await client.fetchCatalog({ scope: "workspace", cwd: "/tmp/acp-models", force: false });
+
+    expect(closeSession).toHaveBeenCalledWith({ sessionId: "catalog-probe-session" });
+    expect(terminator.terminated).toContain(child);
+  });
+
+  test("closes a catalog probe session that finishes being created after refresh aborts", async () => {
+    const terminator = new FakeTerminator();
+    const child = createProbeChildStub();
+    const abort = new AbortController();
+    let resolveNewSession!: (value: {
+      sessionId: string;
+      modes: null;
+      models: null;
+      configOptions: [];
+    }) => void;
+    const newSession = vi.fn(
+      () =>
+        new Promise<{
+          sessionId: string;
+          modes: null;
+          models: null;
+          configOptions: [];
+        }>((resolve) => {
+          resolveNewSession = resolve;
+        }),
+    );
+    const closeSession = vi.fn().mockResolvedValue({});
+
+    class TestACPAgentClient extends ACPAgentClient {
+      protected override async spawnProcess(): Promise<SpawnedACPProcess> {
+        return {
+          child,
+          connection: { newSession, unstable_closeSession: closeSession },
+          initialize: { agentCapabilities: { sessionCapabilities: { close: {} } } },
+        } as unknown as SpawnedACPProcess;
+      }
+    }
+
+    const client = new TestACPAgentClient({
+      provider: "claude-acp",
+      logger: createTestLogger(),
+      defaultCommand: ["claude", "--acp"],
+      defaultModes: [],
+      terminateProcess: terminator.terminate,
+    });
+    const context: ProviderRefreshContext = {
+      signal: abort.signal,
+      runActivity: async (_name, operation) => await operation(),
+    };
+    const catalog = client.fetchCatalog(
+      { scope: "workspace", cwd: "/tmp/acp-models", force: false },
+      context,
+    );
+    await vi.waitFor(() => expect(newSession).toHaveBeenCalledOnce());
+
+    abort.abort(new Error("refresh cancelled"));
+    resolveNewSession({
+      sessionId: "late-catalog-probe-session",
+      modes: null,
+      models: null,
+      configOptions: [],
+    });
+
+    await expect(catalog).rejects.toThrow("refresh cancelled");
+    expect(closeSession).toHaveBeenCalledWith({ sessionId: "late-catalog-probe-session" });
+    expect(terminator.terminated).toContain(child);
+  });
+
+  test("closes the native feature probe session before terminating its process", async () => {
+    const terminator = new FakeTerminator();
+    const child = createProbeChildStub();
+    const closeSession = vi.fn().mockResolvedValue({});
+
+    class TestACPAgentClient extends ACPAgentClient {
+      protected override async spawnProcess(): Promise<SpawnedACPProcess> {
+        return {
+          child,
+          connection: {
+            newSession: vi.fn().mockResolvedValue({
+              sessionId: "feature-probe-session",
+              modes: null,
+              models: null,
+              configOptions: [copilotAgentConfigOption("Probe Agent")],
+            }),
+            unstable_closeSession: closeSession,
+          },
+          initialize: { agentCapabilities: { sessionCapabilities: { close: {} } } },
+        } as unknown as SpawnedACPProcess;
+      }
+    }
+
+    const client = new TestACPAgentClient({
+      provider: "copilot",
+      logger: createTestLogger(),
+      defaultCommand: ["copilot", "--acp"],
+      defaultModes: [],
+      configFeatureOptions: [COPILOT_AGENT_FEATURE_OPTION],
+      terminateProcess: terminator.terminate,
+    });
+
+    await client.listFeatures({ provider: "copilot", cwd: "/tmp/acp-features" });
+
+    expect(closeSession).toHaveBeenCalledWith({ sessionId: "feature-probe-session" });
+    expect(terminator.terminated).toContain(child);
+  });
+
+  test("still terminates the probe when native session close fails", async () => {
+    const terminator = new FakeTerminator();
+    const child = createProbeChildStub();
+
+    class TestACPAgentClient extends ACPAgentClient {
+      protected override async spawnProcess(): Promise<SpawnedACPProcess> {
+        return {
+          child,
+          connection: {
+            newSession: vi.fn().mockResolvedValue({
+              sessionId: "catalog-probe-session",
+              modes: null,
+              models: null,
+              configOptions: [],
+            }),
+            unstable_closeSession: vi.fn().mockRejectedValue(new Error("close failed")),
+          },
+          initialize: { agentCapabilities: { sessionCapabilities: { close: {} } } },
+        } as unknown as SpawnedACPProcess;
+      }
+    }
+
+    const client = new TestACPAgentClient({
+      provider: "claude-acp",
+      logger: createTestLogger(),
+      defaultCommand: ["claude", "--acp"],
+      defaultModes: [],
+      terminateProcess: terminator.terminate,
+    });
+
+    await client.fetchCatalog({ scope: "workspace", cwd: "/tmp/acp-models", force: false });
+
+    expect(terminator.terminated).toContain(child);
+  });
+
+  test("keeps a session visible and cleans up after its history load times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const terminator = new FakeTerminator();
+      const child = createProbeChildStub();
+      const loadSession = vi.fn(async () => await new Promise(() => undefined));
+
+      class TestACPAgentClient extends ACPAgentClient {
+        protected override async spawnProcess(): Promise<SpawnedACPProcess> {
+          return {
+            child,
+            connection: {
+              listSessions: vi.fn().mockResolvedValue({
+                sessions: [
+                  {
+                    sessionId: "slow-session",
+                    cwd: "/tmp/acp-import",
+                    title: "Slow but real",
+                    updatedAt: "2026-09-04T20:00:00.000Z",
+                  },
+                ],
+                nextCursor: null,
+              }),
+              loadSession,
+              unstable_closeSession: vi.fn().mockResolvedValue({}),
+            },
+            initialize: {
+              agentCapabilities: {
+                loadSession: true,
+                sessionCapabilities: { list: {}, close: {} },
+              },
+            },
+          } as unknown as SpawnedACPProcess;
+        }
+      }
+
+      const client = new TestACPAgentClient({
+        provider: "claude-acp",
+        logger: createTestLogger(),
+        defaultCommand: ["claude", "--acp"],
+        defaultModes: [],
+        terminateProcess: terminator.terminate,
+      });
+      const listing = client.listImportableSessions({ limit: 1 });
+      await vi.waitFor(() => expect(loadSession).toHaveBeenCalledOnce());
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      await expect(listing).resolves.toEqual([
+        {
+          providerHandleId: "slow-session",
+          cwd: "/tmp/acp-import",
+          title: "Slow but real",
+          firstPromptPreview: null,
+          lastPromptPreview: null,
+          lastActivityAt: new Date("2026-09-04T20:00:00.000Z"),
+        },
+      ]);
+      expect(terminator.terminated).toContain(child);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("ACP session/load invariant — cwd and mcpServers always passed", () => {
@@ -3514,6 +4039,86 @@ describe("ACP session/load invariant — cwd and mcpServers always passed", () =
       sessionId: "session-1",
       cwd: "/tmp/paseo-acp-test",
       mcpServers: [],
+    });
+  });
+
+  test("publishes context usage reported during loadSession replay with the history", async () => {
+    let session!: ACPAgentSession;
+    const loadSession = async () => {
+      await session.sessionUpdate({
+        sessionId: "session-1",
+        update: { sessionUpdate: "usage_update", used: 5000, size: 1_000_000 } as SessionUpdate,
+      });
+      return { sessionId: "session-1", modes: null, models: null, configOptions: [] };
+    };
+    ({ session } = makeTestSession({
+      capabilities: { loadSession: true },
+      handle: { sessionId: "session-1", provider: "claude-acp" },
+      loadSession,
+    }));
+
+    await session.initializeResumedSession();
+
+    const history: AgentStreamEvent[] = [];
+    for await (const event of session.streamHistory()) {
+      history.push(event);
+    }
+    expect(history).toEqual([
+      {
+        type: "usage_updated",
+        provider: "claude-acp",
+        usage: { contextWindowUsedTokens: 5000, contextWindowMaxTokens: 1_000_000 },
+      },
+    ]);
+  });
+
+  test("publishes context usage reported while resuming without loadSession", async () => {
+    let session!: ACPAgentSession;
+    const unstableResumeSession = async () => {
+      await session.sessionUpdate({
+        sessionId: "session-1",
+        update: { sessionUpdate: "usage_update", used: 900, size: 131_072 } as SessionUpdate,
+      });
+      return { modes: null, models: null, configOptions: [] };
+    };
+    ({ session } = makeTestSession({
+      capabilities: { sessionCapabilities: { resume: {} } },
+      handle: { sessionId: "session-1", provider: "claude-acp" },
+      unstableResumeSession: unstableResumeSession as unknown as ReturnType<typeof vi.fn>,
+    }));
+
+    await session.initializeResumedSession();
+
+    const history: AgentStreamEvent[] = [];
+    for await (const event of session.streamHistory()) {
+      history.push(event);
+    }
+    expect(history).toEqual([
+      {
+        type: "usage_updated",
+        provider: "claude-acp",
+        usage: { contextWindowUsedTokens: 900, contextWindowMaxTokens: 131_072 },
+      },
+    ]);
+  });
+
+  test("treats a usage_update size of 0 as an unknown context window", async () => {
+    const { session } = makeTestSession({
+      handle: { sessionId: "session-1", provider: "claude-acp" },
+    });
+    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
+    const events: AgentStreamEvent[] = [];
+    session.subscribe((event) => events.push(event));
+
+    await session.sessionUpdate({
+      sessionId: "session-1",
+      update: { sessionUpdate: "usage_update", used: 1234, size: 0 } as SessionUpdate,
+    });
+
+    expect(events).toContainEqual({
+      type: "usage_updated",
+      provider: "claude-acp",
+      usage: { contextWindowUsedTokens: 1234 },
     });
   });
 

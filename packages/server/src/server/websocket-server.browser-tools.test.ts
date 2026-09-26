@@ -15,10 +15,8 @@ import type { AgentManager } from "./agent/agent-manager.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
 import { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { CheckoutDiffManager } from "./checkout-diff-manager.js";
-import type { FileBackedChatService } from "./chat/chat-service.js";
 import type { DaemonConfigStore } from "./daemon-config-store.js";
 import type { DownloadTokenStore } from "./file-download/token-store.js";
-import type { LoopService } from "./loop-service.js";
 import type { ScheduleService } from "./schedule/service.js";
 import { createStub } from "./test-utils/class-mocks.js";
 import { DaemonClient } from "./test-utils/daemon-client.js";
@@ -141,10 +139,11 @@ describe("WebSocketServer browser tools wiring", () => {
   it("keeps browser automation registered when a browser host client resumes", async () => {
     const harness = await startBrowserToolsDaemonHarness();
     const clientId = "browser-host-client-1";
-    await harness.connectBrowserHostClient({
+    const originalBrowserHost = await harness.connectBrowserHostClient({
       clientId,
       capabilities: browserHostCapabilities(),
     });
+    await originalBrowserHost.disconnect();
 
     const resumedBrowserHost = await harness.connectBrowserHostClient({
       clientId,
@@ -184,6 +183,7 @@ describe("WebSocketServer browser tools wiring", () => {
     await browserHost.nextBrowserRequest();
     expect(harness.broker.getPendingRequestCount()).toBe(1);
 
+    await browserHost.disconnect();
     await harness.connectBrowserHostClient({
       clientId,
       capabilities: browserHostCapabilities(["list_tabs"]),
@@ -227,6 +227,11 @@ async function startBrowserToolsDaemonHarness(): Promise<BrowserToolsDaemonHarne
       });
 
       await client.connect();
+      const capability = (options.capabilities ?? browserHostCapabilities())[
+        CLIENT_CAPS.browserHost
+      ] as { hostKind: "desktop app"; supportedCommands: BrowserAutomationCommandName[] };
+      const observation = client.registerBrowserHost(capability);
+      await observation.ready;
 
       return {
         clientId: clientId ?? "",
@@ -234,6 +239,7 @@ async function startBrowserToolsDaemonHarness(): Promise<BrowserToolsDaemonHarne
         respondToBrowserRequest: (response) =>
           client.sendBrowserAutomationExecuteResponse(response),
         async disconnect() {
+          await observation.release();
           requests.close();
           clients.delete(client);
           await client.close();
@@ -284,6 +290,7 @@ function createVoiceAssistantWebSocketServer(params: {
     }),
   };
   const daemonConfigStore = {
+    onApply: () => () => {},
     onChange: () => () => {},
   };
 
@@ -307,8 +314,6 @@ function createVoiceAssistantWebSocketServer(params: {
     undefined,
     undefined,
     undefined,
-    createStub<FileBackedChatService>({}),
-    createStub<LoopService>({}),
     createStub<ScheduleService>({}),
     createStub<CheckoutDiffManager>({
       subscribe: () => {},

@@ -1,3 +1,4 @@
+import { SessionDelivery } from "./session/owned-subscriptions/index.js";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Server as HTTPServer } from "http";
 import type pino from "pino";
@@ -5,8 +6,6 @@ import type { AgentManager } from "./agent/agent-manager.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
 import type { DownloadTokenStore } from "./file-download/token-store.js";
 import type { DaemonConfigStore } from "./daemon-config-store.js";
-import type { FileBackedChatService } from "./chat/chat-service.js";
-import type { LoopService } from "./loop-service.js";
 import type { ScheduleService } from "./schedule/service.js";
 import type { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import type { WorkspaceAutoName } from "./workspace-auto-name.js";
@@ -19,6 +18,7 @@ import {
   TerminalStreamOpcode,
 } from "@getpaseo/protocol/terminal-stream-protocol";
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
+import { APPLICATION_SOCKET_LEASE_MS } from "./websocket/physical-socket.js";
 
 type SocketListener = (...args: unknown[]) => void;
 
@@ -48,16 +48,35 @@ const sessionMock = vi.hoisted(() => {
   const instances: MockSession[] = [];
 
   class MockSession {
-    cleanup = vi.fn(async () => {});
+    readonly delivery = new SessionDelivery((source, message) => {
+      const send = this.args.onMessageToSource as (source: object, message: unknown) => void;
+      send(source, message);
+    });
+    cleanup = vi.fn(async () => {
+      await this.delivery.close();
+    });
     handleMessage = vi.fn(async () => {});
     handleBinaryFrame = vi.fn((_frame: unknown) => {});
     supports = vi.fn((capability: string) => this.args.clientCapabilities?.[capability] === true);
-    updateClientCapabilities = vi.fn((capabilities: Record<string, unknown> | null) => {
-      this.args.clientCapabilities = capabilities;
+    updateClientCapabilities = vi.fn(
+      (capabilities: Record<string, unknown> | null, source: object) => {
+        this.args.clientCapabilities = capabilities;
+        this.delivery.attach(source, capabilities?.owned_subscriptions === true);
+      },
+    );
+    clearAgentTimelineSubscription = vi.fn((source: object) => {
+      void this.delivery.detach(source);
     });
-    clearAgentTimelineSubscription = vi.fn();
     getClientActivity = vi.fn(() => null);
+    wantsSourceEvent = (source: object) => !this.delivery.isModern(source);
     getSessionId = vi.fn(() => "mock-session-id");
+    getPermissions = vi.fn(() => this.args.permissions as string[]);
+    allowsInbound = vi.fn(() => true);
+    allowsPermission = vi.fn(() => true);
+    publish = vi.fn((message: unknown) => {
+      const onMessage = this.args.onMessage as ((message: unknown) => void) | undefined;
+      onMessage?.(message);
+    });
     resetPeakInflight = vi.fn(() => {});
     getRuntimeMetrics = vi.fn(() => ({
       checkoutDiffTargetCount: 0,
@@ -88,25 +107,17 @@ vi.mock("./session.js", () => ({
   Session: sessionMock.MockSession,
 }));
 
-vi.mock("./push/token-store.js", () => ({
-  PushTokenStore: class {
-    getAllTokens(): string[] {
-      return [];
-    }
-  },
-}));
-
-vi.mock("./push/push-service.js", () => ({
-  PushService: class {
-    async sendPush(): Promise<void> {
-      // no-op
-    }
-  },
+vi.mock("./push/index.js", () => ({
+  createPushNotifications: () => ({
+    renew: () => undefined,
+    revoke: () => undefined,
+    send: async () => undefined,
+  }),
 }));
 
 import { z } from "zod";
 import { VoiceAssistantWebSocketServer } from "./websocket-server";
-import { parseServerInfoStatusPayload } from "./messages.js";
+import { DAEMON_PERMISSIONS, parseServerInfoStatusPayload } from "./messages.js";
 import type { SpeechReadinessSnapshot } from "./speech/speech-runtime.js";
 
 interface WebSocketServerInternals {
@@ -230,9 +241,11 @@ function createWorkspaceAutoNameStub(): WorkspaceAutoName {
 function createServer(options?: {
   speechReadiness?: SpeechReadinessSnapshot | null;
   logger?: ReturnType<typeof createLogger>;
+  startPaused?: boolean;
 }) {
   const speechReadiness = options?.speechReadiness ?? null;
   const daemonConfigStore = {
+    onApply: vi.fn(() => () => {}),
     onChange: vi.fn(() => () => {}),
   };
   const logger = options?.logger ?? createLogger();
@@ -257,7 +270,7 @@ function createServer(options?: {
     "/tmp/paseo-test",
     createStub<DaemonConfigStore>(daemonConfigStore),
     null,
-    { allowedOrigins: new Set() },
+    { allowedOrigins: new Set(), startPaused: options?.startPaused },
     createWorkspaceAutoNameStub(),
     undefined,
     speechReadiness
@@ -281,8 +294,6 @@ function createServer(options?: {
     undefined,
     undefined,
     undefined,
-    createStub<FileBackedChatService>({}),
-    createStub<LoopService>({}),
     createStub<ScheduleService>({}),
     createStub<CheckoutDiffManager>({
       subscribe: vi.fn(),
@@ -514,6 +525,65 @@ describe("relay external socket reconnect behavior", () => {
     await server.close();
   });
 
+  test("gives every plugin socket an exclusively owned session and cleans it immediately", async () => {
+    const server = createServer();
+    const firstSocket = new MockSocket();
+    const firstAttachment = await server.attachPluginSocket("exclusive", firstSocket);
+    firstSocket.emit("message", JSON.stringify(createHelloMessage("plugin:exclusive")));
+
+    const secondSocket = new MockSocket();
+    const secondAttachment = await server.attachPluginSocket("exclusive", secondSocket);
+    secondSocket.emit("message", JSON.stringify(createHelloMessage("plugin:exclusive")));
+
+    expect(sessionMock.instances).toHaveLength(2);
+    firstSocket.emit("close", 1000, "plugin stopped");
+    await firstAttachment.closed;
+    expect(sessionMock.instances[0]?.cleanup).toHaveBeenCalledOnce();
+    expect(sessionMock.instances[1]?.cleanup).not.toHaveBeenCalled();
+
+    secondSocket.emit("close", 1000, "plugin stopped");
+    await secondAttachment.closed;
+    expect(sessionMock.instances[1]?.cleanup).toHaveBeenCalledOnce();
+    await server.close();
+  });
+
+  test("keeps a plugin socket whose heartbeat stalls past the application lease", async () => {
+    const server = createServer();
+    const socket = new MockSocket();
+    await server.attachPluginSocket("stalled", socket);
+    socket.emit("message", JSON.stringify(createHelloMessage("plugin:stalled")));
+    socket.emit("message", JSON.stringify({ type: "ping" }));
+
+    // Event loop starved past the lease: no further ping arrives.
+    await vi.advanceTimersByTimeAsync(APPLICATION_SOCKET_LEASE_MS * 2);
+
+    expect(socket.readyState).toBe(1);
+    await server.close();
+  });
+
+  test("still reaps an ordinary socket whose heartbeat stalls past the application lease", async () => {
+    const server = createServer();
+    const socket = new MockSocket();
+    await attachRelayAndHello({ server, socket, clientId: "cid-stalled" });
+    socket.emit("message", JSON.stringify({ type: "ping" }));
+
+    await vi.advanceTimersByTimeAsync(APPLICATION_SOCKET_LEASE_MS * 2);
+
+    expect(socket.readyState).toBe(3);
+    await server.close();
+  });
+
+  test("rejects ordinary sockets that claim the reserved plugin client id", async () => {
+    const server = createServer();
+    const socket = new MockSocket();
+    await server.attachExternalSocket(socket, { transport: "relay" });
+    socket.emit("message", JSON.stringify(createHelloMessage("plugin:not-a-plugin")));
+
+    expect(socket.readyState).toBe(3);
+    expect(sessionMock.instances).toHaveLength(0);
+    await server.close();
+  });
+
   test("passes hello capabilities through to the created session", async () => {
     const server = createServer();
     const socket = new MockSocket();
@@ -564,6 +634,27 @@ describe("relay external socket reconnect behavior", () => {
       heldCleanup.finish();
       await closePromise;
     }
+  });
+
+  test("accepts plugin startup sessions while application sessions remain paused", async () => {
+    const server = createServer({ startPaused: true });
+    const applicationSocket = new MockSocket();
+    await server.attachExternalSocket(applicationSocket, { transport: "relay" });
+    expect(applicationSocket.readyState).toBe(3);
+
+    const pluginSocket = new MockSocket();
+    const attachment = await server.attachPluginSocket("startup", pluginSocket);
+    pluginSocket.emit("message", JSON.stringify(createHelloMessage("plugin:startup")));
+    expect(sessionMock.instances).toHaveLength(1);
+
+    server.beginAcceptingConnections();
+    const readySocket = new MockSocket();
+    await attachRelayAndHello({ server, socket: readySocket, clientId: "ready-client" });
+    expect(sessionMock.instances).toHaveLength(2);
+
+    pluginSocket.emit("close", 1000, "done");
+    await attachment.closed;
+    await server.close();
   });
 
   test("closes pending connection when hello timeout elapses", async () => {
@@ -629,6 +720,28 @@ describe("relay external socket reconnect behavior", () => {
     });
     expect(sessionMock.instances).toHaveLength(2);
 
+    await server.close();
+  });
+
+  test("isolates resumable sessions by principal while sharing hello bootstrap", async () => {
+    const server = createServer();
+    const clientId = "shared-client-id";
+    const ownerSocket = new MockSocket();
+    const hubSocket = new MockSocket();
+
+    const ownerInfo = await attachRelayAndHello({ server, socket: ownerSocket, clientId });
+    await server.attachExternalSocket(
+      hubSocket,
+      { transport: "hub", hubDaemonId: "daemon-1" },
+      { principalId: "hub:daemon-1", permissions: ["hub.execute"] },
+    );
+    hubSocket.emit("message", JSON.stringify(createHelloMessage(clientId)));
+    const hubEnvelope = parseSentEnvelope(hubSocket.sent[0]);
+    const hubInfo = parseServerInfoStatusPayload(hubEnvelope.message?.payload);
+
+    expect(sessionMock.instances).toHaveLength(2);
+    expect(ownerInfo.permissions).toEqual(DAEMON_PERMISSIONS);
+    expect(hubInfo?.permissions).toEqual(["hub.execute"]);
     await server.close();
   });
 
@@ -816,7 +929,7 @@ describe("relay external socket reconnect behavior", () => {
           payload: {
             requestId: "failing-provider-diagnostic",
             requestType: "provider_diagnostic_request",
-            error: "Invalid message",
+            error: "Invalid message: handler exploded",
             code: "invalid_message",
           },
         },
@@ -933,9 +1046,13 @@ describe("relay external socket reconnect behavior", () => {
 
     expect(serverInfo.features?.stableProjectIdentity).toBe(true);
     expect(serverInfo.features?.canonicalSubmittedPrompts).toBe(true);
+    expect(serverInfo.features?.providersSnapshotCwd).toBe(true);
+    expect(serverInfo.features?.pluginLogs).toBe(true);
+    expect(serverInfo.features?.workspaceMarkUnread).toBe(true);
     expect(serverInfo.features?.["terminal-input-mode-replay"]).toBe(true);
     expect(serverInfo.features?.["terminal-size-ownership"]).toBe(true);
     expect(serverInfo.features?.agentTurnIdentity).toBeUndefined();
+    expect(serverInfo.permissions).toEqual(DAEMON_PERMISSIONS);
     await server.close();
   });
 

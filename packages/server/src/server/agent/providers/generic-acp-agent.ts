@@ -5,6 +5,7 @@ import type { AgentCapabilityFlags } from "../agent-sdk-types.js";
 import { checkProviderLaunchAvailable, resolveProviderLaunch } from "../provider-launch-config.js";
 import {
   ACPAgentClient,
+  type ACPCatalogModelResolver,
   type ACPClientCapabilityMeta,
   type ACPConfigFeatureOption,
   DEFAULT_ACP_CAPABILITIES,
@@ -49,6 +50,8 @@ interface GenericACPAgentClientOptions {
   clientCapabilityMeta?: ACPClientCapabilityMeta;
   configFeatureOptions?: ACPConfigFeatureOption[];
   extensionCommandsParser?: ACPExtensionCommandsParser;
+  catalogModelResolver?: ACPCatalogModelResolver;
+  now?: () => number;
 }
 
 export class GenericACPAgentClient extends ACPAgentClient {
@@ -73,6 +76,8 @@ export class GenericACPAgentClient extends ACPAgentClient {
       clientCapabilityMeta: options.clientCapabilityMeta,
       configFeatureOptions: options.configFeatureOptions,
       extensionCommandsParser: options.extensionCommandsParser,
+      catalogModelResolver: options.catalogModelResolver,
+      now: options.now,
     });
 
     this.command = options.command;

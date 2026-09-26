@@ -1,8 +1,11 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const pkg = require("./package.json");
+const withAndroidAsyncStorageSize = require("./plugins/with-android-async-storage-size");
 const withAndroidProfileable = require("./plugins/with-android-profileable");
 const withFdroidAutolinking = require("./plugins/with-fdroid-autolinking");
+const withPasteInput = require("./plugins/with-paste-input");
+const withAndroidScroll = require("./modules/paseo-scroll/app.plugin");
 const { getNativeReleaseVersion } = require("./native-release-version");
 const appVariant = process.env.APP_VARIANT ?? "production";
 const isFdroidBuild = process.env.PASEO_FDROID_BUILD === "1";
@@ -64,8 +67,8 @@ function resolveSecretFile(params) {
 
 const variants = {
   production: {
-    name: "Paseo",
-    packageId: "sh.paseo",
+    name: "Paseo Hub",
+    packageId: "sh.paseo.hub",
     googleServicesFile: resolveSecretFile({
       envKey: "GOOGLE_SERVICES_FILE_PROD",
       fallbackRelativePath: "./.secrets/google-services.prod.json",
@@ -73,6 +76,18 @@ const variants = {
     googleServiceInfoPlist: resolveSecretFile({
       envKey: "GOOGLE_SERVICE_INFO_PLIST_PROD",
       fallbackRelativePath: "./.secrets/GoogleService-Info.prod.plist",
+    }),
+  },
+  upstream: {
+    name: "Paseo",
+    packageId: "sh.paseo",
+    googleServicesFile: resolveSecretFile({
+      envKey: "GOOGLE_SERVICES_FILE_UPSTREAM",
+      fallbackRelativePath: "./.secrets/google-services.upstream.json",
+    }),
+    googleServiceInfoPlist: resolveSecretFile({
+      envKey: "GOOGLE_SERVICE_INFO_PLIST_UPSTREAM",
+      fallbackRelativePath: "./.secrets/GoogleService-Info.upstream.plist",
     }),
   },
   development: {
@@ -91,12 +106,16 @@ const variants = {
 
 const variant = variants[appVariant] ?? variants.production;
 const nativeReleaseVersion = getNativeReleaseVersion(pkg.version);
+// Strip the trailing git-hash suffix (e.g. -hub-e31e7ccbd → -hub) so the
+// Android versionName / iOS display version preserves the fork branding while
+// keeping native versionCode derived from clean semver.
+const displayVersion = pkg.version.replace(/-[0-9a-f]{7,40}$/, "");
 
 export default {
   expo: {
     name: variant.name,
     slug: "voice-mobile",
-    version: nativeReleaseVersion.appVersion,
+    version: displayVersion,
     orientation: "portrait",
     icon: "./assets/images/icon.png",
     scheme: "paseo",
@@ -116,7 +135,7 @@ export default {
     },
     android: {
       adaptiveIcon: {
-        backgroundColor: "#000000",
+        backgroundColor: "#7DD3FC",
         foregroundImage: "./assets/images/android-icon-foreground.png",
       },
       edgeToEdgeEnabled: true,
@@ -138,6 +157,9 @@ export default {
     },
     plugins: [
       "expo-router",
+      withPasteInput,
+      withAndroidScroll,
+      [withAndroidAsyncStorageSize, 64],
       ...buildProfile.cameraPlugins,
       [
         "expo-splash-screen",
@@ -184,9 +206,9 @@ export default {
       profileBuild: isProfileBuild,
       router: {},
       eas: {
-        projectId: "0e7f65ce-0367-46c8-a238-2b65963d235a",
+        projectId: "511556a6-8eab-4fc4-bdae-cf9ce5167f7f",
       },
     },
-    owner: "getpaseo",
+    owner: "ddv0623",
   },
 };

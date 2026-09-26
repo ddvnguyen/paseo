@@ -40,7 +40,6 @@ export interface ProjectEditSheetProps {
 export function ProjectEditSheet({
   visible,
   onClose,
-  serverId,
   projectId,
   projectViewKey,
   client,
@@ -60,7 +59,6 @@ export function ProjectEditSheet({
       submitProjectEdit({ client, projectId, submission }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["projects"] });
-      queryClient.invalidateQueries({ queryKey: ["projectIcon", serverId] });
       toast.show(t("settings.project.edit.savedToast"), { variant: "success" });
       onClose();
     },
@@ -83,7 +81,7 @@ export function ProjectEditSheet({
     form.setPickedImage({
       fileName: file.fileName,
       mimeType: file.mimeType,
-      data: Buffer.from(file.bytes).toString("base64"),
+      data: Buffer.from(await file.readBytes()).toString("base64"),
     });
   }, [form, pickFiles]);
 

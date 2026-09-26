@@ -1,0 +1,24 @@
+diff --git a/node_modules/@codebuff/sdk/dist/index.cjs b/node_modules/@codebuff/sdk/dist/index.cjs
+index d7fc4c0..8a264af 100644
+--- a/node_modules/@codebuff/sdk/dist/index.cjs
++++ b/node_modules/@codebuff/sdk/dist/index.cjs
+@@ -37207,6 +37207,7 @@ function getProviderOptions(params2) {
+     codebuff: {
+       ...providerOptions?.codebuff,
+       codebuff_metadata: {
++        ...globalThis.__freebuffExtraCodebuffMetadata,
+         run_id: runId,
+         client_id: clientSessionId,
+         ...n && { n },
+diff --git a/node_modules/@codebuff/sdk/dist/index.mjs b/node_modules/@codebuff/sdk/dist/index.mjs
+index 5bb5302..60adc54 100644
+--- a/node_modules/@codebuff/sdk/dist/index.mjs
++++ b/node_modules/@codebuff/sdk/dist/index.mjs
+@@ -37152,6 +37152,7 @@ function getProviderOptions(params2) {
+     codebuff: {
+       ...providerOptions?.codebuff,
+       codebuff_metadata: {
++        ...globalThis.__freebuffExtraCodebuffMetadata,
+         run_id: runId,
+         client_id: clientSessionId,
+         ...n && { n },

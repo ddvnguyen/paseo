@@ -1,3 +1,5 @@
+import { TerminalFind, type TerminalPaneFindHandle } from "@/terminal/find";
+import type { TerminalFindResult } from "@/terminal/runtime/terminal-emulator-runtime";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -14,7 +16,7 @@ import {
 } from "@getpaseo/protocol/terminal-input-mode";
 import { useTranslation } from "react-i18next";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
-import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
+import { useKeyboardShiftStyle } from "@/keyboard/shift";
 import { useAppActivelyVisible } from "@/hooks/use-app-visible";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import {
@@ -232,7 +234,7 @@ export function TerminalPane({
 
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
-  const isTerminalActive = retainedPanelActive && isWorkspaceFocused;
+  const isTerminalPresented = retainedPanelActive && isWorkspaceFocused;
   const supportsTerminalRestoreModes = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.["terminal-restore-modes"] === true,
   );
@@ -267,9 +269,15 @@ export function TerminalPane({
   const [resizeRequestToken, setResizeRequestToken] = useState(0);
   useBlockMobilePanelOpenGestures(isMobile && isWorkspaceFocused && isPaneFocused && hasSelection);
   const emulatorRef = useRef<TerminalEmulatorHandle>(null);
+  const findRef = useRef<TerminalPaneFindHandle>(null);
+  const handleFindRequest = useCallback(() => findRef.current?.open(), []);
+  const handleFindResult = useCallback(
+    (result: TerminalFindResult) => findRef.current?.update(result),
+    [],
+  );
   const terminalIdRef = useRef<string>(terminalId);
-  const terminalActiveRef = useRef(isTerminalActive);
-  terminalActiveRef.current = isTerminalActive;
+  const terminalPresentedRef = useRef(isTerminalPresented);
+  terminalPresentedRef.current = isTerminalPresented;
   const inputModeRef = useRef<TerminalInputModeState>(DEFAULT_TERMINAL_INPUT_MODE_STATE);
   const pendingTerminalInputRef = useRef<PendingTerminalInput[]>([]);
   const keyboardRefitTimeoutsRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
@@ -326,6 +334,7 @@ export function TerminalPane({
   }, [isMobile, isWorkspaceFocused, mobileView]);
   const handleRendererReadyChange = useCallback(
     (change: TerminalRendererReadyChange) => {
+      if (!change.isReady && change.streamKey === terminalStreamKey) findRef.current?.reset();
       setRendererReadyStreamKey((current) => applyTerminalRendererReadyChange(current, change));
       if (!shouldReplayTerminalSnapshotForRenderer({ change, terminalStreamKey })) {
         return;
@@ -356,7 +365,7 @@ export function TerminalPane({
 
   useEffect(() => {
     const canRequest = canRequestFocusClaim({
-      isWorkspaceFocused: isTerminalActive,
+      isWorkspaceFocused: isTerminalPresented,
       isPaneFocused,
       isAppActivelyVisible,
       isClientReady: client !== null,
@@ -378,7 +387,7 @@ export function TerminalPane({
     isAppActivelyVisible,
     isConnected,
     isPaneFocused,
-    isTerminalActive,
+    isTerminalPresented,
     rendererReadyStreamKey,
     requestTerminalReflow,
     scopeKey,
@@ -449,31 +458,11 @@ export function TerminalPane({
     [handleKeyboardChange],
   );
 
-  useEffect(() => {
-    if (!client || !isConnected || !isTerminalActive) {
-      return;
-    }
-
-    return client.on("terminal_stream_exit", (message) => {
-      if (message.type !== "terminal_stream_exit") {
-        return;
-      }
-
-      const exitedTerminalId = message.payload.terminalId;
-      if (!exitedTerminalId) {
-        return;
-      }
-
-      workspaceTerminalSession.snapshots.clear({ terminalId: exitedTerminalId });
-      if (terminalIdRef.current === exitedTerminalId) {
-        emulatorRef.current?.clear();
-      }
-      streamControllerRef.current?.handleTerminalExit({
-        terminalId: exitedTerminalId,
-      });
-      setModifiers({ ...EMPTY_MODIFIERS });
-    });
-  }, [client, isConnected, isTerminalActive, workspaceTerminalSession.snapshots]);
+  const handleStreamExit = useStableEvent((exitedTerminalId: string) => {
+    workspaceTerminalSession.snapshots.clear({ terminalId: exitedTerminalId });
+    if (terminalIdRef.current === exitedTerminalId) emulatorRef.current?.clear();
+    setModifiers({ ...EMPTY_MODIFIERS });
+  });
 
   useEffect(() => {
     measuredTerminalSizeRef.current = null;
@@ -488,7 +477,7 @@ export function TerminalPane({
   const getPreferredStreamSize = useStableEvent(() => {
     if (
       !canRequestFocusClaim({
-        isWorkspaceFocused: terminalActiveRef.current,
+        isWorkspaceFocused: terminalPresentedRef.current,
         isPaneFocused,
         isAppActivelyVisible,
         isClientReady: client !== null,
@@ -503,7 +492,7 @@ export function TerminalPane({
 
   const handleStreamOutput = useStableEvent(
     ({ terminalId: outputTerminalId, data }: { terminalId: string; data: Uint8Array }) => {
-      if (!terminalActiveRef.current || terminalIdRef.current !== outputTerminalId) {
+      if (terminalIdRef.current !== outputTerminalId) {
         return;
       }
       emulatorRef.current?.writeOutput(data);
@@ -513,7 +502,7 @@ export function TerminalPane({
   const handleStreamRestore = useStableEvent(
     ({ terminalId: restoreTerminalId, data }: { terminalId: string; data: Uint8Array }) => {
       workspaceTerminalSession.snapshots.clear({ terminalId: restoreTerminalId });
-      if (!terminalActiveRef.current || terminalIdRef.current !== restoreTerminalId) {
+      if (terminalIdRef.current !== restoreTerminalId) {
         return;
       }
       emulatorRef.current?.restoreOutput(data);
@@ -523,7 +512,7 @@ export function TerminalPane({
   const handleStreamSnapshot = useStableEvent(
     ({ terminalId: snapshotTerminalId, state }: { terminalId: string; state: TerminalState }) => {
       workspaceTerminalSession.snapshots.set({ terminalId: snapshotTerminalId, state });
-      if (!terminalActiveRef.current || terminalIdRef.current !== snapshotTerminalId) {
+      if (terminalIdRef.current !== snapshotTerminalId) {
         return;
       }
       emulatorRef.current?.renderSnapshot(state);
@@ -534,7 +523,7 @@ export function TerminalPane({
     resolveTerminalRestoreOptions({
       supportsTerminalRestoreModes,
       canClaimSize: canRequestFocusClaim({
-        isWorkspaceFocused: terminalActiveRef.current,
+        isWorkspaceFocused: terminalPresentedRef.current,
         isPaneFocused,
         isAppActivelyVisible,
         isClientReady: client !== null,
@@ -561,6 +550,7 @@ export function TerminalPane({
       onOutput: handleStreamOutput,
       onRestore: handleStreamRestore,
       onSnapshot: handleStreamSnapshot,
+      onExit: handleStreamExit,
       getRestoreOptions: getStreamRestoreOptions,
       onStatusChange: handleStreamControllerStatus,
     });
@@ -581,6 +571,7 @@ export function TerminalPane({
     handleStreamOutput,
     handleStreamRestore,
     handleStreamSnapshot,
+    handleStreamExit,
     isConnected,
   ]);
 
@@ -590,7 +581,7 @@ export function TerminalPane({
       terminalId,
       terminalStreamKey,
       rendererReadyStreamKey,
-      isWorkspaceFocused: isTerminalActive,
+      isWorkspaceFocused,
     });
     streamControllerRef.current?.setTerminal({
       terminalId: nextTerminalId,
@@ -598,7 +589,7 @@ export function TerminalPane({
   }, [
     client,
     isConnected,
-    isTerminalActive,
+    isWorkspaceFocused,
     rendererReadyStreamKey,
     terminalId,
     terminalStreamKey,
@@ -789,7 +780,7 @@ export function TerminalPane({
       forceClaim: input.forceClaim ?? false,
       supportsTerminalSizeOwnership,
       readiness: {
-        isWorkspaceFocused: isTerminalActive,
+        isWorkspaceFocused: isTerminalPresented,
         isPaneFocused,
         isAppActivelyVisible,
         isClientReady: client !== null,
@@ -1024,7 +1015,7 @@ export function TerminalPane({
     }
   };
   const showLoadingOverlay = shouldShowTerminalLoadingOverlay({
-    isWorkspaceFocused: isTerminalActive,
+    isWorkspaceFocused: isTerminalPresented,
     hasStreamError: Boolean(streamError),
     isAttaching,
     rendererReadyStreamKey,
@@ -1060,6 +1051,8 @@ export function TerminalPane({
             onRendererReadyChange={handleRendererReadyChange}
             onSwipeRight={handleSwipeRight}
             onSwipeLeft={handleSwipeLeft}
+            onFindRequest={handleFindRequest}
+            onFindResult={handleFindResult}
             onInput={handleTerminalData}
             onFocus={handleTerminalFocus}
             onResize={handleTerminalResize}
@@ -1074,6 +1067,16 @@ export function TerminalPane({
             resizeRequestToken={resizeRequestToken}
           />
         </View>
+
+        <TerminalFind
+          key={terminalStreamKey}
+          ref={findRef}
+          terminal={emulatorRef}
+          active={
+            isTerminalPresented && isPaneFocused && rendererReadyStreamKey === terminalStreamKey
+          }
+          focusTerminal={requestTerminalFocus}
+        />
 
         {showLoadingOverlay ? (
           <View style={styles.attachOverlay} pointerEvents="none" testID="terminal-attach-loading">
@@ -1151,7 +1154,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   statusError: {
     color: theme.colors.destructive,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
   },
   keyboardContainer: {
     borderTopWidth: 1,
@@ -1189,7 +1192,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   keyButtonText: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.medium,
     textAlign: "center",
   },
@@ -1204,7 +1207,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   stateText: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     textAlign: "center",
   },
 }));

@@ -121,7 +121,7 @@ test("createAgent without an initial prompt returns an idle snapshot", async () 
 
   try {
     await client.connect();
-    await client.fetchAgents({ subscribe: { subscriptionId: "create-no-prompt" } });
+    await client.fetchAgents({ subscribe: {} });
 
     const agent = await client.createAgent({
       provider: "codex",
@@ -185,7 +185,7 @@ test("createAgent with background initialPrompt returns a running snapshot befor
 
   try {
     await client.connect();
-    await client.fetchAgents({ subscribe: { subscriptionId: "create-background-prompt" } });
+    await client.fetchAgents({ subscribe: {} });
 
     const agent = await client.createAgent({
       provider: "codex",
@@ -415,7 +415,7 @@ test("createAgent fails when the initial turn cannot start", async () => {
 
   try {
     await client.connect();
-    await client.fetchAgents({ subscribe: { subscriptionId: "create-start-failure" } });
+    await client.fetchAgents({ subscribe: {} });
 
     await expect(
       client.createAgent({
@@ -1188,6 +1188,42 @@ test("finds workspace files inside the OpenCode directory", async () => {
   }
 }, 30000);
 
+test("opens an exact gitignored workspace path without offering it as a suggestion", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "paseo-gitignored-suggestion-"));
+  const target = path.join(cwd, "generated", "notes.md");
+
+  try {
+    execSync("git init -q", { cwd });
+    writeFileSync(path.join(cwd, ".gitignore"), "generated/\n");
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, "generated notes\n");
+    writeFileSync(path.join(cwd, "notes.md"), "tracked notes\n");
+
+    const exactResult = await ctx.client.getDirectorySuggestions({
+      cwd,
+      query: "generated/notes.md",
+      includeFiles: true,
+      includeDirectories: false,
+      matchMode: "suffix",
+      limit: 1,
+    });
+    const discoveryResult = await ctx.client.getDirectorySuggestions({
+      cwd,
+      query: "notes",
+      includeFiles: true,
+      includeDirectories: false,
+      limit: 20,
+    });
+
+    expect(exactResult.error).toBeNull();
+    expect(exactResult.entries).toEqual([{ path: "generated/notes.md", kind: "file" }]);
+    expect(discoveryResult.error).toBeNull();
+    expect(discoveryResult.entries).toEqual([{ path: "notes.md", kind: "file" }]);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 30000);
+
 test("receives server_info on websocket connect", async () => {
   const client = new DaemonClient({
     url: `ws://127.0.0.1:${ctx.daemon.port}/ws`,
@@ -1289,7 +1325,7 @@ test("creates agent and exercises lifecycle", async () => {
   const cwd = tmpCwd();
 
   await ctx.client.fetchAgents({
-    subscribe: { subscriptionId: "daemon-client-lifecycle" },
+    subscribe: {},
   });
 
   const agentUpdatePromise = waitForSignal(15000, (resolve) => {
@@ -1437,7 +1473,7 @@ test("creates agent and exercises lifecycle", async () => {
       sawAssistantMessage = true;
     }
   });
-  const unsubscribeRawStream = ctx.client.on("agent_stream", (message) => {
+  const unsubscribeRawStream = ctx.client.subscribeAgentTimeline(agent.id, (message) => {
     if (message.type !== "agent_stream") {
       return;
     }

@@ -1,0 +1,59 @@
+# Paseo systemd --user unit: paseo-test.service (TEST daemon, :6868)
+#
+# Install:
+#   cp deploy/systemd/paseo-test.service    ~/.config/systemd/user/
+#   cp deploy/systemd/paseo-prestart.sh     ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now paseo-test.service
+#
+# Consolidation (2026-09): PASEO_HOME and the runtime tree now live together
+# under $HOME/paseo/TEST. The runtime node_modules are installed by the
+# "deploy-test" pipeline stage (TEST_HOME=/home/ddv/paseo/TEST).
+#
+# TEST is isolated from PROD via a dedicated PASEO_HOME, port 6868, and its own
+# cgroup, so restarting paseo.service can never take TEST down with it.
+[Unit]
+Description=Paseo TEST instance (bun 1.4 build, isolated PASEO_HOME)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment="PASEO_HOME=%h/paseo/TEST"
+Environment="PASEO_PID_FILE=%h/paseo/TEST/paseo.pid"
+Environment="PASEO_PRESTART_PORT=6868"
+Environment="PASEO_LISTEN=0.0.0.0:6868"
+Environment="PASEO_HOSTNAMES=paseo-test.ddvnguyen.com"
+Environment="PASEO_WEB_UI_ENABLED=false"
+Environment="PASEO_RELAY_ENABLED=true"
+Environment="PASEO_RELAY_ENDPOINT=relay.paseo.sh:443"
+Environment="PASEO_RELAY_USE_TLS=true"
+Environment="PASEO_APP_BASE_URL=https://paseo.ddvnguyen.com"
+# Run the `pi` agent provider under Bun 1.4 via a wrapper (PI_COMMAND is
+# exec'd as a single binary by the pi provider client). Scoped to this unit
+# only — the prod paseo.service is unaffected.
+Environment="PI_COMMAND=%h/.local/bin/pi-bun"
+# --- Lean OpenCode for TEST: headless, low-RAM, node-free, isolated config ---
+# OPENCODE_PURE disables external plugins; OPENCODE_CONFIG is merged last and
+# authoritative (lsp:false, mcp:{} -> no Node/Python MCP children); project
+# opencode.json (PROD's) is ignored so TEST never inherits PROD tooling.
+Environment="OPENCODE_PURE=1"
+Environment="OPENCODE_CONFIG=/home/ddv/.opencode-bun-rust/opencode.jsonc"
+Environment="OPENCODE_DISABLE_PROJECT_CONFIG=1"
+Environment="LD_LIBRARY_PATH=%h/paseo/TEST/node_modules/sherpa-onnx-linux-x64"
+# Prepend our persistent, Bun-1.4-built OpenCode (opencode-bun-rust, built
+# from upstream v1.18.22) so Paseo TEST resolves it ahead of the shared
+# /home/ddv/.opencode/bin (which embeds Bun 1.3.14).
+Environment=PATH=%h/.opencode-bun-rust/bin:%h/.bun/bin:%h/.nvm/versions/node/v24.15.0/bin:%h/.local/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/paseo/TEST
+ExecStartPre=%h/.config/systemd/user/paseo-prestart.sh
+ExecStart=%h/paseo/TEST/paseo-bun daemon start --foreground --listen 0.0.0.0:6868 --no-web-ui
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paseo-test
+
+[Install]
+WantedBy=default.target

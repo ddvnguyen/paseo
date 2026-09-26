@@ -1,6 +1,7 @@
 import type { Dirent, Stats } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
+import { scorePathMatch, type MatchScore } from "@getpaseo/protocol/search/text-match";
 import { isPathInsideRoot } from "./path.js";
 import { runGitCommand } from "./run-git-command.js";
 
@@ -45,6 +46,7 @@ interface ChildEntry {
   name: string;
   resolvedPath: string;
   kind: DirectorySuggestionKind;
+  viaSymlink: boolean;
 }
 
 interface RawChildEntry {
@@ -63,6 +65,13 @@ interface RankedEntry extends DirectorySuggestionEntry {
   matchOffset: number;
   fuzzyScore: number;
   depth: number;
+}
+
+interface RankFields {
+  matchTier: number;
+  segmentIndex: number;
+  matchOffset: number;
+  fuzzyScore: number;
 }
 
 interface DirectoryListCacheEntry {
@@ -119,6 +128,11 @@ const IGNORED_DIRECTORY_NAMES = new Set([
 const directoryListCache = new Map<string, DirectoryListCacheEntry>();
 const gitIgnoredPathsCache = new Map<string, GitIgnoredPathsCacheEntry>();
 
+// Discovery and retrieval filter differently, on purpose. Discovery — anything that ranks or
+// browses candidates the caller has not named — drops gitignored and hidden entries, so pickers
+// do not offer build output. Retrieval of a path the caller named exactly applies no ignore or
+// hidden filtering; the only question is whether the path stays inside the root. Clicking a file
+// reference an agent wrote must open it whether or not Git tracks it.
 export async function searchDirectoryEntries(
   options: SearchDirectoryEntriesOptions,
 ): Promise<DirectorySuggestionEntry[]> {
@@ -138,10 +152,9 @@ export async function searchDirectoryEntries(
   if (exact && input.limit === 1) return [exact];
 
   const browsesRoot = input.plan.isPathQuery && !input.plan.normalizedQuery;
+  const browsesAbsoluteParent = input.plan.browseExactPath === true;
   const ranked =
-    input.plan.isPathQuery && (input.matchMode === "fuzzy" || browsesRoot)
-      ? await searchChildren(input)
-      : await searchTree(input);
+    browsesRoot || browsesAbsoluteParent ? await searchChildren(input) : await searchTree(input);
   const results = sortAndFormat(ranked, input.root, input.pathFormat).slice(0, input.limit);
   return exact
     ? [exact, ...results.filter((entry) => !sameEntry(entry, exact))].slice(0, input.limit)
@@ -188,7 +201,8 @@ async function findExactEntry(input: SearchInput): Promise<DirectorySuggestionEn
   const visiblePath = path.resolve(input.root, input.plan.normalizedQuery);
   const resolvedPath = await realpath(visiblePath).catch(() => null);
   if (!resolvedPath || !isPathInsideRoot(input.root, resolvedPath)) return null;
-  if (isGitIgnoredPath(resolvedPath, input)) return null;
+  // No ignore filtering here: the caller named this exact path, so containment above is the
+  // only question left to answer. Filtering belongs to discovery, not retrieval.
   const info = await stat(resolvedPath).catch(() => null);
   const kind = getEntryKind(info);
   if (
@@ -236,7 +250,7 @@ async function searchChildren(input: SearchInput): Promise<RankedEntry[]> {
 async function searchTree(input: SearchInput): Promise<RankedEntry[]> {
   if (!(input.maxEntriesScanned > 0)) return [];
   const roots = (await readChildren(input.root)).filter((entry) =>
-    isPathInsideRoot(input.root, entry.resolvedPath),
+    staysInsideRoot(entry, input.root),
   );
   const visited = new Set<string>([input.root]);
   const branches = roots.flatMap((entry) =>
@@ -258,7 +272,9 @@ async function searchTree(input: SearchInput): Promise<RankedEntry[]> {
     if (shouldSuggest(entry, input)) ranked.push(rank(entry, input));
     if (
       scanned >= input.maxEntriesScanned ||
-      (threshold && scanned >= threshold && hasConfidentResult(ranked, input.plan.searchTerm))
+      (threshold &&
+        scanned >= threshold &&
+        hasConfidentResult(ranked, input.plan.normalizedQuery || input.plan.searchTerm))
     )
       break;
   }
@@ -279,7 +295,7 @@ async function* walkBranch(
     return;
   visited.add(entry.resolvedPath);
   const children = (await readChildren(entry.resolvedPath)).filter((child) =>
-    isPathInsideRoot(input.root, child.resolvedPath),
+    staysInsideRoot(child, input.root),
   );
   const branches = children.flatMap((child) =>
     shouldDiscover(child, input)
@@ -314,14 +330,28 @@ async function* roundRobin<T>(branches: Array<AsyncGenerator<T>>): AsyncGenerato
   }
 }
 
+// Only a symlink can resolve outside the tree being walked. Every other child is its parent's
+// path plus a name, and the parent was already proved inside the root.
+function staysInsideRoot(entry: ChildEntry, root: string): boolean {
+  return !entry.viaSymlink || isPathInsideRoot(root, entry.resolvedPath);
+}
+
 function shouldDiscover(entry: ChildEntry, input: SearchInput): boolean {
-  if (isGitIgnoredPath(entry.resolvedPath, input)) return false;
+  if (isNewlyGitIgnored(entry, input)) return false;
   if (entry.kind === "file") {
     return input.includeFiles && !entry.name.startsWith(".");
   }
   if (IGNORED_DIRECTORY_NAMES.has(entry.name)) return false;
   if (!entry.name.startsWith(".")) return true;
   return input.hiddenDirectoryNames.has(entry.name);
+}
+
+// Traversal only descends through entries that already passed this check, so every ancestor of
+// a named child is known discoverable and only the entry itself can be newly ignored. A symlink
+// resolves to a path with different ancestors, so it still needs the full walk.
+function isNewlyGitIgnored(entry: ChildEntry, input: SearchInput): boolean {
+  if (entry.viaSymlink) return isGitIgnoredPath(entry.resolvedPath, input);
+  return input.gitIgnoredPaths.has(entry.resolvedPath);
 }
 
 function isGitIgnoredPath(absolutePath: string, input: SearchInput): boolean {
@@ -340,43 +370,121 @@ function shouldSuggest(entry: TraversedEntry, input: SearchInput): boolean {
   if (!input.plan.normalizedQuery) return true;
   if (input.matchMode === "suffix")
     return suffixMatches(entry.visiblePath, input.root, input.plan.normalizedQuery);
-  return !input.plan.searchTerm || rank(entry, input).matchTier !== NO_MATCH_TIER;
+  return rank(entry, input).matchTier !== NO_MATCH_TIER;
 }
 
 function rank(entry: TraversedEntry, input: SearchInput): RankedEntry {
   const relativePath = normalizeRelativePath(input.root, entry.visiblePath);
   const lowerPath = relativePath.toLowerCase();
-  const query = input.plan.searchTerm.toLowerCase();
+  const query = getRankQuery(input);
   const segments = lowerPath === "." ? [] : lowerPath.split("/");
-  const exact = findSegmentMatchIndex(segments, (segment) => segment === query);
-  const prefix = findSegmentMatchIndex(segments, (segment) => segment.startsWith(query));
-  const substring = findSegmentMatchIndex(segments, (segment) => segment.includes(query));
-  const offset = lowerPath.indexOf(query);
-  const fuzzyScore = scoreFuzzySubsequence(query, segments.at(-1) ?? "");
-  let matchTier = NO_MATCH_TIER;
-  let segmentIndex = NO_SEGMENT_INDEX;
-  if (!query) matchTier = 3;
-  else if (exact >= 0) {
-    matchTier = 0;
-    segmentIndex = exact;
-  } else if (prefix >= 0) {
-    matchTier = 1;
-    segmentIndex = prefix;
-  } else if (substring >= 0) {
-    matchTier = 2;
-    segmentIndex = substring;
-  } else if (input.pathFormat === "relative" ? lowerPath.startsWith(query) : offset >= 0)
-    matchTier = 3;
-  else if (fuzzyScore !== null) matchTier = 4;
+  const pathScore = query ? scorePathMatch(query, relativePath) : null;
+  const rankFields = input.plan.isPathQuery
+    ? rankPathMatch(pathScore)
+    : rankTextMatch({ query, lowerPath, pathFormat: input.pathFormat, pathScore, segments });
   return {
     path: entry.visiblePath,
     kind: entry.kind,
-    matchTier,
-    segmentIndex,
-    matchOffset: offset >= 0 ? offset : NO_MATCH_OFFSET,
-    fuzzyScore: fuzzyScore ?? NO_FUZZY_SCORE,
+    ...rankFields,
     depth: relativePath === "." ? 0 : segments.length,
   };
+}
+
+function getRankQuery(input: SearchInput): string {
+  return (
+    input.plan.isPathQuery ? input.plan.normalizedQuery : input.plan.searchTerm
+  ).toLowerCase();
+}
+
+function rankPathMatch(pathScore: MatchScore | null): RankFields {
+  return {
+    matchTier: pathScore ? Math.min(pathScore.tier, 4) : NO_MATCH_TIER,
+    segmentIndex: NO_SEGMENT_INDEX,
+    matchOffset: pathScore?.offset ?? NO_MATCH_OFFSET,
+    fuzzyScore: pathScore?.spread ?? NO_FUZZY_SCORE,
+  };
+}
+
+function rankTextMatch(input: {
+  query: string;
+  lowerPath: string;
+  pathFormat: DirectorySuggestionPathFormat;
+  pathScore: MatchScore | null;
+  segments: string[];
+}): RankFields {
+  const { query, lowerPath, pathFormat, pathScore, segments } = input;
+  const offset = lowerPath.indexOf(query);
+  const fuzzyScore = scoreFuzzySubsequence(query, segments.at(-1) ?? "");
+  if (!query) {
+    return {
+      matchTier: 3,
+      segmentIndex: NO_SEGMENT_INDEX,
+      matchOffset: NO_MATCH_OFFSET,
+      fuzzyScore: NO_FUZZY_SCORE,
+    };
+  }
+  const segmentRank = rankSegmentMatch({ query, segments, offset, fuzzyScore });
+  if (segmentRank) return segmentRank;
+  if (pathFormat === "relative" ? lowerPath.startsWith(query) : offset >= 0) {
+    return {
+      matchTier: 3,
+      segmentIndex: NO_SEGMENT_INDEX,
+      matchOffset: offset,
+      fuzzyScore: fuzzyScore ?? NO_FUZZY_SCORE,
+    };
+  }
+  if (fuzzyScore !== null) {
+    return {
+      matchTier: 4,
+      segmentIndex: NO_SEGMENT_INDEX,
+      matchOffset: offset >= 0 ? offset : NO_MATCH_OFFSET,
+      fuzzyScore,
+    };
+  }
+  return {
+    matchTier: pathScore ? Math.min(pathScore.tier, 4) : NO_MATCH_TIER,
+    segmentIndex: NO_SEGMENT_INDEX,
+    matchOffset: pathScore?.offset ?? NO_MATCH_OFFSET,
+    fuzzyScore: pathScore?.spread ?? NO_FUZZY_SCORE,
+  };
+}
+
+function rankSegmentMatch(input: {
+  query: string;
+  segments: string[];
+  offset: number;
+  fuzzyScore: number | null;
+}): RankFields | null {
+  const { query, segments, offset, fuzzyScore } = input;
+  const matchOffset = offset >= 0 ? offset : NO_MATCH_OFFSET;
+  const exact = findSegmentMatchIndex(segments, (segment) => segment === query);
+  if (exact >= 0) {
+    return {
+      matchTier: 0,
+      segmentIndex: exact,
+      matchOffset,
+      fuzzyScore: fuzzyScore ?? NO_FUZZY_SCORE,
+    };
+  }
+  const prefix = findSegmentMatchIndex(segments, (segment) => segment.startsWith(query));
+  if (prefix >= 0) {
+    return {
+      matchTier: 1,
+      segmentIndex: prefix,
+      matchOffset,
+      fuzzyScore: fuzzyScore ?? NO_FUZZY_SCORE,
+    };
+  }
+  const substring = findSegmentMatchIndex(segments, (segment) => segment.includes(query));
+  if (substring >= 0) {
+    return {
+      matchTier: 2,
+      segmentIndex: substring,
+      matchOffset,
+      fuzzyScore: fuzzyScore ?? NO_FUZZY_SCORE,
+    };
+  }
+  return null;
 }
 
 function sortAndFormat(
@@ -619,14 +727,14 @@ function toRawChildEntry(dirent: Dirent): RawChildEntry | null {
 async function resolveChild(directory: string, entry: RawChildEntry): Promise<ChildEntry | null> {
   const visiblePath = path.join(directory, entry.name);
   if (entry.kind !== "symlink") {
-    return { name: entry.name, resolvedPath: visiblePath, kind: entry.kind };
+    return { name: entry.name, resolvedPath: visiblePath, kind: entry.kind, viaSymlink: false };
   }
 
   const resolvedPath = await realpath(visiblePath).catch(() => null);
   if (!resolvedPath) return null;
   const info = await stat(resolvedPath).catch(() => null);
   const kind = getEntryKind(info);
-  return kind ? { name: entry.name, resolvedPath, kind } : null;
+  return kind ? { name: entry.name, resolvedPath, kind, viaSymlink: true } : null;
 }
 
 function getEntryKind(info: Stats | null): DirectorySuggestionKind | null {
@@ -635,10 +743,9 @@ function getEntryKind(info: Stats | null): DirectorySuggestionKind | null {
   return null;
 }
 
+// Reads already reject stale entries by expiry and by directory metadata, so this only has to
+// bound the map. Sweeping it for expired keys would cost a full pass on every cache miss.
 function pruneCache(): void {
-  if (directoryListCache.size <= DIRECTORY_LIST_CACHE_MAX_ENTRIES) return;
-  for (const [key, entry] of directoryListCache)
-    if (entry.expiresAt <= Date.now()) directoryListCache.delete(key);
   while (directoryListCache.size > DIRECTORY_LIST_CACHE_MAX_ENTRIES) {
     const key = directoryListCache.keys().next().value;
     if (!key) return;

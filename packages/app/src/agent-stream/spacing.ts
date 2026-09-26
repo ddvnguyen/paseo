@@ -1,5 +1,11 @@
+import { UnistylesRuntime } from "react-native-unistyles";
 import type { StreamItem } from "@/types/stream";
-import { SPACING } from "@/styles/theme";
+import { SPACING, type Theme } from "@/styles/theme";
+
+function csContent(token: number): number {
+  const theme = UnistylesRuntime.getTheme() as Theme;
+  return Math.round(token * (theme.contentSpacingScale ?? 0.75));
+}
 
 export function isSameAssistantBlockGroup(params: {
   item: StreamItem | null | undefined;
@@ -17,12 +23,15 @@ export function getAssistantBlockSpacing(params: {
   item: StreamItem;
   aboveItem: StreamItem | null | undefined;
   belowItem: StreamItem | null | undefined;
+  hasFooterBelow?: boolean;
 }): "default" | "compactTop" | "compactBottom" | "compactBoth" {
   if (params.item.kind !== "assistant_message") {
     return "default";
   }
   const compactTop = isSameAssistantBlockGroup({ item: params.item, other: params.aboveItem });
-  const compactBottom = isSameAssistantBlockGroup({ item: params.item, other: params.belowItem });
+  const compactBottom =
+    params.hasFooterBelow ||
+    isSameAssistantBlockGroup({ item: params.item, other: params.belowItem });
   if (compactTop && compactBottom) return "compactBoth";
   if (compactTop) return "compactTop";
   if (compactBottom) return "compactBottom";
@@ -44,17 +53,20 @@ export function getGapBetweenStreamItems(
   if (isUserMessageItem(item) && isUserMessageItem(belowItem)) {
     return SPACING[1];
   }
+  if (item.kind === "user_message" && belowItem.kind === "assistant_message") {
+    return 0;
+  }
   if (isToolSequenceItem(item) && isToolSequenceItem(belowItem)) {
     return 0;
   }
   if (item.kind === "user_message" && isToolSequenceItem(belowItem)) {
-    return SPACING[4];
+    return csContent(SPACING[4]);
   }
   if (item.kind === "assistant_message" && isToolSequenceItem(belowItem)) {
-    return SPACING[1];
+    return csContent(SPACING[1]);
   }
   if (isToolSequenceItem(item) && belowItem.kind === "assistant_message") {
-    return SPACING[1];
+    return csContent(SPACING[1]);
   }
   if (isSameAssistantBlockGroup({ item, other: belowItem })) {
     return SPACING[3];

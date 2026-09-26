@@ -326,6 +326,21 @@
                       "type": "string"
                     }
                   },
+                  "paseoTools": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "disabledTools": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  },
                   "enabled": {
                     "type": "boolean"
                   },
@@ -335,6 +350,11 @@
                 },
                 "additionalProperties": false
               }
+            },
+            "catalogRefreshTimeoutMs": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 2147483647
             }
           },
           "additionalProperties": false

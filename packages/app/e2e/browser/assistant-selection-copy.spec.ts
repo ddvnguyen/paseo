@@ -1,4 +1,4 @@
-import type { BrowserContext } from "@playwright/test";
+import type { BrowserContext, Locator } from "@playwright/test";
 import { expect, test, type Page } from "../support/fixtures";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
 
@@ -97,14 +97,20 @@ async function allowRichClipboard(context: BrowserContext): Promise<void> {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
 }
 
+/**
+ * The rows of one assistant message. A message renders one row per Markdown block, so
+ * every locator and every text walk below covers the group, not a single block.
+ */
+function assistantMessageBlocks(page: Page): Locator {
+  return page.locator("[data-message-id]").filter({ has: page.getByTestId("assistant-message") });
+}
+
 async function selectStructuredClipboardFixture(page: Page): Promise<void> {
   await selectAssistantTextRange(page, "Direct matches:", "ready");
 }
 
 async function selectAssistantElement(page: Page, selector: string): Promise<void> {
-  const assistantMessage = page.getByTestId("assistant-message").filter({
-    hasText: "Direct matches:",
-  });
+  const assistantMessage = assistantMessageBlocks(page);
   await assistantMessage.locator(selector).evaluate((element) => {
     const selection = window.getSelection();
     const range = document.createRange();
@@ -118,14 +124,57 @@ async function selectAssistantText(page: Page, text: string): Promise<void> {
   await selectAssistantTextRange(page, text, text);
 }
 
+async function selectAssistantListItemFromMarker(
+  page: Page,
+  listTag: "ol" | "ul",
+  itemText: string,
+  endText: string,
+): Promise<void> {
+  const assistantMessage = assistantMessageBlocks(page);
+  const item = assistantMessage
+    .locator(`[data-paseo-markdown-tag="${listTag}"]`)
+    .filter({ hasText: itemText })
+    .locator(':scope > [data-paseo-markdown-tag="li"]')
+    .filter({ hasText: itemText });
+
+  await item.evaluate((element, selectedEndText) => {
+    const marker = element.querySelector(':scope > [data-paseo-markdown-list-marker="true"]');
+    const markerText = marker?.firstChild;
+    if (!(markerText instanceof Text)) {
+      throw new Error("Expected rendered list marker text");
+    }
+
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let endNode: Text | null = null;
+    let endOffset = -1;
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const offset = node.textContent?.indexOf(selectedEndText) ?? -1;
+      if (node instanceof Text && offset >= 0) {
+        endNode = node;
+        endOffset = offset + selectedEndText.length;
+        break;
+      }
+    }
+    if (!endNode) {
+      throw new Error(`Could not find list item selection end: ${selectedEndText}`);
+    }
+
+    const range = document.createRange();
+    range.setStart(markerText, 0);
+    range.setEnd(endNode, endOffset);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, endText);
+}
+
 async function doubleClickAssistantMarkdownText(
   page: Page,
   tag: "code" | "strong",
   text: string,
 ): Promise<void> {
-  const assistantMessage = page.getByTestId("assistant-message").filter({
-    hasText: "Direct matches:",
-  });
+  const assistantMessage = assistantMessageBlocks(page);
   await assistantMessage
     .locator(`[data-paseo-markdown-tag="${tag}"]`)
     .filter({ hasText: text })
@@ -137,12 +186,20 @@ async function selectAssistantTextRange(
   startText: string,
   endText: string,
 ): Promise<void> {
-  const assistantMessage = page.getByTestId("assistant-message").filter({
-    hasText: "Direct matches:",
-  });
-  await assistantMessage.evaluate(
-    (element, selectedRange) => {
-      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  await assistantMessageBlocks(page).evaluateAll(
+    (blocks, selectedRange) => {
+      // The message's text nodes in reading order, across every block row.
+      const nodes: Text[] = [];
+      for (const block of blocks) {
+        const blockWalker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+        let found = blockWalker.nextNode();
+        while (found) {
+          nodes.push(found as Text);
+          found = blockWalker.nextNode();
+        }
+      }
+      let cursor = 0;
+      const walker = { nextNode: () => nodes[cursor++] ?? null };
       let startNode: Node | null = null;
       let startOffset = -1;
       let endNode: Node | null = null;
@@ -194,12 +251,20 @@ async function selectAssistantAcrossCodeLines(
   startText: string,
   endText: string,
 ): Promise<void> {
-  const assistantMessage = page.getByTestId("assistant-message").filter({
-    hasText: "Direct matches:",
-  });
-  await assistantMessage.evaluate(
-    (element, selectedRange) => {
-      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  await assistantMessageBlocks(page).evaluateAll(
+    (blocks, selectedRange) => {
+      // The message's text nodes in reading order, across every block row.
+      const nodes: Text[] = [];
+      for (const block of blocks) {
+        const blockWalker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+        let found = blockWalker.nextNode();
+        while (found) {
+          nodes.push(found as Text);
+          found = blockWalker.nextNode();
+        }
+      }
+      let cursor = 0;
+      const walker = { nextNode: () => nodes[cursor++] ?? null };
       let startNode: Node | null = null;
       let startOffset = -1;
       let textNode = walker.nextNode();
@@ -279,9 +344,7 @@ test("copying an assistant selection preserves Markdown structure and links", as
     );
     await openAgentRoute(page, agent);
 
-    const assistantMessage = page.getByTestId("assistant-message").filter({
-      hasText: "Direct matches:",
-    });
+    const assistantMessage = assistantMessageBlocks(page);
     for (const [tag, text] of [
       ["strong", "strong prose"],
       ["em", "emphasized prose"],
@@ -404,6 +467,24 @@ test("copying an assistant selection preserves Markdown structure and links", as
     expect(paragraphAndListClipboard.html).toContain(
       '<div>- <strong><a href="https://example.com/issues/1">First issue</a></strong>',
     );
+
+    await selectAssistantListItemFromMarker(page, "ul", "First issue", "failure.");
+    await copySelection(page);
+
+    const draggedBulletClipboard = await readRichClipboard(page);
+    expect(draggedBulletClipboard.plainText).toBe(
+      "- **[First issue](https://example.com/issues/1)**: exact `apply_patch` failure.",
+    );
+    expect(draggedBulletClipboard.html).toContain(
+      '<div>- <strong><a href="https://example.com/issues/1">First issue</a></strong>',
+    );
+
+    await selectAssistantListItemFromMarker(page, "ol", "Sixth item", "Sixth item");
+    await copySelection(page);
+
+    const draggedNumberClipboard = await readRichClipboard(page);
+    expect(draggedNumberClipboard.plainText).toBe("6. Sixth item");
+    expect(draggedNumberClipboard.html).toContain("<div>6. Sixth item</div>");
 
     await selectAssistantText(page, "docs");
     await copySelection(page);

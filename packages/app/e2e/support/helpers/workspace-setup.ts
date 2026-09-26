@@ -20,6 +20,7 @@ type WorkspaceSetupDaemonClient = Pick<
   | "fetchAgents"
   | "fetchWorkspaces"
   | "listTerminals"
+  | "observeEvents"
   | "removeProject"
   | "subscribeRawMessages"
 >;
@@ -35,6 +36,13 @@ export async function connectWorkspaceSetupClient(): Promise<WorkspaceSetupDaemo
   const client = await connectDaemonClient<WorkspaceSetupDaemonClient>({
     clientIdPrefix: "workspace-setup",
   });
+  // Establish demand before a caller can launch setup. Client close releases it.
+  try {
+    await client.observeEvents(["workspace_setup_progress"]).ready;
+  } catch (error) {
+    await client.close();
+    throw error;
+  }
   return withProjectOwnership(client);
 }
 
@@ -274,6 +282,11 @@ export async function navigateToWorkspaceViaSidebar(
     serverId: getServerId(),
     workspaceId,
   });
+}
+
+export async function leaveWorkspaceViaHistory(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "History", exact: true }).click();
+  await expect(page).toHaveURL(/\/sessions$/, { timeout: 30_000 });
 }
 
 export async function openWorkspaceScriptsMenu(page: Page): Promise<void> {

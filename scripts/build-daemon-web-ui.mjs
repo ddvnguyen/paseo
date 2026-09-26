@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
-import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -51,6 +51,53 @@ async function cleanTarget() {
 async function copyAssets() {
   console.log(`Copying assets to ${path.relative(REPO_ROOT, TARGET_DIST)}...`);
   await cp(SOURCE_DIST, TARGET_DIST, { recursive: true, force: true });
+}
+
+// sw.js is copied verbatim from packages/app/public/ by the Expo export, so its
+// own bytes never change between deploys that only touch static assets (icons,
+// manifest). Browsers only re-run the SW "install" handler (and thus
+// re-precache PRECACHE_URLS) when the SW script's bytes change, so a static
+// CACHE_VERSION literal in the source file would leave every returning
+// visitor stuck on stale precached icons/manifest forever. Stamping the
+// version here, at build time, forces a fresh SW + cache on every deploy
+// without anyone needing to remember to bump it.
+//
+// Deliberately read the already-stamped packages/app/package.json version
+// instead of shelling out to `git rev-parse HEAD`: deploy-web/deploy-test
+// build from a persisted build directory (see "Persist build" in the CI
+// workflow) that excludes .git and re-inits an empty repo with no commits,
+// so `git` would have nothing to resolve there. This app workspace's version
+// is written earlier, during build-hydra, by
+// scripts/sync-workspace-versions.mjs while the real .git is still present,
+// and that stamped value survives the copy. (The root package.json's own
+// version field is never rewritten by that script — only each workspace's
+// is — so it can't be used here.)
+async function stampServiceWorkerCacheVersion() {
+  const swPath = path.join(TARGET_DIST, "sw.js");
+  const swStat = await stat(swPath).catch(() => null);
+  if (!swStat?.isFile()) {
+    return;
+  }
+
+  const appPackage = JSON.parse(await readFile(path.join(APP_DIR, "package.json"), "utf8"));
+  const cacheVersion = appPackage.version;
+  if (typeof cacheVersion !== "string" || cacheVersion.length === 0) {
+    console.warn("Could not resolve packages/app/package.json version; leaving sw.js unstamped.");
+    return;
+  }
+
+  const source = await readFile(swPath, "utf8");
+  const stamped = source.replace(
+    /const CACHE_VERSION = "[^"]*";/,
+    `const CACHE_VERSION = "${cacheVersion}";`,
+  );
+  if (stamped === source) {
+    console.warn("sw.js CACHE_VERSION marker not found; leaving sw.js unstamped.");
+    return;
+  }
+
+  await writeFile(swPath, stamped);
+  console.log(`Stamped sw.js CACHE_VERSION to ${cacheVersion}`);
 }
 
 async function compressFile(filePath) {
@@ -126,6 +173,7 @@ async function main() {
 
   await cleanTarget();
   await copyAssets();
+  await stampServiceWorkerCacheVersion();
   await precompressAssets(TARGET_DIST);
 
   const sizes = await measureBundle(TARGET_DIST);

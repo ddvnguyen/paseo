@@ -1,3 +1,7 @@
+import {
+  createMessageReceiptsStub,
+  createTestCreationService,
+} from "./test-utils/session-stubs.js";
 import pino from "pino";
 import { z } from "zod";
 import { describe, expect, test } from "vitest";
@@ -11,6 +15,8 @@ import {
   type SessionOutboundMessage,
 } from "@getpaseo/protocol/messages";
 import { Session, type SessionOptions } from "./session.js";
+import { OWNER_PERMISSIONS } from "./authorization/index.js";
+import { DirectorySyncService } from "./directory-sync/index.js";
 import { createProviderSnapshotManagerStub } from "./test-utils/session-stubs.js";
 import type { AgentTimelineRow } from "./agent/agent-manager.js";
 import { InMemoryAgentTimelineStore } from "./agent/agent-timeline-store.js";
@@ -180,7 +186,9 @@ class InMemoryWorktreeWorkflow {
 
 function createSessionForWireCompatTest(options?: {
   clientCapabilities?: Record<string, unknown> | null;
+  directorySync?: DirectorySyncService;
   messages?: SessionOutboundMessage[];
+  onMessageToSource?: SessionOptions["onMessageToSource"];
   rows?: AgentTimelineRow[];
 }): Session {
   const messages = options?.messages ?? [];
@@ -203,13 +211,16 @@ function createSessionForWireCompatTest(options?: {
   ];
 
   const session = new Session({
+    messageReceipts: createMessageReceiptsStub(),
+    creationService: createTestCreationService(),
     clientId: "wire-compat-client",
-    scopes: ["*"],
+    permissions: OWNER_PERMISSIONS,
     clientCapabilities: options?.clientCapabilities ?? null,
     onMessage: (message) => messages.push(message),
+    onMessageToSource: options?.onMessageToSource ?? ((_source, message) => messages.push(message)),
     logger: pino({ level: "silent" }),
     downloadTokenStore: {} as SessionOptions["downloadTokenStore"],
-    pushTokenStore: {} as SessionOptions["pushTokenStore"],
+    pushNotifications: {} as SessionOptions["pushNotifications"],
     paseoHome: "/tmp/paseo-home",
     agentManager: new InMemoryAgentManager(
       options?.rows ?? rows,
@@ -218,9 +229,8 @@ function createSessionForWireCompatTest(options?: {
     projectRegistry: new EmptyProjectRegistry() as unknown as SessionOptions["projectRegistry"],
     workspaceRegistry:
       new EmptyWorkspaceRegistry() as unknown as SessionOptions["workspaceRegistry"],
-    chatService: {} as SessionOptions["chatService"],
+    directorySync: options?.directorySync,
     scheduleService: {} as SessionOptions["scheduleService"],
-    loopService: {} as SessionOptions["loopService"],
     checkoutDiffManager: {
       scheduleRefreshForCwd() {},
       onWorkspaceStateMayHaveChanged() {},
@@ -271,6 +281,7 @@ function createSessionForWireCompatTest(options?: {
     terminalManager: null,
   });
 
+  session.updateClientCapabilities(options?.clientCapabilities ?? null, {});
   return session;
 }
 
@@ -306,7 +317,7 @@ async function emitTimelineResponse(options?: {
 }
 
 describe("wire compatibility", () => {
-  test("sends project updates only to clients that declare support", () => {
+  test("sends project updates only to clients that declare support", async () => {
     const project = createPersistedProjectRecord({
       projectId: "project-1",
       rootPath: "/tmp/project",
@@ -324,22 +335,27 @@ describe("wire compatibility", () => {
       messages: capableMessages,
     });
 
-    legacy.emitProjectUpdate({ kind: "upsert", project });
-    legacy.emitProjectUpdate({ kind: "remove", projectId: project.projectId });
-    capable.emitProjectUpdate({ kind: "upsert", project });
-    capable.emitProjectUpdate({ kind: "remove", projectId: project.projectId });
+    await Promise.all([
+      legacy.emitProjectUpdate({ kind: "upsert", project }),
+      legacy.emitProjectUpdate({ kind: "remove", projectId: project.projectId }),
+      capable.emitProjectUpdate({ kind: "upsert", project }),
+      capable.emitProjectUpdate({ kind: "remove", projectId: project.projectId }),
+    ]);
 
     expect(legacyMessages).toEqual([]);
     expect(capableMessages.map((message) => SessionOutboundMessageSchema.parse(message))).toEqual([
       {
         type: "project.update",
         payload: {
+          generation: expect.any(String),
+          seq: 1,
           kind: "upsert",
           project: {
             projectId: "project-1",
             projectDisplayName: "Favorite project",
             projectCustomName: "Favorite project",
             projectCustomIconRevision: null,
+            projectIconRevision: "automatic:none:v1",
             projectRootPath: "/tmp/project",
             projectKind: "git",
           },
@@ -347,9 +363,53 @@ describe("wire compatibility", () => {
       },
       {
         type: "project.update",
-        payload: { kind: "remove", projectId: "project-1" },
+        payload: { kind: "remove", projectId: "project-1", generation: expect.any(String), seq: 2 },
       },
     ]);
+  });
+
+  test("publishes rapid project mutations in order before incremental reconciliation", async () => {
+    const directorySync = new DirectorySyncService("generation");
+    const initial = directorySync.synchronizeProjects([], {});
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForWireCompatTest({
+      clientCapabilities: { [CLIENT_CAPS.projectUpdates]: true },
+      directorySync,
+      messages,
+    });
+    const project = createPersistedProjectRecord({
+      projectId: "project-ordered",
+      rootPath: "/tmp/project-ordered",
+      kind: "git",
+      displayName: "Ordered project",
+      createdAt: "2026-07-15T00:00:00.000Z",
+      updatedAt: "2026-07-15T00:00:00.000Z",
+    });
+
+    await Promise.all([
+      session.emitProjectUpdate({ kind: "upsert", project }),
+      session.emitProjectUpdate({ kind: "remove", projectId: project.projectId }),
+    ]);
+
+    expect(
+      messages.flatMap((message) =>
+        message.type === "project.update" ? [message.payload.kind] : [],
+      ),
+    ).toEqual(["upsert", "remove"]);
+    expect(
+      directorySync.synchronizeProjects([], {
+        generation: initial.sync.generation,
+        afterSeq: initial.sync.headSeq,
+      }),
+    ).toEqual({
+      projects: [],
+      sync: {
+        generation: "generation",
+        mode: "changes",
+        headSeq: 2,
+        removals: [{ id: "project-ordered", seq: 2 }],
+      },
+    });
   });
 
   test("downgrades reasoning_merge for clients that do not declare the capability", async () => {
@@ -369,6 +429,32 @@ describe("wire compatibility", () => {
 
     const currentParsed = FetchAgentTimelineResponseMessageSchema.parse(response);
     expect(currentParsed.payload.entries[0]?.collapsed).toContain("reasoning_merge");
+  });
+
+  test("carries canonical turn IDs to new clients while legacy schemas ignore them", async () => {
+    const response = await emitTimelineResponse({
+      rows: [
+        {
+          seq: 1,
+          timestamp: "2026-05-02T00:00:00.000Z",
+          turnId: "turn-1",
+          item: { type: "user_message", text: "prompt", clientMessageId: "message-1" },
+        },
+        {
+          seq: 2,
+          timestamp: "2026-05-02T00:00:01.000Z",
+          turnId: "turn-1",
+          item: { type: "assistant_message", text: "done" },
+        },
+      ],
+    });
+
+    expect(FetchAgentTimelineResponseMessageSchema.parse(response).payload.entries).toEqual(
+      expect.arrayContaining([expect.objectContaining({ turnId: "turn-1" })]),
+    );
+    expect(LegacyFetchAgentTimelineResponseMessageSchema.parse(response).payload.entries).toEqual(
+      expect.arrayContaining([expect.not.objectContaining({ turnId: expect.anything() })]),
+    );
   });
 
   test("legacy worktree request shape normalizes to the same internal input as the new shape", async () => {
@@ -465,4 +551,93 @@ describe("wire compatibility", () => {
       paseoHome: "/tmp/paseo-home",
     });
   });
+});
+
+test("setup progress is adapted per socket without changing the canonical snapshot", async () => {
+  const legacy = {};
+  const capable = {};
+  const modern = {};
+  const modernCapable = {};
+  const delivered = new Map<object, SessionOutboundMessage[]>();
+  const session = createSessionForWireCompatTest({
+    onMessageToSource: (source, message) =>
+      delivered.set(source, [...(delivered.get(source) ?? []), message]),
+  });
+  for (const [source, blocked, owned] of [
+    [legacy, false, false],
+    [capable, true, false],
+    [modern, false, true],
+    [modernCapable, true, true],
+  ] as const) {
+    session.updateClientCapabilities(
+      {
+        explicit_event_subscriptions: true,
+        owned_subscriptions: owned,
+        workspace_setup_blocked: blocked,
+      },
+      source,
+    );
+    await session.handleMessage(
+      {
+        type: "session.events.set_subscription.request",
+        requestId: "setup",
+        events: ["workspace_setup_progress"],
+      },
+      source,
+    );
+    expect(delivered.get(source)).toContainEqual(
+      expect.objectContaining({ type: "session.events.set_subscription.response" }),
+    );
+  }
+  delivered.clear();
+  const message = {
+    type: "workspace_setup_progress" as const,
+    payload: {
+      workspaceId: "fork-workspace",
+      status: "blocked" as const,
+      error: null,
+      detail: {
+        type: "worktree_setup" as const,
+        worktreePath: "/workspace",
+        branchName: "fork",
+        log: "",
+        commands: [],
+      },
+      blockedSource: {
+        kind: "change_request" as const,
+        forge: "github",
+        number: 42,
+        headRepository: "contributor/project",
+      },
+    },
+  };
+  session.publish(message);
+  expect(delivered.get(capable)).toEqual([message]);
+  expect(delivered.get(legacy)).toEqual([
+    {
+      ...message,
+      payload: {
+        ...message.payload,
+        status: "failed",
+        error:
+          "Workspace setup is blocked pending approval of code from a fork pull request. Update Paseo to review and run setup.",
+      },
+    },
+  ]);
+  expect(delivered.get(modernCapable)).toEqual([
+    { ...message, payload: { ...message.payload, subscriptionId: expect.any(String) } },
+  ]);
+  expect(delivered.get(modern)).toEqual([
+    {
+      ...message,
+      payload: {
+        ...message.payload,
+        status: "failed",
+        error: expect.stringContaining("Update Paseo"),
+        subscriptionId: expect.any(String),
+      },
+    },
+  ]);
+  expect(message.payload.status).toBe("blocked");
+  await session.cleanup();
 });

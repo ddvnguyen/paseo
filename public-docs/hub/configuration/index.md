@@ -1,84 +1,147 @@
 ---
 title: Hub configuration
-description: Where a project's configuration comes from, how GitHub sync works, and how revisions activate and roll back.
+description: Generate, edit, and deploy organization triggers from your repository.
 nav: Configuration
-order: 68
+order: 70
 category: Hub
 ---
 
 # Hub configuration
 
-A project is configured by one versioned document. The project's **Configuration** tab shows the active revision, its source, and the last synchronization attempt.
+Each organization trigger is one self-contained YAML file. Keep triggers in your repository and deploy them with `paseo hub deploy`:
 
-## Sources
+```text
+.paseo/
+└── triggers/
+    └── <trigger>.yml
+```
 
-A configuration comes from exactly one source:
+## Generated starter trigger
 
-- **GitHub source**: one repository, the file `.paseo/hub.yml`, on the repository's current default branch.
-- **Manual source**: edited in the dashboard and saved with **Save and activate**.
-- **CLI/API install**: YAML sent explicitly with an organization API key.
+Run `paseo hub init` from the repository the agent should work in. Setup selects an app connection and an available agent runtime, asks which user may trigger it, validates the result, and writes one file. It then asks whether to deploy. Interactive `paseo hub login` connects the daemon and points to this command; it does not write trigger files.
 
-Pick a GitHub source by choosing a repository and clicking **Use for configuration**. That syncs immediately and enables automatic deployment.
+For a Slack connection named `my-team`, the generated document looks like this:
 
-The path and the branch are fixed. There is no setting for either.
+```yaml
+# .paseo/triggers/slack-help.yml
+name: slack-help
+enabled: true
+on:
+  slack.mention:
+    connection: my-team
+    filters:
+      from_users: [U01234567]
+max_runtime: 2h
+run:
+  target:
+    daemon: my-macbook
+    cwd: /Users/you/code/your-repo
+  agent:
+    provider: codex
+    model: gpt-5
+    mode: full-access
+  continuation:
+    mode: conversation
+  max_runtime: 90m
+  idle_timeout: 10m
+  prompt: |
+    Answer with hub.reply, then complete this request and call hub.finish_execution when done.
+
+    <user-prompt>
+    ${{ paseo.prompt }}
+    </user-prompt>
+  outputs:
+    slack.reply:
+      max: 1
+      required: true
+```
+
+`connection` is the app connection's slug in your organization. `target.daemon` is the connected daemon's slug and `target.cwd` is the absolute directory where you ran setup. `agent` contains the provider, model, and execution mode you selected from the daemon. The mode is required.
+
+`continuation.mode: conversation` keeps follow-ups in the same provider conversation on the same agent. The prompt asks the agent to reply and then call `hub.finish_execution`; replying alone does not finish the execution.
+
+A Discord starter uses `discord.mention`, your Discord user ID, and `discord.reply`. A GitHub starter uses `github.issue_comment`, restricts the repository to the current GitHub remote, and requires both `@paseo` and your GitHub username. GitHub's starter has no explicit reply output declaration.
+
+Setup asks before replacing the selected trigger file. It preserves other triggers and any existing legacy bundle. Read [Hub security](/docs/hub/security) before widening `from_users` or the agent's authority.
+
+## Startup timeout
+
+Hub waits up to **two minutes** for agent startup, including worktree creation, provider startup, and initial prompt acceptance. For a slower machine, set `run.startup_timeout` in the trigger YAML:
+
+```yaml
+name: inspect
+on:
+  manual.run: {}
+run:
+  target: { daemon: devbox, cwd: /workspace/project }
+  agent: { provider: codex, mode: full-access }
+  startup_timeout: 5m
+  prompt: Inspect this repository and summarize its current state.
+```
+
+Use a positive duration in `ms`, `s`, `m`, or `h`, up to `24h`. Omitting the field uses `2m`. The existing `max_runtime` and `idle_timeout` limits still apply during startup and can expire sooner. This setting changes Hub's waiting budget; provider-specific timeouts remain in effect.
 
 ## Deploy from the CLI
 
-From a project checkout, add the target project slug as optional deployment metadata:
-
-```yaml
-project: my-project
-```
-
-Then deploy:
+Run from the repository root:
 
 ```sh
-PASEO_HUB_URL=https://hub.example.com \
-PASEO_HUB_API_KEY=paseo_pk_... \
+paseo hub login https://hub.example.com
+paseo hub deploy --dry-run
 paseo hub deploy
 ```
 
-The default path is exactly `.paseo/hub.yml` relative to the current directory. The CLI does not search parent directories or alternate filenames. Use `paseo hub deploy path/to/config.yml` for another file. The bundle root remains the current directory, so partials are always read from `.paseo/partials/` under that directory. `-p, --project <slug>` overrides the file's `project` value without changing the YAML sent to Hub.
+Both deploy commands discover direct `.paseo/triggers/*.yml` files in deterministic path order. The CLI rejects nested files, `.yaml` extensions, symlinked trigger paths, and unreadable files. It does not search parent directories.
 
-For each prompt `include`, the CLI sends one `{ path, content }` entry whose path is relative to `.paseo/partials/`. It sends only files referenced by the main YAML; nested include-looking text inside a partial is not scanned. Missing, unsafe, duplicate, unreadable, non-file, or oversized inputs fail locally before the Hub request. A configuration with only inline prompt blocks sends no `partials` field.
+Dry-run validates each document against Hub without storing a revision. Deployment validates all documents first, then installs them one at a time through the organization trigger API. Installation creates or updates a trigger by its YAML `name`. If a later install fails, the error lists the files already installed; those revisions remain active. Errors name paths without printing file contents or credentials.
 
-Use `--hub <origin>` or `PASEO_HUB_URL` for the Hub origin, and `--api-key <secret>` or `PASEO_HUB_API_KEY` for the organization API key. A flag takes precedence over its environment variable. The key supplies organization scope and needs `configuration:install`. `project` only selects the deployment target; workflows cannot reference it.
+Origin precedence:
 
-Durable Hub login and credential persistence are not implemented. Supply the origin and API key for each deployment through flags or the current process environment.
+1. `--hub`
+2. `PASEO_HUB_URL`
+3. Active stored login
+4. `https://hub.paseo.sh`
 
-## Sync
+Credential precedence:
 
-A push to the default branch of the configuration repository triggers a sync:
+1. `--api-key`
+2. `PASEO_HUB_API_KEY`
+3. Stored login for the exact resolved origin
 
-1. Hub fetches `.paseo/hub.yml` at that exact commit.
-2. It validates the document and resolves every repository, workspace, guild, and daemon it names.
-3. On success the revision becomes active.
+Flags and environment keys are not stored. Endpoint and credential behavior is unchanged between deploy and dry-run.
 
-**Sync now** does the same on demand.
+## Legacy project bundles
 
-Every attempt is recorded, including failures. The outcomes you will see:
+Existing project bundles use `.paseo/hub.yml`, direct `.paseo/workflows/*.yml` files, and referenced files below `.paseo/workflows/partials/`. `hub.yml` owns named environments and agents; each workflow owns its trigger and ordered steps.
 
-| Outcome                 | What happened                                                                   |
-| ----------------------- | ------------------------------------------------------------------------------- |
-| Activated               | Valid document, everything resolved, now serving events.                        |
-| Invalid                 | The document failed validation or named something the organization can't reach. |
-| Fetch failed            | The file is missing, or GitHub could not be read.                               |
-| Superseded push ignored | A newer commit already moved the branch head.                                   |
+Select the legacy deployment path explicitly:
 
-A failed sync never replaces the active revision. A repository with a broken `hub.yml` keeps serving the last good one.
+```sh
+paseo hub deploy --project my-project --dry-run
+paseo hub deploy --project my-project
+```
 
-## Revisions
+These commands send the complete bundle through the project configuration API. Dry-run validates without recording or activating a revision. `paseo hub init` does not create or migrate these bundles.
 
-Revisions are immutable and numbered per project. Rolling back selects an earlier revision and recompiles its routes. The next valid push activates again, so rollback holds only until the next push.
+The following source and revision behavior applies to legacy project bundles.
 
-## Switching source
+## GitHub sync
 
-Switching from GitHub to manual copies the active revision into the editor and stops syncing. Switching back means choosing a repository again.
+A push to the configuration repository's default branch starts a sync:
 
-While a project uses a GitHub source, the dashboard editor is read-only. The repository is the source of truth.
+1. Hub discovers the canonical bundle at that exact commit.
+2. It parses every source file and resolves prompt partials.
+3. It validates named resources, expressions, connections, and daemon availability.
+4. On success, the new immutable revision becomes active.
 
-## The configuration repository does not have to be the repository you watch
+**Sync now** performs the same operation on demand. Failures retain their source path and authored field. A failed sync never replaces the active revision.
 
-`filters.repo` can name any repository the organization has a connection for. Keeping `hub.yml` in a private repository while triggers watch several public ones is a common setup, because push access to the configuration repository grants access to the organization's connections.
+## Revisions and source changes
 
-Next: [Hub workflows](/docs/hub/workflows), then the [`hub.yml` reference](/docs/hub/configuration/hub-yml).
+Revisions retain the exact authored files needed to inspect or redeploy them. Rolling back activates an earlier revision. The next valid GitHub push activates a new revision again.
+
+GitHub-backed configuration is read-only in the dashboard. Switching to manual preserves source documents; it does not collapse the bundle into one generated file.
+
+The configuration repository may differ from repositories named by `filters.repo`. Protect it because changing the bundle can select connections, daemons, working directories, agents, and outputs. See [Hub security](/docs/hub/security).
+
+Next: the [configuration reference](/docs/hub/configuration/hub-yml) and [workflow examples](/docs/hub/workflows).
