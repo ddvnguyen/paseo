@@ -23,7 +23,7 @@ function getHydraTimestamp() {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, "0");
   const yy = String(now.getFullYear()).slice(-2);
-  return `${yy}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}`;
+  return `${yy}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
 }
 
 // Fork identifier lives here, not in package.json's "version" field: that
