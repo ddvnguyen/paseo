@@ -1334,9 +1334,13 @@ describe("FreebuffAcpAgent", () => {
       expect(second.prompt).toBe("hi");
       expect(first.extraCodebuffMetadata).toEqual({ freebuff_instance_id: "inst-new-1" });
       expect(second.extraCodebuffMetadata).toEqual({ freebuff_instance_id: "inst-new-2" });
-      // Exactly one notice, not an "free session has ended" failure.
+      // Exactly one notice, not an "free session has ended" failure. The
+      // re-admit was an AUTO-RENEW (confirmSessionOpen bypassed once) because
+      // the original admission had a confirm hook.
       const chunkTexts = chunkTextsOf(conn);
-      expect(chunkTexts).toContain("Freebuff session ended; reopened and continuing.");
+      expect(chunkTexts).toContain(
+        "Freebuff session ended; auto-renewed the free session (one-time) and continuing.",
+      );
       expect(chunkTexts.join("\n")).not.toMatch(/session_expired/i);
       // Two admissions total: original + transparent re-admit.
       expect(postCount).toBe(2);

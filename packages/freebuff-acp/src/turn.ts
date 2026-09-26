@@ -50,6 +50,10 @@ export interface RunTurnOptions {
    * Omitted = auto-open; live-session reuse probes never consult it.
    * F1: also asked with `probeUnknown: true` when the seat probe failed —
    * a truthy answer is the explicit OK to claim blind.
+   *
+   * Bypassed (dropped) on the gate-retry attempt: the FIRST re-admission
+   * after a session-end gate auto-renews the free session once, per owner
+   * directive 2026-09-26. Later renewals ask again.
    */
   confirmSessionOpen?: (info: SessionOpenInfo) => Promise<boolean>;
   /**
@@ -273,6 +277,22 @@ const CANCEL_GRACE_MS = 1_500;
 const RELEASE_TIMEOUT_MS = 3_000;
 
 /**
+ * Seat-expiry warning (owner directive 2026-09-26): free sessions run one
+ * hour server-side; ~180s before the window ends the active turn is told
+ * in-band to save its work. FREEBUFF_SEAT_LIFETIME_MS overrides the lifetime
+ * (tests / server-side changes); a reused seat whose age is unknown never
+ * warns.
+ */
+const DEFAULT_SEAT_LIFETIME_MS = 60 * 60 * 1000;
+const SEAT_WARNING_BEFORE_MS = 180_000;
+
+function seatLifetimeMs(): number {
+  const raw = process.env.FREEBUFF_SEAT_LIFETIME_MS?.trim();
+  const value = raw ? Number(raw) : NaN;
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_SEAT_LIFETIME_MS;
+}
+
+/**
  * Await `run`, but settle promptly once `signal` aborts: give the run
  * CANCEL_GRACE_MS to return its own (partial) state, else report `null`.
  * The orphaned run keeps going in the background; its result is discarded.
@@ -322,6 +342,10 @@ interface SeatRecord {
   holder: symbol;
   /** Kept for claimed seats so an idle one can be released at shutdown. */
   token?: string;
+  /** Epoch ms when THIS adapter POST-claimed the seat; unknown for reused seats. */
+  openedAt?: number;
+  /** The 180s save-work warning has been emitted for this seat window. */
+  warned?: boolean;
 }
 
 const seatRegistry = new Map<string, SeatRecord>();
@@ -345,7 +369,15 @@ function adoptAdmittedSeatAtomically(
   token: string,
 ): { adopt: boolean; conflict?: string } {
   if (!admission.reused) {
-    seatRegistry.set(admission.instanceId, { state: "claimed", holder, token });
+    // A fresh POST starts a new 1-hour window: record the open time so the
+    // 180s save-work warning can be scheduled for it.
+    seatRegistry.set(admission.instanceId, {
+      state: "claimed",
+      holder,
+      token,
+      openedAt: Date.now(),
+      warned: false,
+    });
     return { adopt: true };
   }
   const record = seatRegistry.get(admission.instanceId);
@@ -356,9 +388,16 @@ function adoptAdmittedSeatAtomically(
     return { adopt: true };
   }
   if (record.state === "claimed" && record.holder === SEAT_RECOVERY_HOLDER) {
-    // F3: orphaned seat from a lost POST response — take it over so this
-    // turn's release path deletes it when done.
-    seatRegistry.set(admission.instanceId, { state: "claimed", holder, token });
+    // F3: parked seat from a previous turn (or a lost POST response) — take
+    // it over so this turn's release path deletes it when done. Keep the
+    // original openedAt/warned so the expiry warning stays once-per-window.
+    seatRegistry.set(admission.instanceId, {
+      state: "claimed",
+      holder,
+      token,
+      ...(record.openedAt !== undefined ? { openedAt: record.openedAt } : {}),
+      ...(record.warned ? { warned: true } : {}),
+    });
     return { adopt: true };
   }
   return {
@@ -391,6 +430,47 @@ async function recoverOrphanedSeat(token: string, signal: AbortSignal): Promise<
   } catch {
     // Best-effort: the server expires seats on their own.
   }
+}
+
+/**
+ * Seat-expiry warning: schedule the 180s save-work notice for a seat this
+ * adapter POST-claimed (openedAt known). Fires once per seat window, only
+ * while a turn is active (the timer is disarmed when the turn unwinds; a
+ * turn adopted inside the final window warns immediately). Reused seats with
+ * unknown age never warn.
+ */
+function armSeatExpiryWarning(
+  instanceId: string,
+  emit: SessionUpdateEmitter,
+  signal: AbortSignal,
+): () => void {
+  const record = seatRegistry.get(instanceId);
+  if (!record || record.warned || record.openedAt === undefined) return () => undefined;
+
+  const emitWarning = (): void => {
+    record.warned = true;
+    if (signal.aborted) return;
+    emit({
+      sessionUpdate: "agent_message_chunk",
+      content: {
+        type: "text",
+        text:
+          `Freebuff session will close in ${Math.round(SEAT_WARNING_BEFORE_MS / 1000)}s — ` +
+          "save your work and inform the user/leader now.",
+      },
+    });
+  };
+
+  const expiresAt = record.openedAt + seatLifetimeMs();
+  const delay = expiresAt - SEAT_WARNING_BEFORE_MS - Date.now();
+  if (delay <= 0) {
+    // Already inside the final window: warn now, but only while some
+    // lifetime remains (a dead seat is handled by the gate path instead).
+    if (Date.now() < expiresAt) emitWarning();
+    return () => undefined;
+  }
+  const timer = setTimeout(emitWarning, delay);
+  return () => clearTimeout(timer);
 }
 
 /**
@@ -530,10 +610,14 @@ async function releaseAdmittedSeat(
   const record = seatRegistry.get(admission.instanceId);
   if (record?.holder !== holder) return;
   if (record.state === "claimed" && keepSeat) {
+    // Park the seat for the next turn. openedAt/warned ride along so the
+    // 180s expiry warning stays once-per-seat-window across turns.
     seatRegistry.set(admission.instanceId, {
       state: "claimed",
       holder: SEAT_RECOVERY_HOLDER,
       token,
+      ...(record.openedAt !== undefined ? { openedAt: record.openedAt } : {}),
+      ...(record.warned ? { warned: true } : {}),
     });
     return;
   }
@@ -613,7 +697,9 @@ async function runAdmittedTurn(
   }
 
   let seatServedRun = false;
+  let disarmWarning: () => void = () => undefined;
   try {
+    disarmWarning = armSeatExpiryWarning(admission.instanceId, emit, signal);
     // Adopt the open slot's model when admission reuses an existing free
     // session (catalog models differ per slot). Root agent id must match
     // that model or the backend rejects the run with model mismatch.
@@ -684,6 +770,7 @@ async function runAdmittedTurn(
       },
     };
   } finally {
+    disarmWarning();
     await releaseAdmittedSeat(token, admission, context.seatHolder, seatServedRun);
   }
 }
@@ -758,16 +845,24 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
     // and re-admit through the normal path, then retry the SAME prompt once
     // with the same previousRun so the conversation continues.
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      // Owner directive 2026-09-26: the first re-admission after a session-end
+      // gate auto-renews the free session once — open without asking, keep the
+      // same previousRun so the conversation continues. Later renewals ask.
+      const attemptOptions: RunTurnOptions =
+        attempt === 0 ? options : { ...options, confirmSessionOpen: undefined };
       if (attempt > 0) {
+        const autoRenewed = options.confirmSessionOpen !== undefined;
         emit({
           sessionUpdate: "agent_message_chunk",
           content: {
             type: "text",
-            text: "Freebuff session ended; reopened and continuing.",
+            text: autoRenewed
+              ? "Freebuff session ended; auto-renewed the free session (one-time) and continuing."
+              : "Freebuff session ended; reopened and continuing.",
           },
         });
       }
-      const turn = await runAdmittedTurn(options, emit, handleEvent, handleStreamChunk, {
+      const turn = await runAdmittedTurn(attemptOptions, emit, handleEvent, handleStreamChunk, {
         seatHolder,
         turnStats,
         stopped: () => cancelled || signal.aborted,
