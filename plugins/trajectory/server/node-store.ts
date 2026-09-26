@@ -110,6 +110,13 @@ export function createNodeStore(path: string): TrajectoryStore {
       return rows.map(toEvent);
     },
 
+    headSeq(agentId: string): number {
+      const stmt = db.prepare("SELECT MAX(seq) AS head FROM trajectory_events WHERE agent_id = ?");
+      const row = stmt.get(agentId) as { head: number | bigint | null } | undefined;
+      const head = row?.head;
+      return head === null || head === undefined ? 0 : Number(head);
+    },
+
     close() {
       // Idempotent: wiring cleanup and test teardown may both close.
       if (closed) return;

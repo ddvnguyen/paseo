@@ -22,5 +22,7 @@ export interface TrajectoryStore {
   append(input: TrajectoryEventInput): TrajectoryEvent;
   /** Ascending-`seq` page of one agent's events; `data` is parsed JSON. */
   listByAgent(agentId: string, opts: ListByAgentOptions): TrajectoryEvent[];
+  /** Newest seq for an agent, or 0 when it has no rows (pagination cursor). */
+  headSeq(agentId: string): number;
   close(): void;
 }

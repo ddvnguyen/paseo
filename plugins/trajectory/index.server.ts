@@ -1,4 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { handleChanges, handleList } from "./server/rpc.js";
+import { trajectoryChanges, trajectoryList } from "./shared/trajectory.js";
 import { createWiring, openDefaultStore } from "./server/wiring.js";
 
 export default function contribute(server: PluginServerContext) {
@@ -52,6 +54,17 @@ export default function contribute(server: PluginServerContext) {
 
     server.on("agent.created", (event, context) => {
       withPaseo(context.paseo);
+    });
+
+    // Read RPCs: every handler also calls ensureAttached first (idempotent),
+    // so a UI opened before any hook fires still attaches the streams.
+    server.handle(trajectoryList, async (input, context) => {
+      withPaseo(context.paseo);
+      return handleList(wiring.store)(input);
+    });
+    server.handle(trajectoryChanges, async (input, context) => {
+      withPaseo(context.paseo);
+      return handleChanges(wiring.store)(input);
     });
 
     cleanup = () => {
