@@ -1,7 +1,7 @@
 {
   "id": "freebuff",
   "requirements": {
-    "paseo": ">=0.9.3"
+    "paseo": ">=0.9.2-0"
   },
   "build": [
     ["npm", "install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund"],
