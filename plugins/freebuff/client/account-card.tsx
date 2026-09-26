@@ -10,7 +10,9 @@ import { Text, View } from "react-native";
 
 import {
   ACCOUNT_LABEL_MAX_LENGTH,
+  formatResetTime,
   quotaLine,
+  quotaUsedPercent,
   seatLine,
   walletLine,
   type AccountDetail,
@@ -46,12 +48,25 @@ export function AccountCard({
 }: AccountCardProps) {
   const [renaming, setRenaming] = useState(false);
   const [draftLabel, setDraftLabel] = useState("");
+  const percent = quotaUsedPercent(account);
+  const reset = formatResetTime(account.status?.resetAt);
   const styles = useMemo(
     () => ({
       lines: { gap: compact ? 2 : 4 },
       muted: { color: theme.colors.foregroundMuted },
+      barTrack: {
+        height: 4,
+        borderRadius: 2,
+        backgroundColor: theme.colors.border,
+      },
+      barFill: {
+        height: 4,
+        borderRadius: 2,
+        width: `${percent ?? 0}%`,
+        backgroundColor: theme.colors.accent,
+      },
     }),
-    [theme, compact],
+    [theme, compact, percent],
   );
   const canEndSession = account.seat.state === "active";
   const handleEndSession = useCallback(() => onEndSession(account.id), [onEndSession, account.id]);
@@ -82,7 +97,16 @@ export function AccountCard({
       >
         <View style={styles.lines}>
           {!account.authenticated ? <Text style={styles.muted}>Not logged in</Text> : null}
-          <Text style={styles.muted}>{`${quotaLine(account)}${walletLine(account)}`}</Text>
+          {percent != null ? (
+            <View style={styles.barTrack}>
+              <View style={styles.barFill} />
+            </View>
+          ) : null}
+          <Text style={styles.muted}>
+            {percent != null ? `${percent}% used · ` : ""}
+            {`${quotaLine(account)}${walletLine(account)}`}
+          </Text>
+          {reset ? <Text style={styles.muted}>{`Resets ${reset}`}</Text> : null}
           <Text style={styles.muted}>{seatLine(account)}</Text>
         </View>
       </SettingsRow>

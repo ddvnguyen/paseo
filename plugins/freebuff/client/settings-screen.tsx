@@ -1,10 +1,10 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
-import { SettingsAction, SettingsRow, SettingsSection } from "@getpaseo/plugin/client/ui";
+import { SettingsAction, SettingsSection } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
-import { Text, View } from "react-native";
+import { Text } from "react-native";
 
 import {
   freebuffAccountDelete,
@@ -13,17 +13,11 @@ import {
   freebuffAccountSetDefault,
   freebuffSessionEnd,
 } from "../shared/accounts";
+import { freebuffStatus } from "../shared/status";
 import { AccountCard } from "./account-card";
 import { AddAccountSection } from "./add-account";
 import { CliPreferencesSection } from "./cli-preferences";
-import {
-  formatResetTime,
-  type QuotaAccount,
-  quotaRatio,
-  quotaUsedPercent,
-  removeAccountMessage,
-  walletLine,
-} from "./account-format";
+import { removeAccountMessage } from "./account-format";
 import { ConfirmModal } from "./confirm-modal";
 
 const END_SESSION_MESSAGES = {
@@ -46,52 +40,40 @@ interface PendingAction {
   accountId: string;
 }
 
-/** One row of the Quota section: usage bar, remaining/limit, reset, wallet. */
-function QuotaRow({
-  account,
-  theme,
-}: {
-  account: QuotaAccount;
-  theme: PluginSurfaceProps["theme"];
-}) {
-  const percent = quotaUsedPercent(account);
-  const reset = formatResetTime(account.status?.resetAt);
+/** Adapter/server model-catalog check, folded in from the old sidebar surface. */
+function ModelsSection({ theme }: { theme: PluginSurfaceProps["theme"] }) {
+  const readStatus = useRpc(freebuffStatus);
+  const statusQuery = useQuery({
+    queryKey: ["freebuff-status"],
+    queryFn: () => readStatus({}),
+  });
+  const refreshModels = useCallback(() => void statusQuery.refetch(), [statusQuery]);
+  const modelCheck = statusQuery.data?.modelCheck;
+  const differences =
+    (modelCheck?.missingInAdapter.length ?? 0) + (modelCheck?.missingOnServer.length ?? 0);
   const styles = useMemo(
     () => ({
-      stack: { gap: 4 },
       muted: { color: theme.colors.foregroundMuted },
-      barTrack: {
-        height: 4,
-        borderRadius: 2,
-        backgroundColor: theme.colors.border,
-      },
-      barFill: {
-        height: 4,
-        borderRadius: 2,
-        width: `${percent ?? 0}%`,
-        backgroundColor: theme.colors.accent,
-      },
     }),
-    [theme, percent],
+    [theme],
   );
   return (
-    <SettingsRow label={account.label} testID={`freebuff-quota-${account.id}`}>
-      <View style={styles.stack}>
-        {percent != null ? (
-          <View style={styles.barTrack}>
-            <View style={styles.barFill} />
-          </View>
-        ) : null}
-        <Text style={styles.muted}>
-          {percent != null ? `${percent}% used · ` : ""}
-          {`${quotaRatio(account)} Freebucks left today`}
-        </Text>
-        {reset ? <Text style={styles.muted}>{`Resets ${reset}`}</Text> : null}
-        {account.status?.walletBalance != null ? (
-          <Text style={styles.muted}>{walletLine(account).replace(" · ", "")}</Text>
-        ) : null}
-      </View>
-    </SettingsRow>
+    <SettingsSection title="Models" info="Whether the adapter offers every priced model.">
+      {statusQuery.isError ? <Text>{String(statusQuery.error)}</Text> : null}
+      {modelCheck && !modelCheck.checked ? (
+        <Text style={styles.muted}>Server unreachable; model check skipped.</Text>
+      ) : null}
+      {modelCheck?.checked && differences === 0 ? (
+        <Text style={styles.muted}>Adapter models match the server.</Text>
+      ) : null}
+      {modelCheck?.missingInAdapter.map((id) => (
+        <Text key={`new-${id}`}>{`New on server, not selectable yet: ${id}`}</Text>
+      ))}
+      {modelCheck?.missingOnServer.map((id) => (
+        <Text key={`gone-${id}`}>{`No longer priced by server: ${id}`}</Text>
+      ))}
+      <SettingsAction label="Model check" actionLabel="Refresh" onPress={refreshModels} />
+    </SettingsSection>
   );
 }
 
@@ -236,10 +218,7 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
 
   return (
     <>
-      <SettingsSection
-        title="Quota"
-        info="Daily Freebucks per account, reset time and wallet balance."
-      >
+      <SettingsSection title="Accounts" info="Freebuff accounts registered on this host.">
         {accountsQuery.isPending ? <Text style={styles.muted}>Loading accounts…</Text> : null}
         {accountsQuery.isError ? (
           <Text accessibilityRole="alert">{accountsQuery.error.message}</Text>
@@ -247,11 +226,6 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
         {!accountsQuery.isPending && accounts.length === 0 ? (
           <Text style={styles.muted}>No accounts registered.</Text>
         ) : null}
-        {accounts.map((account) => (
-          <QuotaRow key={account.id} account={account} theme={theme} />
-        ))}
-      </SettingsSection>
-      <SettingsSection title="Accounts" info="Freebuff accounts registered on this host.">
         {accounts.map((account) => (
           <AccountCard
             key={account.id}
@@ -272,6 +246,7 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
       </SettingsSection>
       <AddAccountSection theme={theme} existingIds={existingIds} />
       <CliPreferencesSection accounts={accounts} />
+      <ModelsSection theme={theme} />
       <ConfirmModal
         title={pendingIsEndSession ? "End session" : "Remove account"}
         message={
