@@ -1113,6 +1113,15 @@ export function DisplaySettings() {
 | `SettingsSelect`                   | Row props plus required string `value`, `options: { label, value }[]`, `onValueChange`; optional `disabled`. Uses Paseo's adaptive menu. |
 | `SettingsInput`                    | Row props plus required `onChangeText`; optional `initialValue`, `placeholder`, `disabled`, `secureTextEntry`, `ref`.                    |
 | `SettingsAction`                   | Row props plus required `actionLabel`, `onPress`; optional `disabled`.                                                                   |
+| `SettingsIconButton`               | Required `icon` Lucide name, `accessibilityLabel`, `onPress`; optional `disabled`, `destructive`, `testID`. Icon-only row action.        |
+| `SettingsIconRow`                  | Required `icon` Lucide name, `label`; optional `hint`, `error`, `children` content, `trailing` controls, `testID`.                       |
+
+Combine the last two for per-row actions: a `SettingsIconRow` with `SettingsIconButton`
+controls in `trailing` replaces one `SettingsAction` row per operation. The trailing slot
+sits inline on wide layouts and stacks below the content on compact layouts. A destructive
+button paints its glyph in the danger token; pair it with a confirmation before applying
+the action. A disabled button keeps its colors and dims with host opacity. The hover
+tooltip shows the accessibility label on web only; controls stay visible on native.
 
 `SettingsInput` owns in-progress text. `initialValue` seeds it when mounted. Its ref exposes
 `focus()`, `blur()`, `getText()`, and `replaceText(text)` for explicit programmatic changes.

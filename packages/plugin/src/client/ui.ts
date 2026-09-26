@@ -44,6 +44,27 @@ export interface SettingsActionProps extends SettingsRowProps {
   onPress(): void;
   disabled?: boolean;
 }
+export interface SettingsIconButtonProps {
+  /** Lucide icon name. Unknown names render nothing. */
+  icon: string;
+  accessibilityLabel: string;
+  onPress(): void;
+  disabled?: boolean;
+  destructive?: boolean;
+  testID?: string;
+}
+export interface SettingsIconRowProps {
+  /** Lucide icon name rendered in the row's leading slot. Unknown names render nothing. */
+  icon: string;
+  label: string;
+  hint?: string;
+  error?: string | null;
+  /** Content below the label. */
+  children?: ReactNode;
+  /** Trailing controls slot (for example SettingsIconButton). Stacks below the content on compact layouts. */
+  trailing?: ReactNode;
+  testID?: string;
+}
 export declare const SettingsGroup: ComponentType<SettingsSectionProps>;
 export declare const SettingsSection: ComponentType<SettingsSectionProps>;
 export declare const SettingsCard: ComponentType<{ children: ReactNode; testID?: string }>;
@@ -54,6 +75,8 @@ export declare function SettingsSelect<Value extends string>(
 ): ReactNode;
 export declare const SettingsInput: ComponentType<SettingsInputProps>;
 export declare const SettingsAction: ComponentType<SettingsActionProps>;
+export declare const SettingsIconButton: ComponentType<SettingsIconButtonProps>;
+export declare const SettingsIconRow: ComponentType<SettingsIconRowProps>;
 
 export interface ExternalLinkProps {
   href: string;
