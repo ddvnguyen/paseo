@@ -8,7 +8,6 @@ import type {
   TrajectoryTurnModel,
 } from "../shared/dsh/layout.js";
 import { groupTrajectoryVirtualRows } from "../shared/dsh/virtual-rows.js";
-import type { TrajectoryVirtualRow } from "../shared/dsh/virtual-rows.js";
 import type { TrajectoryCellProps } from "../shared/dsh/record.js";
 import { TrajectoryCellRow } from "./ledger-cells.js";
 
@@ -42,7 +41,7 @@ export function LedgerScreen(props: {
   const { rows, turnNumbers, openCallIds, compact, theme, onCellPress, testID } = props;
   const [fold, setFold] = useState<FoldState>(INITIAL_FOLD);
   const [follow, setFollow] = useState(true);
-  const listRef = useRef<FlatList<TrajectoryVirtualRow<LeadRecord>> | null>(null);
+  const listRef = useRef<FlatList<ListRow> | null>(null);
 
   const turns = useMemo(
     () => deriveTrajectoryLayout({ rows, turnNumbers, openCallIds }),
@@ -51,7 +50,49 @@ export function LedgerScreen(props: {
 
   const records = useMemo(() => expandTurns(turns, fold), [turns, fold]);
 
-  const virtualRows = useMemo(() => groupTrajectoryVirtualRows(records), [records]);
+  /**
+   * Cells go through the ported virtual-row projection (zero-height request
+   * boundaries attach forward, keys stable); chrome records (headers, rules)
+   * join the same FlatList data with their own keys and heights.
+   */
+  const virtualRows = useMemo(() => {
+    // Cell position in the interleaved sequence -> its virtual row. Cells are
+    // keyed by cell.index (dsh record identity), NOT by list position: chrome
+    // rows interleave at arbitrary positions and consumed rows must be
+    // dropped so a following step header cannot re-emit its row.
+    const cellRecords = records.filter(
+      (record): record is Extract<LeadRecord, { __kind: "cell" }> => record.__kind === "cell",
+    );
+    const cellRows = groupTrajectoryVirtualRows(cellRecords);
+    const consumed = new Set<string>();
+    const cellRowByCellIndex = new Map<number, (typeof cellRows)[number]>();
+    for (const row of cellRows) {
+      for (const entry of row.entries) {
+        cellRowByCellIndex.set(entry.record.cell.index, row);
+      }
+    }
+    const out: ListRow[] = [];
+    for (const record of records) {
+      if (record.__kind !== "cell") {
+        const key = chromeKey(record);
+        let height = 10;
+        if (record.__kind === "turn-header") height = 28;
+        else if (record.__kind === "step-header") height = 22;
+        out.push({ kind: "chrome", key, height, record });
+        continue;
+      }
+      const cellRow = cellRowByCellIndex.get(record.cell.index);
+      if (cellRow === undefined || consumed.has(cellRow.key)) continue;
+      consumed.add(cellRow.key);
+      out.push({
+        kind: "cellrow",
+        key: cellRow.key,
+        height: cellRow.height,
+        cells: cellRow.entries.map((entry) => entry.record.cell),
+      });
+    }
+    return out;
+  }, [records]);
 
   const allOpen = useMemo(
     () => ({
@@ -60,7 +101,7 @@ export function LedgerScreen(props: {
         turns.flatMap((turn, index) =>
           turn.groups
             .filter((group) => group.title.startsWith("Step "))
-            .map((group) => `${index + 1}\u0000${group.title}`),
+            .map((group) => `step-${index + 1}-${group.title}`),
         ),
       ),
     }),
@@ -73,7 +114,7 @@ export function LedgerScreen(props: {
       const openSteps = new Set(previous.openSteps);
       if (openTurns.has(turn)) {
         openTurns.delete(turn);
-        const prefix = `${turn}\u0000`;
+        const prefix = `step-${turn}-`;
         for (const key of openSteps) {
           if (key.startsWith(prefix)) openSteps.delete(key);
         }
@@ -87,7 +128,7 @@ export function LedgerScreen(props: {
   const toggleStep = useCallback((turn: number, title: string) => {
     setFold((previous) => {
       const openSteps = new Set(previous.openSteps);
-      const key = `${turn}\u0000${title}`;
+      const key = `step-${turn}-${title}`;
       if (openSteps.has(key)) openSteps.delete(key);
       else openSteps.add(key);
       return { ...previous, openSteps };
@@ -112,13 +153,13 @@ export function LedgerScreen(props: {
   );
 
   const renderItem = useCallback(
-    ({ item }: { item: TrajectoryVirtualRow<LeadRecord> }) => (
+    ({ item }: { item: ListRow }) => (
       <VirtualLedgerRow row={item} compact={compact} theme={theme} handlers={handlers} />
     ),
     [compact, theme, handlers],
   );
 
-  const keyExtractor = useCallback((item: TrajectoryVirtualRow<LeadRecord>) => item.key, []);
+  const keyExtractor = useCallback((item: ListRow) => item.key, []);
 
   const onContentSizeChange = useCallback(() => {
     if (follow && listRef.current !== null) {
@@ -316,53 +357,72 @@ interface RowHandlers {
   pressCell?: (cell: TrajectoryCellProps) => void;
 }
 
+/** One FlatList row: either chrome (header/rule) or a virtualized cell row. */
+type ListRow =
+  | { kind: "chrome"; key: string; height: number; record: LeadRecord }
+  | { kind: "cellrow"; key: string; height: number; cells: TrajectoryCellProps[] };
+
 /** One virtual row dispatched to its renderer; props are stable references. */
 const VirtualLedgerRow = memo(function VirtualLedgerRow(props: {
-  row: TrajectoryVirtualRow<LeadRecord>;
+  row: ListRow;
   compact: boolean;
   theme: PluginTheme;
   handlers: RowHandlers;
 }) {
   const { row, compact, theme, handlers } = props;
-  const record = row.entries[0]?.record;
-  if (record === undefined) return null;
-  if (record.__kind === "turn-header") {
-    return (
-      <TurnHeaderRow
-        turn={record.turn}
-        title={record.title}
-        usage={record.usage}
-        open={record.open}
-        hasSteps={record.hasSteps}
-        compact={compact}
-        theme={theme}
-        onToggle={handlers.toggleTurn}
-      />
-    );
-  }
-  if (record.__kind === "step-header") {
-    return (
-      <StepHeaderRow
-        turn={record.turn}
-        title={record.title}
-        open={record.open}
-        compact={compact}
-        theme={theme}
-        onToggle={handlers.toggleStep}
-      />
-    );
-  }
-  if (record.__kind === "turn-rule") {
+  // Bound per-record callbacks: Pressable.onPress passes the press event as
+  // the first argument, so the turn/step identity must be bound here rather
+  // than in the JSX (and hooks must be unconditional across row kinds).
+  const chrome = row.kind === "chrome" ? row.record : null;
+  const toggleTurn = useCallback(() => {
+    if (chrome?.__kind === "turn-header") handlers.toggleTurn(chrome.turn);
+  }, [chrome, handlers]);
+  const toggleStep = useCallback(() => {
+    if (chrome?.__kind === "step-header") handlers.toggleStep(chrome.turn, chrome.title);
+  }, [chrome, handlers]);
+  if (row.kind === "chrome") {
+    const record = row.record;
+    if (record.__kind === "turn-header") {
+      return (
+        <TurnHeaderRow
+          turn={record.turn}
+          title={record.title}
+          usage={record.usage}
+          open={record.open}
+          hasSteps={record.hasSteps}
+          compact={compact}
+          theme={theme}
+          onToggle={toggleTurn}
+        />
+      );
+    }
+    if (record.__kind === "step-header") {
+      return (
+        <StepHeaderRow
+          turn={record.turn}
+          title={record.title}
+          open={record.open}
+          compact={compact}
+          theme={theme}
+          onToggle={toggleStep}
+        />
+      );
+    }
     return <View style={turnRuleStyles(theme)} testID="turn-rule" />;
   }
   return (
-    <TrajectoryCellRow
-      cell={record.cell}
-      compact={compact}
-      theme={theme}
-      onPress={handlers.pressCell}
-      testID={`cell-${record.cell.index}`}
-    />
+    <View>
+      {row.cells.map((cell) => (
+        <TrajectoryCellRow
+          key={cell.index}
+          cell={cell}
+          compact={compact}
+          theme={theme}
+          onPress={handlers.pressCell}
+          testID={`cell-${cell.index}`}
+        />
+      ))}
+    </View>
   );
 });
 
@@ -413,7 +473,7 @@ function appendGroup(
     for (const cell of group.cells) records.push(cellRecord(cell));
     return;
   }
-  const key = `${turn}\u0000${group.title}`;
+  const key = `step-${turn}-${group.title}`;
   const open = fold.openSteps.has(key);
   records.push({ __kind: "step-header", turn, title: group.title, open });
   if (open) {
@@ -423,6 +483,13 @@ function appendGroup(
 
 function cellRecord(cell: TrajectoryCellProps): LeadRecord {
   return { __kind: "cell", cell };
+}
+
+/** Flat, readable row keys (RN keys must be strings without NUL). */
+function chromeKey(record: LeadRecord): string {
+  if (record.__kind === "turn-header") return `turn-${record.turn}`;
+  if (record.__kind === "step-header") return `step-${record.turn}-${record.title}`;
+  return `rule-${record.turn}`;
 }
 
 function screenStyles(theme: PluginTheme) {
