@@ -28,6 +28,9 @@ const accountDetail = z.object({
   isDefault: z.boolean(),
   authenticated: z.boolean(),
   managed: z.boolean(),
+  /** Login identity from the adapter's stored user record; absent when unknown. */
+  email: z.string().optional(),
+  name: z.string().optional(),
   seat,
   status: z
     .object({
