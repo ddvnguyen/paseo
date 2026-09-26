@@ -10,6 +10,9 @@ export interface AccountDetail {
   isDefault: boolean;
   authenticated: boolean;
   managed: boolean;
+  /** Login identity from the stored user record; absent when unknown. */
+  email?: string;
+  name?: string;
   seat: { state: "none" } | { state: "active"; model?: string } | { state: "unknown" };
   status: {
     dailyRemaining?: number;
@@ -33,33 +36,8 @@ export interface CliSettings {
 /** Login poll outcome, mirroring the freebuff.login.poll contract. */
 export type LoginPollStatus = "pending" | "expired" | "success" | "none" | "error";
 
-export const ACCOUNT_ID_PATTERN = /^[a-z0-9_-]+$/;
-export const ACCOUNT_ID_MAX_LENGTH = 32;
-export const RESERVED_ACCOUNT_IDS = ["default"] as const;
-
 /** Max display-label length, enforced by the rename RPC contract too. */
 export const ACCOUNT_LABEL_MAX_LENGTH = 80;
-
-/** Reasons an id cannot be registered; empty string means valid. */
-export function validateAccountId(id: string, existingIds: readonly string[]): string {
-  if (id.length === 0) return "Enter an account id.";
-  if (id.length > ACCOUNT_ID_MAX_LENGTH) {
-    return `Keep the id to ${ACCOUNT_ID_MAX_LENGTH} characters or fewer.`;
-  }
-  if (!ACCOUNT_ID_PATTERN.test(id)) {
-    return "Use lowercase letters, digits, hyphens, or underscores only.";
-  }
-  if ((RESERVED_ACCOUNT_IDS as readonly string[]).includes(id)) {
-    return "That id is reserved.";
-  }
-  if (existingIds.includes(id)) return "An account with this id already exists.";
-  return "";
-}
-
-/** True when the id passes every rule in validateAccountId. */
-export function isValidAccountId(id: string, existingIds: readonly string[]): boolean {
-  return validateAccountId(id, existingIds) === "";
-}
 
 /** '20/25 Freebucks left today', falling back to login state. */
 export function quotaLine(account: QuotaAccount): string {
@@ -149,4 +127,9 @@ export function reasoningLine(
 /** Empty label clears the override; trim before sending. */
 export function normalizeRenameLabel(label: string): string {
   return label.trim();
+}
+
+/** 'email · name' login identity line; empty when neither is known. */
+export function identityLine(account: Pick<AccountDetail, "email" | "name">): string {
+  return [account.email?.trim(), account.name?.trim()].filter(Boolean).join(" · ");
 }

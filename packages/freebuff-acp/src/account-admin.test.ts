@@ -144,6 +144,35 @@ describe("listAccountDetails", () => {
     expect(accounts[0].seat).toEqual({ state: "unknown" });
     expect(accounts[1]).toMatchObject({ authenticated: false, seat: { state: "none" } });
   });
+
+  it("exposes the stored login email/name and never secrets", async () => {
+    writeCredentials(defaultDir, "Duc");
+    const workDir = accountConfigDir("work", env());
+    writeCredentials(workDir, "Work");
+    addAccount({ id: "work", configDir: workDir }, env());
+    stubSeat({ status: "none" });
+
+    const { accounts } = await listAccountDetails(env());
+
+    expect(accounts[0]).toMatchObject({ name: "Duc", email: "Duc@x.y" });
+    expect(accounts[1]).toMatchObject({ name: "Work", email: "Work@x.y" });
+    const serialized = JSON.stringify(accounts);
+    expect(serialized).not.toContain(SECRET_TOKEN);
+  });
+
+  it("omits email/name when no stored login record exists", async () => {
+    const emptyDir = accountConfigDir("empty", env());
+    fs.mkdirSync(emptyDir, { recursive: true });
+    addAccount({ id: "empty", configDir: emptyDir }, env());
+    stubSeat({ status: "none" });
+
+    const { accounts } = await listAccountDetails(env());
+
+    const empty = accounts.find((account) => account.id === "empty");
+    expect(empty).toMatchObject({ authenticated: false });
+    expect(empty).not.toHaveProperty("email");
+    expect(empty).not.toHaveProperty("name");
+  });
 });
 
 describe("endAccountSession", () => {

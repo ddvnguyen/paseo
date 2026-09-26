@@ -5,6 +5,8 @@ import { copyText, useToast } from "@getpaseo/plugin/client/react-native";
 import {
   ExternalLink,
   SettingsAction,
+  SettingsCard,
+  SettingsIconButton,
   SettingsInput,
   SettingsSection,
 } from "@getpaseo/plugin/client/ui";
@@ -13,19 +15,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Text, View } from "react-native";
 
 import { freebuffLoginCancel, freebuffLoginPoll, freebuffLoginStart } from "../shared/accounts";
-import { isValidAccountId, validateAccountId } from "./account-format";
 
 const POLL_INTERVAL_MS = 5000;
 
 interface AddAccountProps {
   theme: PluginSurfaceProps["theme"];
-  existingIds: readonly string[];
+  compact: boolean;
 }
 
 type Phase = "form" | "login";
 
 interface LoginPanelProps {
   theme: PluginSurfaceProps["theme"];
+  compact: boolean;
   loginId: string;
   loginUrl: string;
   attempt: number;
@@ -91,9 +93,10 @@ function LoginOutcome({ theme, pollData, onGetNewLink, onStartOver }: LoginOutco
   );
 }
 
-/** Browser login panel: link, copy, open, poll outcome, and cancel. */
+/** Browser login card: link, copy, open, poll outcome, and cancel. */
 function LoginPanel({
   theme,
+  compact,
   loginId,
   loginUrl,
   attempt,
@@ -173,27 +176,45 @@ function LoginPanel({
   const styles = useMemo(
     () => ({
       stack: { gap: 4 },
+      linkRow: { flexDirection: "row", alignItems: "center", gap: 8 },
       muted: { color: theme.colors.foregroundMuted },
       foreground: { color: theme.colors.foreground },
       success: { color: theme.colors.statusSuccess },
     }),
     [theme],
   );
+  const handleCancel = useCallback(() => {
+    cancelMutation.mutate();
+  }, [cancelMutation]);
 
   return (
-    <SettingsSection title="Log in with Freebuff">
-      <View style={styles.stack}>
-        <Text selectable style={styles.foreground}>
-          {loginUrl}
-        </Text>
-        <Text style={styles.muted}>
-          Open the link in a browser and approve the login, then wait here.
-        </Text>
+    <SettingsCard testID="freebuff-login-panel">
+      <Text selectable style={styles.foreground}>
+        {loginUrl}
+      </Text>
+      <Text style={styles.muted}>
+        Open the link in a browser and approve the login, then wait here.
+      </Text>
+      <View style={compact ? styles.stack : styles.linkRow}>
+        <SettingsIconButton
+          icon="Copy"
+          accessibilityLabel="Copy login link"
+          onPress={copyLink}
+          testID="freebuff-login-copy"
+        />
+        <ExternalLink href={loginUrl} accessibilityLabel="Open the Freebuff login page">
+          Open in browser
+        </ExternalLink>
+        {waiting ? (
+          <SettingsIconButton
+            icon="X"
+            accessibilityLabel="Cancel login"
+            disabled={cancelMutation.isPending}
+            onPress={handleCancel}
+            testID="freebuff-login-cancel"
+          />
+        ) : null}
       </View>
-      <SettingsAction label="Login link" actionLabel="Copy link" onPress={copyLink} />
-      <ExternalLink href={loginUrl} accessibilityLabel="Open the Freebuff login page">
-        Open in browser
-      </ExternalLink>
       {waiting ? <Text style={styles.muted}>Waiting for you to log in in the browser…</Text> : null}
       {pollStatus === "pending" && pollData?.httpStatus != null ? (
         <Text style={styles.muted}>
@@ -207,26 +228,18 @@ function LoginPanel({
         onGetNewLink={onGetNewLink}
         onStartOver={onStartOver}
       />
-      {waiting ? (
-        <SettingsAction
-          label="Waiting"
-          actionLabel="Cancel"
-          disabled={cancelMutation.isPending}
-          onPress={cancelMutation.mutate}
-        />
-      ) : null}
-    </SettingsSection>
+    </SettingsCard>
   );
 }
 
 /**
- * 'Add account' section: id/label form, then the browser login panel that
+ * 'Add account' section: label form, then the browser login card that
  * polls freebuff.login.poll until the login succeeds, expires, or is cancelled.
+ * The account id is never typed: the adapter mints a provisional handshake key
+ * at start and registers the API-sourced id when the login succeeds.
  */
-export function AddAccountSection({ theme, existingIds }: AddAccountProps) {
-  const [accountId, setAccountId] = useState("");
+export function AddAccountSection({ theme, compact }: AddAccountProps) {
   const [label, setLabel] = useState("");
-  const [touched, setTouched] = useState(false);
   const [phase, setPhase] = useState<Phase>("form");
   const [loginId, setLoginId] = useState("");
   const [loginUrl, setLoginUrl] = useState("");
@@ -234,21 +247,15 @@ export function AddAccountSection({ theme, existingIds }: AddAccountProps) {
   const toast = useToast();
   const startLogin = useRpc(freebuffLoginStart);
 
-  const idError = useMemo(
-    () => (touched ? validateAccountId(accountId, existingIds) : ""),
-    [touched, accountId, existingIds],
-  );
-
   const startMutation = useMutation({
     mutationFn: async () => {
       const result = await startLogin({
-        id: accountId,
         label: label.length > 0 ? label : undefined,
       });
       return result;
     },
     onSuccess: (result) => {
-      setLoginId(accountId);
+      setLoginId(result.id);
       setLoginUrl(result.loginUrl);
       setAttempt((current) => current + 1);
       setPhase("login");
@@ -259,9 +266,7 @@ export function AddAccountSection({ theme, existingIds }: AddAccountProps) {
   });
 
   const clearForm = useCallback(() => {
-    setAccountId("");
     setLabel("");
-    setTouched(false);
     setPhase("form");
   }, []);
 
@@ -271,16 +276,10 @@ export function AddAccountSection({ theme, existingIds }: AddAccountProps) {
     setLoginUrl("");
   }, [clearForm]);
 
-  const handleIdChange = useCallback((text: string) => {
-    setTouched(true);
-    setAccountId(text.trim());
-  }, []);
   const handleLabelChange = useCallback((text: string) => setLabel(text), []);
   const handleStart = useCallback(() => {
-    setTouched(true);
-    if (!isValidAccountId(accountId, existingIds)) return;
     startMutation.mutate();
-  }, [accountId, existingIds, startMutation]);
+  }, [startMutation]);
 
   const startMutate = startMutation.mutate;
   const handleGetNewLink = useCallback(() => {
@@ -289,6 +288,9 @@ export function AddAccountSection({ theme, existingIds }: AddAccountProps) {
 
   const styles = useMemo(
     () => ({
+      stack: { gap: 4 },
+      formRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+      formInput: { flexGrow: 1, flexShrink: 1, flexBasis: 0 },
       muted: { color: theme.colors.foregroundMuted },
     }),
     [theme],
@@ -296,41 +298,44 @@ export function AddAccountSection({ theme, existingIds }: AddAccountProps) {
 
   if (phase === "login") {
     return (
-      <LoginPanel
-        theme={theme}
-        loginId={loginId}
-        loginUrl={loginUrl}
-        attempt={attempt}
-        onGetNewLink={handleGetNewLink}
-        onStartOver={resetToForm}
-      />
+      <SettingsSection title="Add account">
+        <LoginPanel
+          theme={theme}
+          compact={compact}
+          loginId={loginId}
+          loginUrl={loginUrl}
+          attempt={attempt}
+          onGetNewLink={handleGetNewLink}
+          onStartOver={resetToForm}
+        />
+      </SettingsSection>
     );
   }
 
   return (
     <SettingsSection title="Add account">
-      <SettingsInput
-        label="Account id"
-        placeholder="work-laptop"
-        onChangeText={handleIdChange}
-        error={idError.length > 0 ? idError : null}
-      />
-      <SettingsInput
-        label="Label (optional)"
-        placeholder="Work laptop"
-        onChangeText={handleLabelChange}
-      />
-      <SettingsAction
-        label="Browser login"
-        actionLabel="Log in with Freebuff"
-        disabled={startMutation.isPending}
-        onPress={handleStart}
-      />
-      {startMutation.isError ? (
-        <Text accessibilityRole="alert" style={styles.muted}>
-          {startMutation.error.message}
-        </Text>
-      ) : null}
+      <SettingsCard testID="freebuff-add-account">
+        <View style={compact ? styles.stack : styles.formRow}>
+          <View style={compact ? undefined : styles.formInput}>
+            <SettingsInput
+              label="Label (optional)"
+              placeholder="Work laptop"
+              onChangeText={handleLabelChange}
+            />
+          </View>
+          <SettingsAction
+            label="Browser login"
+            actionLabel="Log in with Freebuff"
+            disabled={startMutation.isPending}
+            onPress={handleStart}
+          />
+        </View>
+        {startMutation.isError ? (
+          <Text accessibilityRole="alert" style={styles.muted}>
+            {startMutation.error.message}
+          </Text>
+        ) : null}
+      </SettingsCard>
     </SettingsSection>
   );
 }

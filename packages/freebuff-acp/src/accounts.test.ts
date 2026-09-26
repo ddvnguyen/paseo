@@ -7,6 +7,7 @@ import {
   accountDisplayName,
   accountsPrefsFilePath,
   addAccount,
+  deriveAccountId,
   findAccount,
   listAccounts,
   readAccountsPrefs,
@@ -232,6 +233,46 @@ describe("renameAccount", () => {
     addAccount(VALID_ACCOUNT, env());
     expect(() => renameAccount("ghost", "X", env())).toThrow(/No such account/);
     expect(() => renameAccount("Bad Id", "X", env())).toThrow(/Invalid account id/);
+  });
+});
+
+describe("deriveAccountId", () => {
+  function credentialsDir(apiUserId: string): string {
+    const dir = fs.mkdtempSync(path.join(stateDir, "creds-"));
+    fs.writeFileSync(
+      path.join(dir, "credentials.json"),
+      JSON.stringify({ default: { id: apiUserId, authToken: "t" } }),
+    );
+    return dir;
+  }
+
+  it("uses the sanitized API user id when free", () => {
+    expect(deriveAccountId({ id: "user-1", email: "user@example.com" }, env())).toEqual({
+      id: "user-1",
+      reusedConfigDir: null,
+    });
+  });
+
+  it("falls back to the email local-part, then 'account', skipping reserved ids", () => {
+    expect(deriveAccountId({ id: "!!!", email: "bob@example.com" }, env()).id).toBe("bob");
+    expect(deriveAccountId({ id: "default", email: "default@example.com" }, env()).id).toBe(
+      "account",
+    );
+  });
+
+  it("suffixes when the base id belongs to a different API user", () => {
+    const otherDir = credentialsDir("someone-else");
+    fs.writeFileSync(accountsFile, JSON.stringify([{ id: "user-1", configDir: otherDir }]));
+    expect(deriveAccountId({ id: "user-1", email: "user@example.com" }, env()).id).toBe("user-1-2");
+  });
+
+  it("reuses the id and config dir when the same API user re-logs in", () => {
+    const homeDir = credentialsDir("user-1");
+    fs.writeFileSync(accountsFile, JSON.stringify([{ id: "user-1", configDir: homeDir }]));
+    expect(deriveAccountId({ id: "user-1", email: "user@example.com" }, env())).toEqual({
+      id: "user-1",
+      reusedConfigDir: homeDir,
+    });
   });
 });
 

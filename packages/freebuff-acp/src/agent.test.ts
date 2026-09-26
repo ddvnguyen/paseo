@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 
 import { FreebuffAcpAgent, resolveTurnTimeoutMs } from "./agent.js";
+import { setModelEnabled } from "./disabled-models.js";
+import { FREEBUFF_MODEL_IDS } from "./models.js";
+import { countUserTurns } from "./rewind.js";
 import { loadPersistedSession, savePersistedSession } from "./session-store.js";
 
 /** Resolve a fetch() input (string | URL | Request) to a string href. */
@@ -874,6 +877,55 @@ describe("FreebuffAcpAgent", () => {
     expect(restored.models?.currentModelId).toBe("deepseek/deepseek-v4-flash");
   });
 
+  it("rejects new sessions and model switches to disabled models", async () => {
+    const env = testEnv();
+    setModelEnabled("minimax/minimax-m3", false, FREEBUFF_MODEL_IDS, env);
+    const agent = new FreebuffAcpAgent(makeConn(), env);
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+
+    await expect(
+      agent.unstable_setSessionModel({
+        sessionId: session.sessionId,
+        modelId: "minimax/minimax-m3",
+      } as never),
+    ).rejects.toThrow(/disabled/);
+    await expect(
+      agent.setSessionConfigOption({
+        sessionId: session.sessionId,
+        configId: "model",
+        value: "minimax/minimax-m3",
+      } as never),
+    ).rejects.toThrow(/disabled/);
+    // The picker hides the disabled model from a fresh session too.
+    expect(session.models?.availableModels.map((model) => model.modelId)).not.toContain(
+      "minimax/minimax-m3",
+    );
+
+    const disabledDefault = testEnv();
+    setModelEnabled("z-ai/glm-5.3-flash", false, FREEBUFF_MODEL_IDS, disabledDefault);
+    const blocked = new FreebuffAcpAgent(makeConn(), disabledDefault);
+    stubClient(blocked, makeClient({ type: "success" }));
+    await expect(blocked.newSession({ cwd: "/tmp", mcpServers: [] } as never)).rejects.toThrow(
+      /disabled/,
+    );
+  });
+
+  it("keeps a running session on its model after that model is disabled", async () => {
+    const env = testEnv();
+    const agent = new FreebuffAcpAgent(makeConn(), env);
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+
+    setModelEnabled("z-ai/glm-5.3-flash", false, FREEBUFF_MODEL_IDS, env);
+    const state = await agent.loadSession({
+      sessionId: session.sessionId,
+      cwd: "/tmp",
+      mcpServers: [],
+    } as never);
+    expect(state.models?.currentModelId).toBe("z-ai/glm-5.3-flash");
+  });
+
   it("lists persisted sessions, newest first, filtered by cwd, with titles", async () => {
     const conn = makeConn();
     const agent = new FreebuffAcpAgent(conn, testEnv());
@@ -1203,6 +1255,161 @@ describe("FreebuffAcpAgent", () => {
     expect(loadPersistedSession(sessionB.sessionId, env)?.runState).toEqual({ marker: 1 });
   });
 
+  describe("conversation rewind (owner directive)", () => {
+    /** SDK fake whose conversation grows by one user+assistant pair per run. */
+    function growingClient() {
+      let calls = 0;
+      return {
+        run: vi.fn(async () => {
+          calls += 1;
+          const history: unknown[] = [];
+          for (let index = 1; index <= calls; index += 1) {
+            history.push({
+              role: "user",
+              tags: ["USER_PROMPT"],
+              content: [{ type: "text", text: `p${index}` }],
+            });
+            history.push({ role: "assistant", content: [{ type: "text", text: `a${index}` }] });
+          }
+          return {
+            sessionState: {
+              mainAgentState: { contextTokenCount: 1000 * calls, messageHistory: history },
+            },
+            output: { type: "success" },
+          };
+        }),
+      };
+    }
+
+    async function runTwoTurns(agent: FreebuffAcpAgent) {
+      const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+      await agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "p1" }],
+      } as never);
+      await agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "p2" }],
+      } as never);
+      return session;
+    }
+
+    /** Flatten the conn's sessionUpdate calls into update kinds. */
+    function updateKinds(conn: ReturnType<typeof makeConn>): string[] {
+      const calls = conn.sessionUpdate.mock.calls as unknown as [
+        { update: { sessionUpdate: string } },
+      ][];
+      return calls.map(([notification]) => notification.update.sessionUpdate);
+    }
+
+    const sessionOf = (
+      agent: FreebuffAcpAgent,
+      sessionId: string,
+    ): { runState: Record<string, unknown> | null; checkpoints: Array<{ turn: number }> } =>
+      (
+        agent as unknown as {
+          sessions: Map<
+            string,
+            { runState: Record<string, unknown> | null; checkpoints: Array<{ turn: number }> }
+          >;
+        }
+      ).sessions.get(sessionId)!;
+
+    /** Turn ordinals of the session's checkpoint ring. */
+    function checkpointTurns(session: { checkpoints: Array<{ turn: number }> }): number[] {
+      return session.checkpoints.map((checkpoint) => checkpoint.turn);
+    }
+
+    it("rewinds to an earlier turn: restores state, trims checkpoints, replays, persists", async () => {
+      const conn = makeConn();
+      const agent = new FreebuffAcpAgent(conn, testEnv());
+      const client = growingClient();
+      stubClient(agent, client as unknown as ReturnType<typeof makeClient>);
+      const session = await runTwoTurns(agent);
+
+      const live = sessionOf(agent, session.sessionId);
+      expect(checkpointTurns(live)).toEqual([1, 2]);
+
+      const result = await agent.rewindToUserTurn({ sessionId: session.sessionId, turn: 2 });
+      expect(result.remainingTurns).toBe(1);
+      expect(countUserTurns(live.runState)).toBe(1);
+      expect(checkpointTurns(live)).toEqual([1]);
+
+      // The host replaces its timeline from the replayed updates.
+      const kinds = updateKinds(conn);
+      expect(kinds).toContain("user_message_chunk");
+      expect(kinds).toContain("agent_message_chunk");
+      expect(kinds).toContain("usage_update");
+
+      // The restored state survives a restart.
+      const persisted = loadPersistedSession(session.sessionId, testEnv());
+      expect(persisted?.runState).toEqual(live.runState);
+    });
+
+    it("rejects an unknown rewind turn and a rewind past the conversation end", async () => {
+      const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+      stubClient(agent, makeClient({ type: "success" }));
+      const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+      await expect(
+        agent.rewindToUserTurn({ sessionId: session.sessionId, turn: 3 }),
+      ).rejects.toThrow(/No rewind point/);
+    });
+
+    it("routes freebuff/rewindToUserTurn through extMethod", async () => {
+      const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+      stubClient(agent, growingClient() as unknown as ReturnType<typeof makeClient>);
+      const session = await runTwoTurns(agent);
+
+      const result = await agent.extMethod("freebuff/rewindToUserTurn", {
+        sessionId: session.sessionId,
+        turn: 2,
+      });
+      expect(result.remainingTurns).toBe(1);
+      await expect(agent.extMethod("freebuff/nope", {})).rejects.toThrow(
+        /Unknown freebuff extension method/,
+      );
+    });
+  });
+
+  describe("S5: approval prompts name the account (owner directive)", () => {
+    it("the open-session prompt carries the account label (and email when known)", async () => {
+      const conn = makeConn();
+      conn.requestPermission.mockResolvedValueOnce({ outcome: { outcome: "cancelled" } });
+      const agent = new FreebuffAcpAgent(conn, testEnv());
+      stubClient(agent, makeClient({ type: "success" }));
+      const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+      await agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "hi" }],
+      } as never);
+
+      interface PermissionParams {
+        toolCall: { content?: Array<{ content?: { text?: string } }> };
+        options?: Array<{ name?: string }>;
+      }
+      const permissionParams = (call: unknown[]): PermissionParams => call[0] as PermissionParams;
+      const hasPromptBody = (params: PermissionParams): boolean =>
+        params.toolCall?.content?.length !== undefined;
+      const permissionCall = conn.requestPermission.mock.calls
+        .map(permissionParams)
+        .find(hasPromptBody);
+      expect(permissionCall).toBeTruthy();
+      const text = permissionCall?.toolCall.content?.[0]?.content?.text ?? "";
+      // The account is named in the body: "... for <label> (<email>) on MODEL"
+      // or "... for <label> on MODEL" when no email is stored. The label comes
+      // from the environment (env key → "API key (env)"; a real login record
+      // resolves to its stored name/email), so assert the STRUCTURE, and that
+      // a label resolved at all (never the bare fallback-less old wording).
+      expect(text).toMatch(/Opening one for .+ on /);
+      expect(text).not.toContain("Opening one for z-ai");
+      // The approve option carries the account name too.
+      expect(permissionCall?.options?.[0]?.name).toMatch(/^Open session on .+ — /);
+      // REQUIRE_APPROVAL meta is preserved.
+      const raw = JSON.stringify(conn.requestPermission.mock.calls);
+      expect(raw).toContain("paseo/requireApproval");
+    });
+  });
+
   describe("session-end gate retry (R3)", () => {
     /** Flatten a sessionUpdate mock's captured params into update objects. */
     const updatesOf = (conn: ReturnType<typeof makeConn>) =>
@@ -1334,9 +1541,15 @@ describe("FreebuffAcpAgent", () => {
       expect(second.prompt).toBe("hi");
       expect(first.extraCodebuffMetadata).toEqual({ freebuff_instance_id: "inst-new-1" });
       expect(second.extraCodebuffMetadata).toEqual({ freebuff_instance_id: "inst-new-2" });
-      // Exactly one notice, not an "free session has ended" failure.
+      // Exactly one notice, not an "free session has ended" failure. The
+      // re-admit was an AUTO-RENEW (confirmSessionOpen bypassed once) because
+      // the original admission had a confirm hook. S5: the notice names the
+      // account (label resolved from the env; email appended when stored).
       const chunkTexts = chunkTextsOf(conn);
-      expect(chunkTexts).toContain("Freebuff session ended; reopened and continuing.");
+      const isRenewNotice = (text: string): boolean =>
+        text.includes("auto-renewed the free session (one-time)");
+      const renewNotice = chunkTexts.find(isRenewNotice);
+      expect(renewNotice).toMatch(/^Freebuff session on .+ ended; auto-renewed/);
       expect(chunkTexts.join("\n")).not.toMatch(/session_expired/i);
       // Two admissions total: original + transparent re-admit.
       expect(postCount).toBe(2);
@@ -1562,7 +1775,7 @@ describe("account, quota and session-open switch", () => {
     const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
     const account = session.configOptions?.find((option) => option.id === "account");
     expect(account).toMatchObject({ type: "select" });
-    expect(JSON.stringify(account)).toContain("20/25 left");
+    expect(JSON.stringify(account)).toContain("20/25 daily");
     const bunny = session.models?.availableModels.find(
       (model) => model.modelId === "stealth/space-bunny-alpha",
     );
@@ -1657,8 +1870,8 @@ describe("multiple accounts", () => {
     };
     expect(account.currentValue).toBe("default");
     expect(account.options.map((option) => option.value)).toEqual(["default", "work"]);
-    expect(account.options[0]?.name).toContain("20/25 left");
-    expect(account.options[1]?.name).toContain("Work · 7/25 left");
+    expect(account.options[0]?.name).toContain("20/25 daily");
+    expect(account.options[1]?.name).toContain("Work · 7/25 daily");
 
     const response = await agent.setSessionConfigOption({
       sessionId: session.sessionId,
@@ -2105,7 +2318,7 @@ describe("quota refresh robustness (F8)", () => {
       const agent = new FreebuffAcpAgent(makeConn(), testEnv());
       stubClient(agent, makeClient({ type: "success" }));
       const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
-      expect(JSON.stringify(session.configOptions)).toContain("20/25 left");
+      expect(JSON.stringify(session.configOptions)).toContain("20/25 daily");
 
       // The quota server now hangs; the 5s bound must free session calls.
       (agent as unknown as { refreshStatus: () => Promise<void> }).refreshStatus = () =>
@@ -2119,7 +2332,7 @@ describe("quota refresh robustness (F8)", () => {
       const response = await pending;
 
       const account = response.configOptions.find((option) => option.id === "account");
-      expect(JSON.stringify(account)).toContain("20/25 left");
+      expect(JSON.stringify(account)).toContain("20/25 daily");
       expect(errSpy.mock.calls.map((call) => String(call[0])).join("")).toContain(
         "keeping the last known status",
       );

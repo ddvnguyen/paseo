@@ -6,6 +6,7 @@ import {
   accountConfigDir,
   accountDisplayName,
   credentialsForAccount,
+  findAccount,
   isValidAccountId,
   listAccounts,
   removeAccount,
@@ -50,6 +51,14 @@ export interface AccountDetail {
   authenticated: boolean;
   /** Adapter-managed (created by login-start); false for a `freebuff login` dir. */
   managed: boolean;
+  /**
+   * Login identity from the stored user record (`default` profile of the
+   * account's credentials.json). Absent when no record exists (e.g. env-key
+   * auth) — there is no per-account user-info endpoint to fall back to, so
+   * these stay unknown rather than guessed. Never tokens.
+   */
+  email?: string;
+  name?: string;
   seat: SeatState;
   status: AccountStatus | null;
   cliSettings: CliSettingsView | null;
@@ -99,17 +108,45 @@ function isManaged(account: FreebuffAccount, env: NodeJS.ProcessEnv): boolean {
   return account.configDir !== null && account.configDir === accountConfigDir(account.id, env);
 }
 
+/** Display identity from the account's stored login user record (never tokens). */
+function readStoredIdentity(
+  account: FreebuffAccount,
+  env: NodeJS.ProcessEnv,
+): { email?: string; name?: string } {
+  const scoped =
+    account.configDir === null ? env : { ...env, FREEBUFF_CONFIG_DIR: account.configDir };
+  const credentialsPath = getCredentialsPath(scoped);
+  if (!credentialsPath) return {};
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
+    if (!isRecord(parsed) || !isRecord(parsed.default)) return {};
+    const identity: { email?: string; name?: string } = {};
+    if (typeof parsed.default.email === "string" && parsed.default.email.trim()) {
+      identity.email = parsed.default.email.trim();
+    }
+    if (typeof parsed.default.name === "string" && parsed.default.name.trim()) {
+      identity.name = parsed.default.name.trim();
+    }
+    return identity;
+  } catch {
+    return {};
+  }
+}
+
 async function describeAccount(
   account: FreebuffAccount,
   env: NodeJS.ProcessEnv,
 ): Promise<AccountDetail> {
   const credentials = credentialsForAccount(account, env);
+  const identity = readStoredIdentity(account, env);
   const base = {
     id: account.id,
     label: accountDisplayName(account, env),
     isDefault: account.id === resolveDefaultAccountId(env),
     authenticated: credentials !== null,
     managed: isManaged(account, env),
+    ...(identity.email ? { email: identity.email } : {}),
+    ...(identity.name ? { name: identity.name } : {}),
     cliSettings: readCliSettings(account, env),
   };
   if (!credentials) return { ...base, seat: { state: "none" }, status: null };
@@ -133,6 +170,20 @@ export async function listAccountDetails(
     listAccounts(env).map((account) => describeAccount(account, env)),
   );
   return { accounts };
+}
+
+/**
+ * Email of a registered account from its stored login record (S5, owner
+ * directive: approval prompts must name the account). Best-effort: null when
+ * the account is unknown or has no stored email. Never returns tokens.
+ */
+export function accountUserEmail(
+  accountId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const account = findAccount(accountId, env);
+  if (!account) return null;
+  return readStoredIdentity(account, env).email ?? null;
 }
 
 export type EndSessionResult =

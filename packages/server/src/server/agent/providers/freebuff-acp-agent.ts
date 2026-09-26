@@ -12,7 +12,7 @@ interface FreebuffACPAgentClientOptions {
   providerParams?: unknown;
 }
 
-// Read-only: the adapter puts "<account> · <remaining>/<limit> left" in the
+// Read-only: the adapter puts "<account> · <remaining>/<limit> daily" in the
 // single option's name, so the feature selector doubles as the account/quota readout.
 export const FREEBUFF_ACCOUNT_FEATURE_OPTION: ACPConfigFeatureOption = {
   id: "account",

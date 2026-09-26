@@ -64,10 +64,11 @@ import {
   type AccountStatus,
   type ConfirmOpenMode,
 } from "./account.js";
+import { accountUserEmail } from "./account-admin.js";
 import type { ModelSwitchInfo, SessionOpenInfo } from "./freebuff-session.js";
 import { resolveRunMcpServers } from "./mcp.js";
 import { DEFAULT_MODE_ID, FREEBUFF_MODES, FREEBUFF_MODE_IDS } from "./modes.js";
-import { FREEBUFF_MODEL_IDS, initialModelId, modelState } from "./models.js";
+import { assertModelSelectable, initialModelId, modelState } from "./models.js";
 import {
   listPersistedSessions,
   pruneEmptyPersistedSessions,
@@ -78,6 +79,13 @@ import { clearedContextUsageUpdate, contextUsageUpdate } from "./context-usage.j
 import { runStateToReplayUpdates } from "./history-replay.js";
 import { REQUIRE_APPROVAL_META } from "./permission-meta.js";
 import { nextConversationState } from "./run-state.js";
+import {
+  checkpointForRewind,
+  checkpointsAfterRewind,
+  countUserTurns,
+  recordCheckpoint,
+  type RunStateCheckpoint,
+} from "./rewind.js";
 import { createAbortableTerminalTool } from "./terminal.js";
 import type { TurnResult } from "./turn.js";
 import { runTurn } from "./turn.js";
@@ -104,6 +112,16 @@ function describeError(error: unknown): string {
 /** F8: a failed/timed-out quota refresh keeps the last known status. */
 function ignoreStatusError(error: unknown): void {
   logWarn(`quota refresh failed: ${describeError(error)}; keeping the last known status.`);
+}
+
+/**
+ * S5 (owner directive): approval prompts and renewal notices must name the
+ * account — label plus email when the login record has one. Falls back to
+ * the label alone; never tokens or internal ids.
+ */
+function accountPromptName(label: string | undefined, email: string | undefined): string {
+  if (label && email) return `${label} (${email})`;
+  return label || email || "this account";
 }
 
 /**
@@ -164,6 +182,8 @@ interface AdapterSession {
   token: string;
   /** Opaque SDK conversation state used to continue this session across prompts. */
   runState: Record<string, unknown> | null;
+  /** Pre-turn conversation snapshots for rewind (see rewind.ts). */
+  checkpoints: RunStateCheckpoint[];
   busy: boolean;
   abortController: AbortController | null;
   /** Settles when the in-flight prompt has fully unwound (busy cleared). */
@@ -308,11 +328,12 @@ export class FreebuffAcpAgent {
   }
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
+    const modelId = initialModelId(this.env);
+    assertModelSelectable(modelId, this.env);
     const account = this.resolveAccount(initialAccountId(this.env));
     const { client, token } = this.ensureClient(params.cwd, account);
     const sessionId = `freebuff-${++this.sessionCounter}-${Date.now().toString(36)}`;
     const hostMcpServers = params.mcpServers;
-    const modelId = initialModelId(this.env);
     const session: AdapterSession = {
       id: sessionId,
       cwd: params.cwd,
@@ -326,6 +347,7 @@ export class FreebuffAcpAgent {
       client,
       token,
       runState: null,
+      checkpoints: [],
       busy: false,
       abortController: null,
       inflight: null,
@@ -344,7 +366,7 @@ export class FreebuffAcpAgent {
         availableModes: FREEBUFF_MODES,
         currentModeId: DEFAULT_MODE_ID,
       },
-      models: modelState(modelId, session.status),
+      models: modelState(modelId, session.status, this.env),
       configOptions: this.configOptionsFor(session),
     };
   }
@@ -434,6 +456,7 @@ export class FreebuffAcpAgent {
       client,
       token,
       runState: persisted?.runState ?? null,
+      checkpoints: persisted?.checkpoints ?? [],
       busy: false,
       abortController: null,
       inflight: null,
@@ -459,6 +482,7 @@ export class FreebuffAcpAgent {
         accountId: session.accountId,
         ...(session.title ? { title: session.title } : {}),
         runState: session.runState,
+        ...(session.checkpoints.length > 0 ? { checkpoints: session.checkpoints } : {}),
         updatedAt: new Date().toISOString(),
       },
       this.env,
@@ -468,7 +492,7 @@ export class FreebuffAcpAgent {
   private sessionState(session: AdapterSession) {
     return {
       ...this.modeState(session.modeId),
-      models: modelState(session.modelId, session.status),
+      models: modelState(session.modelId, session.status, this.env),
       configOptions: this.configOptionsFor(session),
     };
   }
@@ -489,7 +513,7 @@ export class FreebuffAcpAgent {
       accounts,
       currentAccountId: session.accountId,
       confirmOpen: session.confirmOpen,
-      models: modelState(session.modelId, session.status),
+      models: modelState(session.modelId, session.status, this.env),
     });
   }
 
@@ -594,9 +618,7 @@ export class FreebuffAcpAgent {
   async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
     const session = this.sessions.get(params.sessionId);
     if (!session) throw new Error(`Unknown session: ${params.sessionId}`);
-    if (!FREEBUFF_MODEL_IDS.has(params.modelId)) {
-      throw new Error(`Unknown model: ${params.modelId}`);
-    }
+    assertModelSelectable(params.modelId, this.env);
     session.modelId = params.modelId;
     this.persist(session);
     // A different model has a different window: recompute the fill.
@@ -662,6 +684,16 @@ export class FreebuffAcpAgent {
       promptText = skillCommandPrompt(command.name, command.args);
     }
 
+    // Checkpoint the pre-turn state so the host can rewind to this turn.
+    // Ordinal = the ordinal this prompt WILL have (existing turns + 1); a
+    // /clear before it resets the conversation, so count from the live state.
+    session.checkpoints = recordCheckpoint({
+      checkpoints: session.checkpoints,
+      turn: countUserTurns(session.runState) + 1,
+      promptText: rawText,
+      runState: session.runState,
+    });
+
     // Steer: a prompt arriving mid-turn supersedes the running one. Stop it
     // and wait for it to unwind so the two turns never share the session's
     // RunState. (Paseo's ACP steer is cancel + new prompt; refusing here made
@@ -720,6 +752,9 @@ export class FreebuffAcpAgent {
             signal: abortController.signal,
             sessionId: session.id,
           };
+          // S5: the renewal notices name the account (label + email when known).
+          const email = this.accountEmailFor(session.accountId).accountEmail;
+          const accountName = accountPromptName(session.accountName, email);
           return await runTurn({
             client: session.client,
             cwd: session.cwd,
@@ -730,12 +765,23 @@ export class FreebuffAcpAgent {
             token: session.token,
             model: session.modelId,
             mcpServers: session.mcpServers,
+            accountPromptName: accountName,
             confirmSessionOpen:
               session.confirmOpen === "auto"
                 ? undefined
-                : (info) => this.confirmSessionOpen(session.id, info),
+                : (info) =>
+                    this.confirmSessionOpen(session.id, {
+                      ...info,
+                      accountLabel: session.accountName,
+                      ...this.accountEmailFor(session.accountId),
+                    }),
             // Ending the shared seat can cut another agent's run: always ask.
-            confirmModelSwitch: (info) => this.confirmModelSwitch(session.id, info),
+            confirmModelSwitch: (info) =>
+              this.confirmModelSwitch(session.id, {
+                ...info,
+                accountLabel: session.accountName,
+                ...this.accountEmailFor(session.accountId),
+              }),
             emit,
           });
         } finally {
@@ -1037,10 +1083,26 @@ export class FreebuffAcpAgent {
    * POST spends credit (one slot = 1 hour). Fails closed: a thrown request
    * or any selection other than `open-session` declines the spend.
    */
+  /**
+   * Email of a registered account from its stored login record (S5, owner
+   * directive: the approval prompts must name the account). Best-effort —
+   * an empty object means unknown, and the prompts fall back to the label.
+   * Never returns tokens or ids beyond the label/email pair.
+   */
+  private accountEmailFor(accountId: string): { accountEmail?: string } {
+    try {
+      const email = accountUserEmail(accountId, this.env);
+      return email ? { accountEmail: email } : {};
+    } catch {
+      return {};
+    }
+  }
+
   private async confirmSessionOpen(sessionId: string, info: SessionOpenInfo): Promise<boolean> {
     const cost = info.priceFreebucks != null ? `${info.priceFreebucks} Freebucks` : "Freebucks";
     const left =
       info.dailyRemaining != null ? ` — ${info.dailyRemaining} Freebucks left today` : "";
+    const account = accountPromptName(info.accountLabel, info.accountEmail);
     const response = await this.conn.requestPermission({
       sessionId,
       // Spends credit: hosts with auto-accept must still ask a person.
@@ -1054,7 +1116,7 @@ export class FreebuffAcpAgent {
             type: "content",
             content: {
               type: "text",
-              text: `No active Freebuff session. Opening one for ${info.model} costs ${cost} and lasts 1 hour${left}.`,
+              text: `No active Freebuff session. Opening one for ${account} on ${info.model} costs ${cost} and lasts 1 hour${left}.`,
             },
           },
         ],
@@ -1062,7 +1124,7 @@ export class FreebuffAcpAgent {
       options: [
         {
           optionId: "open-session",
-          name: `Open session — ${cost}, valid 1 hour`,
+          name: `Open session on ${account} — ${cost}, valid 1 hour`,
           kind: "allow_once",
         },
         { optionId: "cancel-open", name: "Cancel (no credit spent)", kind: "reject_once" },
@@ -1077,6 +1139,7 @@ export class FreebuffAcpAgent {
    */
   private async confirmModelSwitch(sessionId: string, info: ModelSwitchInfo): Promise<boolean> {
     const cost = info.priceFreebucks != null ? `${info.priceFreebucks} Freebucks` : "Freebucks";
+    const account = accountPromptName(info.accountLabel, info.accountEmail);
     const response = await this.conn.requestPermission({
       sessionId,
       _meta: REQUIRE_APPROVAL_META,
@@ -1091,7 +1154,7 @@ export class FreebuffAcpAgent {
             content: {
               type: "text",
               text:
-                `This account already has an open Freebuff session on ${info.currentModel} ` +
+                `The account ${account} already has an open Freebuff session on ${info.currentModel} ` +
                 `(one session per account, shared with other agents and CLIs). ` +
                 `Switching to ${info.requestedModel} ends it, which can interrupt another agent, ` +
                 `and opens a new one (${cost}, 1 hour).`,
@@ -1107,12 +1170,83 @@ export class FreebuffAcpAgent {
         },
         {
           optionId: "switch-model",
-          name: `Switch to ${info.requestedModel} — ${cost}`,
+          name: `Switch ${account} to ${info.requestedModel} — ${cost}`,
           kind: "allow_once",
         },
       ],
     });
     return response.outcome.outcome === "selected" && response.outcome.optionId === "switch-model";
+  }
+
+  /**
+   * Conversation rewind (owner directive 2026-09-26): restore the session to
+   * the state BEFORE user turn `turn` (1-based ordinal of REAL prompts,
+   * computed by the host bridge from its timeline). Drops the checkpoint tail,
+   * persists, and replays the restored conversation so the host can replace
+   * its timeline (the same contract `session/load` serves).
+   * Conversation-only: the adapter owns no file-checkpoint primitive (same
+   * scope as codex thread rollback).
+   */
+  async rewindToUserTurn(params: {
+    sessionId: string;
+    turn: number;
+  }): Promise<{ replays: number; remainingTurns: number }> {
+    const session = this.sessions.get(params.sessionId);
+    if (!session) throw new Error(`Unknown session: ${params.sessionId}`);
+    if (session.busy) throw new Error("Cannot rewind while a turn is running.");
+
+    const checkpoint = checkpointForRewind(session.checkpoints, session.runState, params.turn);
+    if (!checkpoint) {
+      throw new Error(`No rewind point for user turn ${params.turn}`);
+    }
+
+    session.runState = checkpoint.runState;
+    session.checkpoints = checkpointsAfterRewind(session.checkpoints, params.turn);
+    this.persist(session);
+
+    // Replay the restored conversation: the host replaces its timeline from
+    // these updates (identical to the session/load replay contract).
+    let replays = 0;
+    for (const update of runStateToReplayUpdates(session.runState)) {
+      try {
+        await this.conn.sessionUpdate({
+          sessionId: session.id,
+          update,
+        } as unknown as SessionNotification);
+        replays += 1;
+      } catch (error) {
+        logWarn(
+          `rewind replay to ${session.id} failed at update ${replays + 1}: ${describeError(error)}`,
+        );
+        break;
+      }
+    }
+    this.emitContextUsage(session);
+    return { replays, remainingTurns: countUserTurns(session.runState) };
+  }
+
+  /**
+   * ACP extension-method surface (owner rewind directive). Methods are
+   * `freebuff:*`-prefixed per the ACP extensibility guidance; unknown methods
+   * throw so the host sees a clean method-not-found instead of silence.
+   */
+  async extMethod(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    switch (method) {
+      case "freebuff/rewindToUserTurn": {
+        const sessionId = String(params.sessionId ?? "");
+        const turn = Number(params.turn);
+        if (!sessionId || !Number.isInteger(turn) || turn < 1) {
+          throw new Error("freebuff/rewindToUserTurn requires sessionId and a 1-based turn");
+        }
+        const result = await this.rewindToUserTurn({ sessionId, turn });
+        return { replays: result.replays, remainingTurns: result.remainingTurns };
+      }
+      default:
+        throw new Error(`Unknown freebuff extension method: ${method}`);
+    }
   }
 
   async cancel(params: { sessionId: string }): Promise<void> {

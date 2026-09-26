@@ -12,6 +12,7 @@ import {
   startLogin,
 } from "./server/accounts";
 import { ADAPTER_ENTRY } from "./server/generated";
+import { listModels, setModelEnabled } from "./server/models";
 import { readFreebuffStatus } from "./server/status";
 import {
   freebuffAccountDelete,
@@ -23,6 +24,7 @@ import {
   freebuffLoginStart,
   freebuffSessionEnd,
 } from "./shared/accounts";
+import { freebuffModelsList, freebuffModelsSetEnabled } from "./shared/models";
 import { freebuffStatus } from "./shared/status";
 
 export default function contribute(server: PluginServerContext) {
@@ -47,5 +49,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(freebuffAccountSetDefault, setAccountDefault);
   server.handle(freebuffAccountRename, renameAccount);
   server.handle(freebuffSessionEnd, endSession);
+  server.handle(freebuffModelsList, listModels);
+  server.handle(freebuffModelsSetEnabled, setModelEnabled);
   return () => {};
 }

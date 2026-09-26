@@ -47,6 +47,19 @@ function buildPermission(question: Record<string, unknown>): PendingPermission {
   };
 }
 
+function buildPermissions(questions: Record<string, unknown>[]): PendingPermission {
+  return {
+    ...buildPermission(questions[0] as Record<string, unknown>),
+    request: {
+      id: "perm-1",
+      provider: "claude",
+      name: "AskUserQuestion",
+      kind: "question",
+      input: { questions },
+    },
+  };
+}
+
 function mountCard(question: Record<string, unknown>) {
   const onRespond = vi.fn<(response: AgentPermissionResponse) => void>();
   const container = document.createElement("div");
@@ -145,5 +158,58 @@ describe("QuestionFormCard other answers", () => {
     expect(card.otherInput().value).toBe("");
     card.submit();
     expect(card.submittedAnswers()).toEqual({ Provider: "Codex" });
+  });
+});
+
+describe("QuestionFormCard long-label wrapping", () => {
+  const longHeader =
+    "How should the new multi-region deployment pipeline handle credential rotation across environments";
+  const longOptionLabel =
+    "Rotate credentials automatically on every deploy with per-environment approval gates enabled";
+
+  function mountTwoQuestions() {
+    const onRespond = vi.fn<(response: AgentPermissionResponse) => void>();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const permission = buildPermissions([
+      {
+        question: "First?",
+        header: longHeader,
+        options: [{ label: longOptionLabel }],
+        multiSelect: false,
+      },
+      {
+        question: "Second?",
+        header: "Second question header",
+        options: [{ label: "Short" }],
+        multiSelect: false,
+      },
+    ]);
+    act(() =>
+      root.render(
+        <QuestionFormCard permission={permission} onRespond={onRespond} isResponding={false} />,
+      ),
+    );
+    mounted.push({ root, container });
+    return within(container);
+  }
+
+  it("renders long nav-tab headers and long option labels without single-line truncation", () => {
+    const view = mountTwoQuestions();
+
+    // Nav tabs render only for multi-question forms.
+    const navTab = view.getByTestId("question-form-question-nav-1");
+    expect(navTab.getAttribute("aria-label")).toBe("Question 1 of 2");
+
+    const headerEl = view.getByText(longHeader);
+    const headerStyle = getComputedStyle(headerEl);
+    expect(headerStyle.whiteSpace).not.toBe("nowrap");
+    expect(headerStyle.textOverflow).not.toBe("ellipsis");
+
+    const optionEl = view.getByText(longOptionLabel);
+    const optionStyle = getComputedStyle(optionEl);
+    expect(optionStyle.whiteSpace).not.toBe("nowrap");
+    expect(optionStyle.textOverflow).not.toBe("ellipsis");
   });
 });

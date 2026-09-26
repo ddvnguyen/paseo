@@ -85,7 +85,7 @@ function accountWindow(account: StatusReport["accounts"][number]): ProviderUsage
       : null;
   return windowFromUsedPct({
     id: `account_${account.id}`,
-    label: `${account.label} · ${status.dailyRemaining}/${status.dailyLimit} left`,
+    label: `${account.label} · ${status.dailyRemaining}/${status.dailyLimit} daily`,
     utilizationPct: usedPct,
     resetsAt: status.resetAt ?? null,
     tone: toneFromUsedPct(usedPct),

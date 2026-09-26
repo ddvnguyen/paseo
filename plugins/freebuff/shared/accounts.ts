@@ -28,6 +28,9 @@ const accountDetail = z.object({
   isDefault: z.boolean(),
   authenticated: z.boolean(),
   managed: z.boolean(),
+  /** Login identity from the adapter's stored user record; absent when unknown. */
+  email: z.string().optional(),
+  name: z.string().optional(),
   seat,
   status: z
     .object({
@@ -48,8 +51,8 @@ export const freebuffAccountsList = defineRpc({
 
 export const freebuffLoginStart = defineRpc({
   name: "freebuff.login.start",
-  input: z.object({ id: accountId, label: z.string().max(80).optional() }),
-  output: z.object({ loginUrl: z.string(), expiresAt: z.string() }),
+  input: z.object({ id: accountId.optional(), label: z.string().max(80).optional() }),
+  output: z.object({ id: z.string(), loginUrl: z.string(), expiresAt: z.string() }),
 });
 
 export const freebuffLoginPoll = defineRpc({

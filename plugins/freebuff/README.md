@@ -1,7 +1,7 @@
 # Freebuff plugin for Paseo
 
 Runs the `freebuff-acp` adapter (`packages/freebuff-acp`) as a Paseo provider and adds a
-**Freebuff** sidebar page with per-account quota and a model-catalog check.
+**Freebuff** screen under Settings → Plugins with per-account quota and a model-catalog check.
 
 ## Install
 
