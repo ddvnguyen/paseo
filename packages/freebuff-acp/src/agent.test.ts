@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { FreebuffAcpAgent, resolveTurnTimeoutMs } from "./agent.js";
+import { setModelEnabled } from "./disabled-models.js";
+import { FREEBUFF_MODEL_IDS } from "./models.js";
 import { countUserTurns } from "./rewind.js";
 import { loadPersistedSession, savePersistedSession } from "./session-store.js";
 
@@ -873,6 +875,55 @@ describe("FreebuffAcpAgent", () => {
       mcpServers: [],
     } as never);
     expect(restored.models?.currentModelId).toBe("deepseek/deepseek-v4-flash");
+  });
+
+  it("rejects new sessions and model switches to disabled models", async () => {
+    const env = testEnv();
+    setModelEnabled("minimax/minimax-m3", false, FREEBUFF_MODEL_IDS, env);
+    const agent = new FreebuffAcpAgent(makeConn(), env);
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+
+    await expect(
+      agent.unstable_setSessionModel({
+        sessionId: session.sessionId,
+        modelId: "minimax/minimax-m3",
+      } as never),
+    ).rejects.toThrow(/disabled/);
+    await expect(
+      agent.setSessionConfigOption({
+        sessionId: session.sessionId,
+        configId: "model",
+        value: "minimax/minimax-m3",
+      } as never),
+    ).rejects.toThrow(/disabled/);
+    // The picker hides the disabled model from a fresh session too.
+    expect(session.models?.availableModels.map((model) => model.modelId)).not.toContain(
+      "minimax/minimax-m3",
+    );
+
+    const disabledDefault = testEnv();
+    setModelEnabled("z-ai/glm-5.3-flash", false, FREEBUFF_MODEL_IDS, disabledDefault);
+    const blocked = new FreebuffAcpAgent(makeConn(), disabledDefault);
+    stubClient(blocked, makeClient({ type: "success" }));
+    await expect(blocked.newSession({ cwd: "/tmp", mcpServers: [] } as never)).rejects.toThrow(
+      /disabled/,
+    );
+  });
+
+  it("keeps a running session on its model after that model is disabled", async () => {
+    const env = testEnv();
+    const agent = new FreebuffAcpAgent(makeConn(), env);
+    stubClient(agent, makeClient({ type: "success" }));
+    const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+
+    setModelEnabled("z-ai/glm-5.3-flash", false, FREEBUFF_MODEL_IDS, env);
+    const state = await agent.loadSession({
+      sessionId: session.sessionId,
+      cwd: "/tmp",
+      mcpServers: [],
+    } as never);
+    expect(state.models?.currentModelId).toBe("z-ai/glm-5.3-flash");
   });
 
   it("lists persisted sessions, newest first, filtered by cwd, with titles", async () => {

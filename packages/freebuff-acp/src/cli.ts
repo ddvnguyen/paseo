@@ -10,6 +10,8 @@ import {
 } from "./account-admin.js";
 import { accountsFilePath, addAccount, removeAccount } from "./accounts.js";
 import { cancelLogin, pollLogin, startLogin } from "./login.js";
+import { setModelEnabled } from "./disabled-models.js";
+import { FREEBUFF_MODEL_IDS, listModelsWithPrices } from "./models.js";
 import { buildStatusReport } from "./status-report.js";
 
 const USAGE = `freebuff-acp-cli <command>
@@ -36,8 +38,12 @@ const USAGE = `freebuff-acp-cli <command>
                                Make an account the one new sessions start on (JSON:
                                {"defaultAccountId"})
   accounts rename --id <id> --label <label>
-                               Change an account's display label (empty label clears an
-                               override; JSON: {"id","label"})
+                                Change an account's display label (empty label clears an
+                                override; JSON: {"id","label"})
+  models list                   Catalog models with probe prices and enabled flags (JSON)
+  models set-enabled --id <id> --enabled true|false
+                                Offer or hide a model for new sessions; the last
+                                enabled model cannot be disabled (JSON: {"disabled"})
   session end --id <id>        End the account's live Freebuff seat (JSON)
 `;
 
@@ -81,6 +87,26 @@ async function runAdminCommand(
     const id = flagValue("--id", rest);
     if (!id) throw new Error("usage: session end --id <id>");
     console.log(JSON.stringify(await endAccountSession(id), null, 2));
+    return 0;
+  }
+  return null;
+}
+
+/** The `models list|set-enabled` subcommands; null when this is not a models command. */
+async function runModelsCommand(subcommand: string, rest: string[]): Promise<number | null> {
+  if (subcommand === "list") {
+    console.log(JSON.stringify(await listModelsWithPrices(process.env), null, 2));
+    return 0;
+  }
+  if (subcommand === "set-enabled") {
+    const id = flagValue("--id", rest);
+    const enabledRaw = flagValue("--enabled", rest);
+    if (!id || (enabledRaw !== "true" && enabledRaw !== "false")) {
+      throw new Error("usage: models set-enabled --id <id> --enabled true|false");
+    }
+    console.log(
+      JSON.stringify(setModelEnabled(id, enabledRaw === "true", FREEBUFF_MODEL_IDS), null, 2),
+    );
     return 0;
   }
   return null;
@@ -130,6 +156,10 @@ async function main(argv: string[]): Promise<number> {
   }
   const admin = await runAdminCommand(command, subcommand, rest);
   if (admin !== null) return admin;
+  if (command === "models" && subcommand) {
+    const models = await runModelsCommand(subcommand, rest);
+    if (models !== null) return models;
+  }
   if (command === "accounts" && subcommand) {
     const login = await runLoginCommand(subcommand, rest);
     if (login !== null) return login;

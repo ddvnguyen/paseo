@@ -67,7 +67,7 @@ import {
 import type { ModelSwitchInfo, SessionOpenInfo } from "./freebuff-session.js";
 import { resolveRunMcpServers } from "./mcp.js";
 import { DEFAULT_MODE_ID, FREEBUFF_MODES, FREEBUFF_MODE_IDS } from "./modes.js";
-import { FREEBUFF_MODEL_IDS, initialModelId, modelState } from "./models.js";
+import { assertModelSelectable, initialModelId, modelState } from "./models.js";
 import {
   listPersistedSessions,
   pruneEmptyPersistedSessions,
@@ -317,11 +317,12 @@ export class FreebuffAcpAgent {
   }
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
+    const modelId = initialModelId(this.env);
+    assertModelSelectable(modelId, this.env);
     const account = this.resolveAccount(initialAccountId(this.env));
     const { client, token } = this.ensureClient(params.cwd, account);
     const sessionId = `freebuff-${++this.sessionCounter}-${Date.now().toString(36)}`;
     const hostMcpServers = params.mcpServers;
-    const modelId = initialModelId(this.env);
     const session: AdapterSession = {
       id: sessionId,
       cwd: params.cwd,
@@ -354,7 +355,7 @@ export class FreebuffAcpAgent {
         availableModes: FREEBUFF_MODES,
         currentModeId: DEFAULT_MODE_ID,
       },
-      models: modelState(modelId, session.status),
+      models: modelState(modelId, session.status, this.env),
       configOptions: this.configOptionsFor(session),
     };
   }
@@ -480,7 +481,7 @@ export class FreebuffAcpAgent {
   private sessionState(session: AdapterSession) {
     return {
       ...this.modeState(session.modeId),
-      models: modelState(session.modelId, session.status),
+      models: modelState(session.modelId, session.status, this.env),
       configOptions: this.configOptionsFor(session),
     };
   }
@@ -501,7 +502,7 @@ export class FreebuffAcpAgent {
       accounts,
       currentAccountId: session.accountId,
       confirmOpen: session.confirmOpen,
-      models: modelState(session.modelId, session.status),
+      models: modelState(session.modelId, session.status, this.env),
     });
   }
 
@@ -606,9 +607,7 @@ export class FreebuffAcpAgent {
   async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
     const session = this.sessions.get(params.sessionId);
     if (!session) throw new Error(`Unknown session: ${params.sessionId}`);
-    if (!FREEBUFF_MODEL_IDS.has(params.modelId)) {
-      throw new Error(`Unknown model: ${params.modelId}`);
-    }
+    assertModelSelectable(params.modelId, this.env);
     session.modelId = params.modelId;
     this.persist(session);
     // A different model has a different window: recompute the fill.
