@@ -55,7 +55,12 @@ export interface PluginIconProps {
   color?: string;
 }
 
-export type PluginPanelLocation = "workspace" | "explorer";
+/**
+ * Where a registered workspace panel can appear.
+ * `dialog`: full modal overlay over the workspace (AdaptiveModalSheet on the
+ * host) — for plugin UIs that must not become a tab or side pane.
+ */
+export type PluginPanelLocation = "workspace" | "explorer" | "dialog";
 
 export interface PluginOpenPanelOptions {
   location?: PluginPanelLocation;
