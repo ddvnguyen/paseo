@@ -1095,6 +1095,29 @@ lines.on("line", (line) => {
     await connection.close();
   });
 
+  it("keeps the commands an agent announces before the session/new response lands", async () => {
+    const executable = await fakeAcp(`const readline = require("node:readline");
+const lines = readline.createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+lines.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: message.params.protocolVersion, agentCapabilities: {} } });
+  else if (message.method === "session/new") {
+    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "native-1", update: { sessionUpdate: "available_commands_update", availableCommands: [{ name: "skills", description: "List skills" }] } } });
+    setTimeout(() => send({ jsonrpc: "2.0", id: message.id, result: { sessionId: "native-1", modes: null, configOptions: [] } }), 20);
+  }
+});`);
+    const { connection, events } = await connect(executable, ["prompt.message"]);
+    await connection.send(openInput());
+
+    const commands = await waitForEvent(events, (event) => event.type === "session.commands");
+    expect(commands).toMatchObject({
+      sessionId: "session-1",
+      commands: [{ name: "skills", description: "List skills" }],
+    });
+    await connection.close();
+  });
+
   it("escalates shutdown when an ACP process ignores SIGTERM", async () => {
     const executable = await fakeAcp(`const readline = require("node:readline");
 process.on("SIGTERM", () => {});

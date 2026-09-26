@@ -346,6 +346,13 @@ class AcpRuntime {
   readonly connection: ClientSideConnection;
   agentCapabilities: AgentCapabilities = {};
   nativeSessionId = "";
+  /**
+   * Notifications that arrive while `session/new` is still in flight. The
+   * session id is only known once the response lands, and agents announce
+   * their commands right behind it, so these would otherwise be dropped as
+   * "another session" and the composer would never learn the slash commands.
+   */
+  private earlyUpdates: SessionNotification[] | null = null;
   private readonly child: ChildProcessWithoutNullStreams | null;
   private emit: (event: ProviderEvent) => void;
   private readonly messages = new Map<string, string>();
@@ -497,15 +504,24 @@ class AcpRuntime {
         }),
       );
     } else {
-      const newSession = await this.call(
-        this.connection.newSession({
-          cwd: input.config.cwd,
-          mcpServers,
-          _meta: metadata,
-        }),
-      );
-      response = newSession;
-      this.nativeSessionId = newSession.sessionId;
+      this.earlyUpdates = [];
+      let newSession: NewSessionResponse;
+      try {
+        newSession = await this.call(
+          this.connection.newSession({
+            cwd: input.config.cwd,
+            mcpServers,
+            _meta: metadata,
+          }),
+        );
+        response = newSession;
+        this.nativeSessionId = newSession.sessionId;
+        const early = this.earlyUpdates;
+        this.earlyUpdates = null;
+        for (const notification of early) this.sessionUpdate(notification);
+      } finally {
+        this.earlyUpdates = null;
+      }
     }
     this.modes = response.modes;
     this.configOptions = response.configOptions ?? [];
@@ -896,6 +912,10 @@ class AcpRuntime {
   }
 
   private sessionUpdate(notification: SessionNotification): void {
+    if (this.earlyUpdates && !this.nativeSessionId) {
+      this.earlyUpdates.push(notification);
+      return;
+    }
     if (notification.sessionId !== this.nativeSessionId) return;
     this.reduceUpdate(notification.update);
   }
