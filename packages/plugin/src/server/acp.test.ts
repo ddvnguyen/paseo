@@ -446,8 +446,9 @@ describe("runAcpProvider", () => {
     await expect(
       waitForEvent(
         events,
-        (event) =>
-          event.type === "session.runtime_failed" && event.error.message.includes("'missing'"),
+        (candidate) =>
+          candidate.type === "session.runtime_failed" &&
+          candidate.error.message.includes("'missing'"),
       ),
     ).resolves.toBeDefined();
 
@@ -1500,4 +1501,133 @@ describe("ACP streamed message boundaries", () => {
       ]);
     },
   );
+});
+
+describe("runAcpProvider rich questions (F10, paseo/questions over the plugin bridge)", () => {
+  it("maps _meta questions to a kind-question request with input.questions", async () => {
+    const harness = connectorHarness();
+    const registration = runAcpProvider({
+      id: "sdk-acp",
+      label: "SDK ACP",
+      connector: harness.connector,
+    });
+    const connection = await registration.connect({
+      versions: [1],
+      capabilities: ["prompt.message", "permission"],
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    await connection.send(openInput());
+    await waitForEvent(events, (event) => event.type === "session.ready");
+
+    const request = harness.instances[1]!.request("session/request_permission", {
+      sessionId: "connector-session",
+      toolCall: {
+        toolCallId: "ask-1",
+        title: "Which accounts?",
+        status: "pending",
+        content: [],
+        rawInput: {},
+      },
+      options: [
+        { optionId: "opt-a", name: "Alpha", kind: "allow_once" },
+        { optionId: "opt-b", name: "Beta", kind: "allow_once" },
+        { optionId: "skip", name: "Skip", kind: "reject_once" },
+      ],
+      _meta: {
+        "paseo/questions": [
+          {
+            question: "Which accounts?",
+            header: "Accounts",
+            options: [{ label: "Alpha" }, { label: "Beta" }],
+            multiSelect: true,
+            allowOther: true,
+          },
+        ],
+      },
+    });
+    const questionEvent = await waitForEvent(
+      events,
+      (candidate) =>
+        candidate.type === "session.permission" && candidate.request.kind === "question",
+    );
+    expect(questionEvent.request.input).toEqual({
+      questions: [
+        {
+          question: "Which accounts?",
+          header: "Accounts",
+          options: [{ label: "Alpha" }, { label: "Beta" }],
+          multiSelect: true,
+          allowOther: true,
+        },
+      ],
+    });
+
+    // The app answers via updatedInput.answers; the agent must receive them
+    // in the response _meta (header -> answer string, multi-select joined).
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: "permission:ask-1",
+      response: {
+        behavior: "allow",
+        selectedActionId: "opt-a",
+        updatedInput: {
+          answers: { Accounts: "Alpha, Beta custom note" },
+        },
+      },
+    });
+    await expect(request).resolves.toMatchObject({
+      outcome: { outcome: "selected", optionId: "opt-a" },
+      _meta: { "paseo/answers": { Accounts: "Alpha, Beta custom note" } },
+    });
+    await connection.close();
+  });
+
+  it("keeps plain permissions unchanged and carries requireApproval metadata", async () => {
+    const harness = connectorHarness();
+    const registration = runAcpProvider({
+      id: "sdk-acp",
+      label: "SDK ACP",
+      connector: harness.connector,
+    });
+    const connection = await registration.connect({
+      versions: [1],
+      capabilities: ["prompt.message", "permission"],
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    await connection.send(openInput());
+    await waitForEvent(events, (event) => event.type === "session.ready");
+
+    const spend = harness.instances[1]!.request("session/request_permission", {
+      sessionId: "connector-session",
+      toolCall: {
+        toolCallId: "spend-1",
+        title: "Open session (5 Freebucks)",
+        status: "pending",
+        content: [],
+        rawInput: {},
+      },
+      options: [{ optionId: "allow-once", name: "Allow", kind: "allow_once" }],
+      _meta: { "paseo/requireApproval": true },
+    });
+    const spendEvent = await waitForEvent(
+      events,
+      (candidate) => candidate.type === "session.permission" && candidate.request.kind === "tool",
+    );
+    expect(spendEvent.request.metadata).toEqual({ requireApproval: true });
+
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: "permission:spend-1",
+      response: { behavior: "allow", selectedActionId: "allow-once" },
+    });
+    // No answers submitted: the response must NOT carry a paseo/answers _meta.
+    await expect(spend).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "allow-once" },
+    });
+    await connection.close();
+  });
 });

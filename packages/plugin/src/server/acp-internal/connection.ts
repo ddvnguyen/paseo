@@ -21,6 +21,12 @@ import {
 import { z } from "zod";
 import type { JsonValue } from "@getpaseo/protocol/agent-types";
 
+import {
+  acpAnswersResponseMeta,
+  readAcpQuestions,
+  requiresExplicitApproval,
+} from "./acp-questions.js";
+
 import type {
   AcpConfigAccess,
   AcpConfigChange,
@@ -771,10 +777,18 @@ class AcpRuntime {
       );
     }
     this.permissions.delete(permissionId);
+    // Rich questions (F10): the host answers in updatedInput.answers
+    // (header -> answer string). It must reach the agent's requestPermission
+    // response _meta, mirroring packages/server acp-agent.ts:2398.
+    const answersMeta =
+      response.behavior === "allow" && response.updatedInput !== undefined
+        ? acpAnswersResponseMeta(response.updatedInput)
+        : {};
     pending.resolve({
       outcome: selected
         ? { outcome: "selected", optionId: selected.optionId }
         : { outcome: "cancelled" },
+      ...("_meta" in answersMeta ? { _meta: answersMeta._meta } : {}),
     });
     this.emit({
       type: "session.permission_resolved",
@@ -993,6 +1007,12 @@ class AcpRuntime {
 
   private requestPermission(request: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     const permissionId = `permission:${request.toolCall.toolCallId}`;
+    // Rich questions (F10): an agent attaches `_meta["paseo/questions"]` to the
+    // permission request for the tabbed multi-select/free-text form. The host
+    // contract carries it as kind "question" + input.questions; agents keep
+    // sending ordinary chooser options too, so the fallback stays single-choice.
+    const questions = readAcpQuestions(request._meta);
+    const requireApproval = requiresExplicitApproval(request._meta);
     return new Promise((resolve) => {
       this.permissions.set(permissionId, { request, resolve });
       this.emit({
@@ -1001,14 +1021,15 @@ class AcpRuntime {
         request: {
           id: permissionId,
           name: request.toolCall.name ?? request.toolCall.title ?? "Tool",
-          kind: "tool",
+          kind: questions ? "question" : "tool",
           title: request.toolCall.title ?? undefined,
-          input: jsonRecord(request.toolCall.rawInput),
+          input: questions ? jsonRecord({ questions }) : jsonRecord(request.toolCall.rawInput),
           actions: request.options.map((option) => ({
             id: option.optionId,
             label: option.name,
             behavior: option.kind.startsWith("allow") ? "allow" : "deny",
           })),
+          ...(requireApproval ? { metadata: { requireApproval: true } } : {}),
         },
       });
     });
