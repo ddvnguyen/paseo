@@ -65,7 +65,7 @@ describe("model catalog", () => {
       dailyRemaining: 20,
       dailyLimit: 25,
       prices: { "z-ai/glm-5.3-flash": 5, "mimo/mimo-v2.5": 0 },
-      priceNotices: {},
+      priceNotices: { "z-ai/glm-5.3-flash": "peak hours" },
     });
     expect(rows.map((row) => row.id)).toEqual([...FREEBUFF_MODEL_IDS]);
     expect(rows.every((row) => row.enabled)).toBe(true);
@@ -73,10 +73,13 @@ describe("model catalog", () => {
       name: "GLM 5.3 Flash",
       tagline: "Deep reasoning",
       priceFreebucks: 5,
+      sessionLengthMs: 3_600_000,
+      priceNotice: "peak hours",
     });
     expect(rows.find((row) => row.id === "mimo/mimo-v2.5")).toMatchObject({
       priceFreebucks: 0,
     });
+    expect(rows.find((row) => row.id === "mimo/mimo-v2.5")?.priceNotice).toBeUndefined();
   });
 
   it("omits prices without a probe and flags disabled models", () => {
@@ -85,6 +88,7 @@ describe("model catalog", () => {
     expect(rows.find((row) => row.id === "mimo/mimo-v2.5")).toMatchObject({ enabled: false });
     expect(rows.find((row) => row.id === "z-ai/glm-5.3-flash")).toMatchObject({ enabled: true });
     expect(rows.every((row) => row.priceFreebucks === undefined)).toBe(true);
+    expect(rows.every((row) => row.sessionLengthMs === 3_600_000)).toBe(true);
   });
 
   it("modelState hides disabled models from the picker but keeps them selectable by id", () => {

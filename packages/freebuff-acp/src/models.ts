@@ -65,8 +65,15 @@ export interface ModelRow {
   tagline: string;
   /** Cost to open a session, from the status probe; undefined when unknown. */
   priceFreebucks?: number;
+  /** How long a fresh seat lasts (FREEBUFF_SEAT_LIFETIME_MS default in turn.ts). */
+  sessionLengthMs: number;
+  /** Server note on this model's price (peak/off-peak, trials); undefined when none. */
+  priceNotice?: string;
   enabled: boolean;
 }
+
+/** Fresh-seat lifetime a reported price buys, in milliseconds. */
+export const MODEL_SESSION_LENGTH_MS = 3_600_000;
 
 /** Every catalog model with its price (when known) and enabled flag. */
 export function listModels(
@@ -79,10 +86,13 @@ export function listModels(
       id: modelId,
       name: MODEL_CATALOG[modelId]?.name ?? modelId,
       tagline: MODEL_CATALOG[modelId]?.tagline ?? "Freebuff free-tier model",
+      sessionLengthMs: MODEL_SESSION_LENGTH_MS,
       enabled: !disabled.has(modelId),
     };
     const price = status?.prices[modelId];
     if (price !== undefined) row.priceFreebucks = price;
+    const notice = status?.priceNotices[modelId];
+    if (notice !== undefined) row.priceNotice = notice;
     return row;
   });
 }
