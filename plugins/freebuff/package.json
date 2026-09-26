@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.17.1",
-    "@codebuff/sdk": "file:vendor/codebuff-sdk-0.10.7-paseo.2.tgz",
+    "@codebuff/sdk": "file:vendor/codebuff-sdk-0.10.7-paseo.3.tgz",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.3",
     "zod": "4.4.3"
