@@ -19,9 +19,11 @@ const USAGE = `freebuff-acp-cli <command>
                                Register an extra account (a config dir populated by
                                \`FREEBUFF_CONFIG_DIR=<dir> freebuff login\`)
   accounts remove <id>         Unregister an account
-  accounts login-start --id <id> [--label <label>]
-                               Start a device-code login: prints {"loginUrl","expiresAt"};
-                               open the URL in a browser to approve.
+  accounts login-start [--id <id>] [--label <label>]
+                                Start a device-code login: prints {"id","loginUrl","expiresAt"};
+                                without --id a provisional key is minted and the account
+                                id is derived from the login at success.
+                                Open the URL in a browser to approve.
   accounts login-poll --id <id>
                                Check the login: {"status":"pending"|"expired"|"success"|"none"};
                                on success the account is registered (never prints tokens).
@@ -87,9 +89,8 @@ async function runAdminCommand(
 /** The `accounts login-*` subcommands; null when this is not a login command. */
 async function runLoginCommand(subcommand: string, rest: string[]): Promise<number | null> {
   if (subcommand === "login-start") {
-    const id = flagValue("--id", rest);
+    const id = flagValue("--id", rest) ?? undefined;
     const label = flagValue("--label", rest) ?? undefined;
-    if (!id) throw new Error("usage: accounts login-start --id <id> [--label <label>]");
     console.log(JSON.stringify(await startLogin(id, process.env, fetch, label), null, 2));
     return 0;
   }

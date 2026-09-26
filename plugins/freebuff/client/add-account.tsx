@@ -13,13 +13,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Text, View } from "react-native";
 
 import { freebuffLoginCancel, freebuffLoginPoll, freebuffLoginStart } from "../shared/accounts";
-import { isValidAccountId, validateAccountId } from "./account-format";
 
 const POLL_INTERVAL_MS = 5000;
 
 interface AddAccountProps {
   theme: PluginSurfaceProps["theme"];
-  existingIds: readonly string[];
 }
 
 type Phase = "form" | "login";
@@ -220,13 +218,13 @@ function LoginPanel({
 }
 
 /**
- * 'Add account' section: id/label form, then the browser login panel that
+ * 'Add account' section: label form, then the browser login panel that
  * polls freebuff.login.poll until the login succeeds, expires, or is cancelled.
+ * The account id is never typed: the adapter mints a provisional handshake key
+ * at start and registers the API-sourced id when the login succeeds.
  */
-export function AddAccountSection({ theme, existingIds }: AddAccountProps) {
-  const [accountId, setAccountId] = useState("");
+export function AddAccountSection({ theme }: AddAccountProps) {
   const [label, setLabel] = useState("");
-  const [touched, setTouched] = useState(false);
   const [phase, setPhase] = useState<Phase>("form");
   const [loginId, setLoginId] = useState("");
   const [loginUrl, setLoginUrl] = useState("");
@@ -234,21 +232,15 @@ export function AddAccountSection({ theme, existingIds }: AddAccountProps) {
   const toast = useToast();
   const startLogin = useRpc(freebuffLoginStart);
 
-  const idError = useMemo(
-    () => (touched ? validateAccountId(accountId, existingIds) : ""),
-    [touched, accountId, existingIds],
-  );
-
   const startMutation = useMutation({
     mutationFn: async () => {
       const result = await startLogin({
-        id: accountId,
         label: label.length > 0 ? label : undefined,
       });
       return result;
     },
     onSuccess: (result) => {
-      setLoginId(accountId);
+      setLoginId(result.id);
       setLoginUrl(result.loginUrl);
       setAttempt((current) => current + 1);
       setPhase("login");
@@ -259,9 +251,7 @@ export function AddAccountSection({ theme, existingIds }: AddAccountProps) {
   });
 
   const clearForm = useCallback(() => {
-    setAccountId("");
     setLabel("");
-    setTouched(false);
     setPhase("form");
   }, []);
 
@@ -271,16 +261,10 @@ export function AddAccountSection({ theme, existingIds }: AddAccountProps) {
     setLoginUrl("");
   }, [clearForm]);
 
-  const handleIdChange = useCallback((text: string) => {
-    setTouched(true);
-    setAccountId(text.trim());
-  }, []);
   const handleLabelChange = useCallback((text: string) => setLabel(text), []);
   const handleStart = useCallback(() => {
-    setTouched(true);
-    if (!isValidAccountId(accountId, existingIds)) return;
     startMutation.mutate();
-  }, [accountId, existingIds, startMutation]);
+  }, [startMutation]);
 
   const startMutate = startMutation.mutate;
   const handleGetNewLink = useCallback(() => {
@@ -309,12 +293,6 @@ export function AddAccountSection({ theme, existingIds }: AddAccountProps) {
 
   return (
     <SettingsSection title="Add account">
-      <SettingsInput
-        label="Account id"
-        placeholder="work-laptop"
-        onChangeText={handleIdChange}
-        error={idError.length > 0 ? idError : null}
-      />
       <SettingsInput
         label="Label (optional)"
         placeholder="Work laptop"

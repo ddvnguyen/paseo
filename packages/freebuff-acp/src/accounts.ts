@@ -45,6 +45,66 @@ export function isValidAccountId(id: string): boolean {
   return ACCOUNT_ID_PATTERN.test(id) && id !== DEFAULT_ACCOUNT_ID;
 }
 
+/** API identity a derived account id comes from (the login status user record). */
+export interface ApiIdentity {
+  id: string;
+  email: string;
+}
+
+/** One sanitization pass toward ACCOUNT_ID_PATTERN; null when nothing usable remains. */
+function sanitizeAccountId(value: string): string | null {
+  const cleaned = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^[-_]+/, "")
+    .slice(0, 32);
+  if (!cleaned || !isValidAccountId(cleaned)) return null;
+  return cleaned;
+}
+
+/** The API user id stored in an account's credentials.json, if readable. */
+function storedApiUserId(configDir: string | null): string | null {
+  if (!configDir) return null;
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(path.join(configDir, "credentials.json"), "utf8"),
+    ) as { default?: { id?: unknown } };
+    return typeof parsed?.default?.id === "string" && parsed.default.id ? parsed.default.id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Account id derived from the API user record: the sanitized API user id,
+ * else the sanitized email local-part, else "account". A re-login by the same
+ * API user keeps its id and config dir (credentials refresh in place);
+ * anything else registered under the base id gets a "-2", "-3", … suffix.
+ */
+export function deriveAccountId(
+  identity: ApiIdentity,
+  env: NodeJS.ProcessEnv = process.env,
+): { id: string; reusedConfigDir: string | null } {
+  const registered = readAccountsSnapshot(env).accounts;
+  const base =
+    sanitizeAccountId(identity.id) ??
+    sanitizeAccountId(identity.email.split("@")[0] ?? "") ??
+    "account";
+  for (const account of registered) {
+    if (account.id !== base) continue;
+    if (storedApiUserId(account.configDir) === identity.id) {
+      return { id: base, reusedConfigDir: account.configDir };
+    }
+  }
+  let candidate = base;
+  for (let n = 2; registered.some((account) => account.id === candidate); n += 1) {
+    const suffix = `-${n}`;
+    candidate = `${base.slice(0, 32 - suffix.length)}${suffix}`;
+  }
+  return { id: candidate, reusedConfigDir: null };
+}
+
 /** Outcome of reading accounts.json. */
 export type AccountsFileState = "missing" | "ok" | "corrupt";
 

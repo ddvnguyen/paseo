@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   accountConfigDir,
   addAccount,
+  deriveAccountId,
   isValidAccountId,
   readAccountsSnapshot,
 } from "./accounts.js";
@@ -70,6 +71,9 @@ interface LoginStatusResponse {
 export type LoginPollStatus = "pending" | "expired" | "success" | "none" | "error";
 
 export interface LoginStartResult {
+  /** Provisional key for this handshake: poll and cancel with it. The
+   * registered account id is derived from the API user record at success. */
+  id: string;
   loginUrl: string;
   expiresAt: string;
 }
@@ -260,22 +264,28 @@ async function requestLoginCode(fingerprintId: string, fetchFn: typeof fetch) {
 /**
  * Step 1 — start (or restart) a device-code login for the account.
  *
- * Validates the id, creates the account config dir, keeps one stable
+ * The id is a provisional handshake key: pass one to re-drive an existing
+ * handshake dir, or omit it to mint a fresh `pending-*` key (the label-only
+ * login path). The registered account id is derived from the API user record
+ * at success, so the start id never has to be user-chosen.
+ *
+ * Validates the key, creates the account config dir, keeps one stable
  * per-account fingerprintId (persisted only after the server accepted it),
  * POSTs the login-code request and records the handshake in
- * `.login-pending.json` (0600, atomic). Calling again for the same id
+ * `.login-pending.json` (0600, atomic). Calling again for the same key
  * restarts with a fresh link and invalidates any in-flight poll. The server's
  * `expiresAt` is echoed byte-for-byte (it is the status endpoint's HMAC input).
  */
 export async function startLogin(
-  id: string,
+  id: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
   fetchFn: typeof fetch = fetch,
   label?: string,
 ): Promise<LoginStartResult> {
-  assertValidId(id);
-  const configDir = accountConfigDir(id, env);
-  assertNotRegisteredElsewhere(id, configDir, env);
+  const key = id?.trim() ? id.trim() : `pending-${crypto.randomBytes(8).toString("hex")}`;
+  assertValidId(key);
+  const configDir = accountConfigDir(key, env);
+  assertNotRegisteredElsewhere(key, configDir, env);
   ensureAccountDir(configDir);
 
   const fingerprint = loadOrCreateFingerprint(configDir);
@@ -298,11 +308,12 @@ export async function startLogin(
     path.join(configDir, PENDING_FILE),
     `${JSON.stringify(pending, null, 2)}\n`,
   );
-  return { loginUrl: body.loginUrl, expiresAt };
+  return { id: key, loginUrl: body.loginUrl, expiresAt };
 }
 
 interface RedeemedUser {
   record: Record<string, unknown>;
+  id: string;
   name: string;
   email: string;
 }
@@ -316,7 +327,7 @@ function usableUser(value: unknown): RedeemedUser | null {
   if (typeof email !== "string" || !email) return null;
   if (typeof authToken !== "string" || !authToken) return null;
   const name = typeof record.name === "string" ? record.name : "";
-  return { record, name, email };
+  return { record, id, name, email };
 }
 
 /** GET the status endpoint; a `pending`/`error` result, or the redeemed user. */
@@ -382,23 +393,33 @@ export async function pollLogin(
 
 /** Persist a redeemed login: credentials, registration, then clear the handshake. */
 function completeLogin(input: {
+  /** Provisional handshake key from startLogin; never the registered id. */
   id: string;
   configDir: string;
   pending: PendingState;
   user: RedeemedUser;
   env: NodeJS.ProcessEnv;
 }): LoginPollResult {
-  const { id, configDir, pending, user, env } = input;
-  writeAccountCredentials(configDir, user, pending.fingerprintId);
+  const { configDir, pending, user, env } = input;
+  // The account id comes from the API user record (never user-typed): the
+  // sanitized API user id, else the email local-part. A re-login by the same
+  // API user refreshes credentials in its existing home dir.
+  const derived = deriveAccountId({ id: user.id, email: user.email }, env);
+  const homeDir = derived.reusedConfigDir ?? configDir;
+  writeAccountCredentials(homeDir, user, pending.fingerprintId);
   // The code is redeemed server-side and cannot be polled again, so the
   // handshake is dropped whether or not registration below succeeds.
   fs.rmSync(path.join(configDir, PENDING_FILE), { force: true });
+  if (derived.reusedConfigDir && derived.reusedConfigDir !== configDir) {
+    fs.rmSync(configDir, { recursive: true, force: true });
+  }
+  const label = pending.label?.trim() || user.name.trim() || undefined;
   try {
-    addAccount({ id, configDir, ...(pending.label ? { label: pending.label } : {}) }, env);
+    addAccount({ id: derived.id, configDir: homeDir, ...(label ? { label } : {}) }, env);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Logged in, but registering "${id}" failed (${reason}). Credentials were saved in ${configDir}; register with: accounts add ${id} ${configDir}`,
+      `Logged in, but registering "${derived.id}" failed (${reason}). Credentials were saved in ${homeDir}; register with: accounts add ${derived.id} ${homeDir}`,
       { cause: error },
     );
   }

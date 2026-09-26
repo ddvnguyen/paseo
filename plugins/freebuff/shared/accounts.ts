@@ -48,8 +48,8 @@ export const freebuffAccountsList = defineRpc({
 
 export const freebuffLoginStart = defineRpc({
   name: "freebuff.login.start",
-  input: z.object({ id: accountId, label: z.string().max(80).optional() }),
-  output: z.object({ loginUrl: z.string(), expiresAt: z.string() }),
+  input: z.object({ id: accountId.optional(), label: z.string().max(80).optional() }),
+  output: z.object({ id: z.string(), loginUrl: z.string(), expiresAt: z.string() }),
 });
 
 export const freebuffLoginPoll = defineRpc({

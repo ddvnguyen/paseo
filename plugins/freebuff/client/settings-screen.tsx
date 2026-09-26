@@ -180,7 +180,6 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
   });
 
   const accounts = useMemo(() => accountsQuery.data?.accounts ?? [], [accountsQuery.data]);
-  const existingIds = useMemo(() => accounts.map((account) => account.id), [accounts]);
   const styles = useMemo(
     () => ({
       muted: { color: theme.colors.foregroundMuted },
@@ -244,7 +243,7 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
         ))}
         <SettingsAction label="Accounts" actionLabel="Refresh" onPress={refresh} />
       </SettingsSection>
-      <AddAccountSection theme={theme} existingIds={existingIds} />
+      <AddAccountSection theme={theme} />
       <CliPreferencesSection accounts={accounts} />
       <ModelsSection theme={theme} />
       <ConfirmModal
