@@ -8,3 +8,4 @@ export {
   PluginHeaderButtons,
   useHasPluginComposerPills,
 } from "./buttons/view";
+export { PluginPanelDialogHost } from "./panel-dialog-host";
