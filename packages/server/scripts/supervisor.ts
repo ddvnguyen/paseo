@@ -34,9 +34,22 @@ interface SupervisorHeartbeatMessage {
   type: "paseo:supervisor-heartbeat";
 }
 
+interface WorkerHeartbeatMessage {
+  type: "paseo:worker-heartbeat";
+}
+
 interface SupervisorGracefulShutdownMessage {
   type: "paseo:graceful-shutdown";
   reason: string;
+}
+
+// If the worker stops replying to heartbeats for this long, the supervisor
+// treats it as hung (event loop wedged) and force-restarts it. The worker
+// replies on every supervisor heartbeat (~1s), so missing replies for longer
+// than this means the event loop is no longer processing messages.
+function resolveWorkerHangTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : 10_000;
 }
 
 interface SupervisorOptions {
@@ -125,6 +138,7 @@ function createSupervisorLogStream(options: SupervisorLogFileOptions | undefined
 
 export function runSupervisor(options: SupervisorOptions): SupervisorController {
   const restartOnCrash = options.restartOnCrash ?? false;
+  const workerHangTimeoutMs = resolveWorkerHangTimeoutMs();
   const workerArgs = options.workerArgs ?? process.argv.slice(2);
   const workerEnv = options.workerEnv ?? process.env;
   const workerExecArgv = options.workerExecArgv ?? ["--import", "tsx"];
@@ -251,6 +265,7 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
     }
 
     const currentChild = child;
+    let lastWorkerHeartbeatAt = Date.now();
     let reachedReady = false;
     // Serialize endpoint writes with exit/clear before allowing another worker to spawn.
     const heartbeat = setInterval(() => {
@@ -269,6 +284,30 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
     }, WORKER_HEARTBEAT_INTERVAL_MS);
     heartbeat.unref();
 
+    // Liveness watchdog: if the worker stops replying to heartbeats its event
+    // loop is wedged (e.g. git-pool deadlock). A wedged worker is still a live
+    // process, so without this the supervisor would never restart it and the
+    // daemon would hang until a manual `systemctl --user restart`.
+    const watchdog = setInterval(() => {
+      const hangMs = Date.now() - lastWorkerHeartbeatAt;
+      if (hangMs < workerHangTimeoutMs) {
+        return;
+      }
+      if (restarting || shuttingDown || exiting) {
+        return;
+      }
+      restarting = true;
+      writeLifecycleLog("Worker considered hung; force-restarting", {
+        hangMs,
+        workerPid: currentChild.pid ?? null,
+      });
+      log(`Worker unresponsive for ${hangMs}ms. Killing for restart...`);
+      void signalProcessTree(currentChild, "SIGKILL").catch((error) => {
+        log(`Worker kill failed: ${String(error)}`);
+      });
+    }, 1000);
+    watchdog.unref();
+
     child.on("disconnect", () => {
       writeLifecycleLog("Worker IPC channel disconnected");
     });
@@ -284,6 +323,16 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
     });
 
     child.on("message", (msg: unknown) => {
+      if (
+        typeof msg === "object" &&
+        msg !== null &&
+        "type" in msg &&
+        (msg as WorkerHeartbeatMessage).type === "paseo:worker-heartbeat"
+      ) {
+        lastWorkerHeartbeatAt = Date.now();
+        return;
+      }
+
       const lifecycleMessage = parseLifecycleMessage(msg);
       if (!lifecycleMessage || child !== currentChild) {
         return;
@@ -328,8 +377,10 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
 
     child.on("exit", (code, signal) => {
       clearInterval(heartbeat);
+      clearInterval(watchdog);
       clearForceKillTimer();
       child = null;
+      const exitDescriptor = describeExit(code, signal);
       publication = publication
         .then(() => options.onWorkerExit?.())
         .catch((error) => {
@@ -337,7 +388,6 @@ export function runSupervisor(options: SupervisorOptions): SupervisorController 
           log(`Worker exit callback failed: ${String(error)}`);
         });
       void publication.then(() => {
-        const exitDescriptor = describeExit(code, signal);
         writeLifecycleLog("Worker exited", { code, signal, exit: exitDescriptor });
 
         if (lifecycleFailed || (!reachedReady && !shuttingDown)) {

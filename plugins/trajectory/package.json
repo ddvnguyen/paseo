@@ -1,0 +1,21 @@
+{
+  "name": "paseo-plugin-trajectory",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent trajectory ledger: sequenced event log with a dsh-style trajectory view",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "^0.9.2",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10",
+    "zod": "4.4.3"
+  },
+  "overrides": {
+    "zod": "4.4.3"
+  }
+}
