@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { FreebuffAcpAgent, resolveTurnTimeoutMs } from "./agent.js";
+import { countUserTurns } from "./rewind.js";
 import { loadPersistedSession, savePersistedSession } from "./session-store.js";
 
 /** Resolve a fetch() input (string | URL | Request) to a string href. */
@@ -1201,6 +1202,122 @@ describe("FreebuffAcpAgent", () => {
     const env = testEnv();
     expect(loadPersistedSession(sessionA.sessionId, env)?.runState).toEqual({ marker: 1 });
     expect(loadPersistedSession(sessionB.sessionId, env)?.runState).toEqual({ marker: 1 });
+  });
+
+  describe("conversation rewind (owner directive)", () => {
+    /** SDK fake whose conversation grows by one user+assistant pair per run. */
+    function growingClient() {
+      let calls = 0;
+      return {
+        run: vi.fn(async () => {
+          calls += 1;
+          const history: unknown[] = [];
+          for (let index = 1; index <= calls; index += 1) {
+            history.push({
+              role: "user",
+              tags: ["USER_PROMPT"],
+              content: [{ type: "text", text: `p${index}` }],
+            });
+            history.push({ role: "assistant", content: [{ type: "text", text: `a${index}` }] });
+          }
+          return {
+            sessionState: {
+              mainAgentState: { contextTokenCount: 1000 * calls, messageHistory: history },
+            },
+            output: { type: "success" },
+          };
+        }),
+      };
+    }
+
+    async function runTwoTurns(agent: FreebuffAcpAgent) {
+      const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+      await agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "p1" }],
+      } as never);
+      await agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "p2" }],
+      } as never);
+      return session;
+    }
+
+    /** Flatten the conn's sessionUpdate calls into update kinds. */
+    function updateKinds(conn: ReturnType<typeof makeConn>): string[] {
+      const calls = conn.sessionUpdate.mock.calls as unknown as [
+        { update: { sessionUpdate: string } },
+      ][];
+      return calls.map(([notification]) => notification.update.sessionUpdate);
+    }
+
+    const sessionOf = (
+      agent: FreebuffAcpAgent,
+      sessionId: string,
+    ): { runState: Record<string, unknown> | null; checkpoints: Array<{ turn: number }> } =>
+      (
+        agent as unknown as {
+          sessions: Map<
+            string,
+            { runState: Record<string, unknown> | null; checkpoints: Array<{ turn: number }> }
+          >;
+        }
+      ).sessions.get(sessionId)!;
+
+    /** Turn ordinals of the session's checkpoint ring. */
+    function checkpointTurns(session: { checkpoints: Array<{ turn: number }> }): number[] {
+      return session.checkpoints.map((checkpoint) => checkpoint.turn);
+    }
+
+    it("rewinds to an earlier turn: restores state, trims checkpoints, replays, persists", async () => {
+      const conn = makeConn();
+      const agent = new FreebuffAcpAgent(conn, testEnv());
+      const client = growingClient();
+      stubClient(agent, client as unknown as ReturnType<typeof makeClient>);
+      const session = await runTwoTurns(agent);
+
+      const live = sessionOf(agent, session.sessionId);
+      expect(checkpointTurns(live)).toEqual([1, 2]);
+
+      const result = await agent.rewindToUserTurn({ sessionId: session.sessionId, turn: 2 });
+      expect(result.remainingTurns).toBe(1);
+      expect(countUserTurns(live.runState)).toBe(1);
+      expect(checkpointTurns(live)).toEqual([1]);
+
+      // The host replaces its timeline from the replayed updates.
+      const kinds = updateKinds(conn);
+      expect(kinds).toContain("user_message_chunk");
+      expect(kinds).toContain("agent_message_chunk");
+      expect(kinds).toContain("usage_update");
+
+      // The restored state survives a restart.
+      const persisted = loadPersistedSession(session.sessionId, testEnv());
+      expect(persisted?.runState).toEqual(live.runState);
+    });
+
+    it("rejects an unknown rewind turn and a rewind past the conversation end", async () => {
+      const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+      stubClient(agent, makeClient({ type: "success" }));
+      const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+      await expect(
+        agent.rewindToUserTurn({ sessionId: session.sessionId, turn: 3 }),
+      ).rejects.toThrow(/No rewind point/);
+    });
+
+    it("routes freebuff/rewindToUserTurn through extMethod", async () => {
+      const agent = new FreebuffAcpAgent(makeConn(), testEnv());
+      stubClient(agent, growingClient() as unknown as ReturnType<typeof makeClient>);
+      const session = await runTwoTurns(agent);
+
+      const result = await agent.extMethod("freebuff/rewindToUserTurn", {
+        sessionId: session.sessionId,
+        turn: 2,
+      });
+      expect(result.remainingTurns).toBe(1);
+      await expect(agent.extMethod("freebuff/nope", {})).rejects.toThrow(
+        /Unknown freebuff extension method/,
+      );
+    });
   });
 
   describe("session-end gate retry (R3)", () => {

@@ -78,6 +78,13 @@ import { clearedContextUsageUpdate, contextUsageUpdate } from "./context-usage.j
 import { runStateToReplayUpdates } from "./history-replay.js";
 import { REQUIRE_APPROVAL_META } from "./permission-meta.js";
 import { nextConversationState } from "./run-state.js";
+import {
+  checkpointForRewind,
+  checkpointsAfterRewind,
+  countUserTurns,
+  recordCheckpoint,
+  type RunStateCheckpoint,
+} from "./rewind.js";
 import { createAbortableTerminalTool } from "./terminal.js";
 import type { TurnResult } from "./turn.js";
 import { runTurn } from "./turn.js";
@@ -164,6 +171,8 @@ interface AdapterSession {
   token: string;
   /** Opaque SDK conversation state used to continue this session across prompts. */
   runState: Record<string, unknown> | null;
+  /** Pre-turn conversation snapshots for rewind (see rewind.ts). */
+  checkpoints: RunStateCheckpoint[];
   busy: boolean;
   abortController: AbortController | null;
   /** Settles when the in-flight prompt has fully unwound (busy cleared). */
@@ -326,6 +335,7 @@ export class FreebuffAcpAgent {
       client,
       token,
       runState: null,
+      checkpoints: [],
       busy: false,
       abortController: null,
       inflight: null,
@@ -434,6 +444,7 @@ export class FreebuffAcpAgent {
       client,
       token,
       runState: persisted?.runState ?? null,
+      checkpoints: persisted?.checkpoints ?? [],
       busy: false,
       abortController: null,
       inflight: null,
@@ -459,6 +470,7 @@ export class FreebuffAcpAgent {
         accountId: session.accountId,
         ...(session.title ? { title: session.title } : {}),
         runState: session.runState,
+        ...(session.checkpoints.length > 0 ? { checkpoints: session.checkpoints } : {}),
         updatedAt: new Date().toISOString(),
       },
       this.env,
@@ -661,6 +673,16 @@ export class FreebuffAcpAgent {
     if (command?.kind === "skill") {
       promptText = skillCommandPrompt(command.name, command.args);
     }
+
+    // Checkpoint the pre-turn state so the host can rewind to this turn.
+    // Ordinal = the ordinal this prompt WILL have (existing turns + 1); a
+    // /clear before it resets the conversation, so count from the live state.
+    session.checkpoints = recordCheckpoint({
+      checkpoints: session.checkpoints,
+      turn: countUserTurns(session.runState) + 1,
+      promptText: rawText,
+      runState: session.runState,
+    });
 
     // Steer: a prompt arriving mid-turn supersedes the running one. Stop it
     // and wait for it to unwind so the two turns never share the session's
@@ -1113,6 +1135,77 @@ export class FreebuffAcpAgent {
       ],
     });
     return response.outcome.outcome === "selected" && response.outcome.optionId === "switch-model";
+  }
+
+  /**
+   * Conversation rewind (owner directive 2026-09-26): restore the session to
+   * the state BEFORE user turn `turn` (1-based ordinal of REAL prompts,
+   * computed by the host bridge from its timeline). Drops the checkpoint tail,
+   * persists, and replays the restored conversation so the host can replace
+   * its timeline (the same contract `session/load` serves).
+   * Conversation-only: the adapter owns no file-checkpoint primitive (same
+   * scope as codex thread rollback).
+   */
+  async rewindToUserTurn(params: {
+    sessionId: string;
+    turn: number;
+  }): Promise<{ replays: number; remainingTurns: number }> {
+    const session = this.sessions.get(params.sessionId);
+    if (!session) throw new Error(`Unknown session: ${params.sessionId}`);
+    if (session.busy) throw new Error("Cannot rewind while a turn is running.");
+
+    const checkpoint = checkpointForRewind(session.checkpoints, session.runState, params.turn);
+    if (!checkpoint) {
+      throw new Error(`No rewind point for user turn ${params.turn}`);
+    }
+
+    session.runState = checkpoint.runState;
+    session.checkpoints = checkpointsAfterRewind(session.checkpoints, params.turn);
+    this.persist(session);
+
+    // Replay the restored conversation: the host replaces its timeline from
+    // these updates (identical to the session/load replay contract).
+    let replays = 0;
+    for (const update of runStateToReplayUpdates(session.runState)) {
+      try {
+        await this.conn.sessionUpdate({
+          sessionId: session.id,
+          update,
+        } as unknown as SessionNotification);
+        replays += 1;
+      } catch (error) {
+        logWarn(
+          `rewind replay to ${session.id} failed at update ${replays + 1}: ${describeError(error)}`,
+        );
+        break;
+      }
+    }
+    this.emitContextUsage(session);
+    return { replays, remainingTurns: countUserTurns(session.runState) };
+  }
+
+  /**
+   * ACP extension-method surface (owner rewind directive). Methods are
+   * `freebuff:*`-prefixed per the ACP extensibility guidance; unknown methods
+   * throw so the host sees a clean method-not-found instead of silence.
+   */
+  async extMethod(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    switch (method) {
+      case "freebuff/rewindToUserTurn": {
+        const sessionId = String(params.sessionId ?? "");
+        const turn = Number(params.turn);
+        if (!sessionId || !Number.isInteger(turn) || turn < 1) {
+          throw new Error("freebuff/rewindToUserTurn requires sessionId and a 1-based turn");
+        }
+        const result = await this.rewindToUserTurn({ sessionId, turn });
+        return { replays: result.replays, remainingTurns: result.remainingTurns };
+      }
+      default:
+        throw new Error(`Unknown freebuff extension method: ${method}`);
+    }
   }
 
   async cancel(params: { sessionId: string }): Promise<void> {
