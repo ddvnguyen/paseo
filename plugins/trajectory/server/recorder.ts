@@ -39,10 +39,18 @@ export interface TimelineItemInput {
   item: AgentTimelineItem;
 }
 
+export interface UsageInput {
+  agentId: string;
+  turnId?: string | null;
+  usage: AgentUsage;
+}
+
 export interface Recorder {
   turnStarted(input: TurnStartedInput): void;
   timelineItem(input: TimelineItemInput): void;
   turnEnded(input: TurnEndedInput): void;
+  /** Stash usage on the open turn; turn/end reports it if no terminal usage arrives. */
+  usage(input: UsageInput): void;
 }
 
 interface OpenTurn {
@@ -54,9 +62,13 @@ interface OpenTurn {
   stepOpen: boolean;
   /** Open tool callIds -> started wall time (ms). */
   openTools: Map<string, number>;
+  /** Usage seen mid-turn (usage_updated); reported at terminal if not superseded. */
+  usage: AgentUsage | null;
 }
 
 const ARG_SUMMARY_MAX = 200;
+/** Bound for the terminated-turn dedupe set (approximate turns, memory guard). */
+const MAX_TERMINATED_TURNS = 1000;
 
 function nowIso(now: () => Date): string {
   return now().toISOString();
@@ -115,12 +127,36 @@ export function createRecorder(options: { store: TrajectoryStore; now?: () => Da
 
   /** agentId -> its open turns, newest last. */
   const openTurns = new Map<string, OpenTurn[]>();
-  /** agentId -> openTools carried by the most recently opened turn. */
   /** Dedupe: `${agentId}\u0000${callId}\u0000${phase}`. */
   const seenToolPhases = new Set<string>();
+  /** Terminated turn keys `${agentId}\u0000${turnId}` — hook+stream double terminals dedupe here. */
+  const terminatedTurns = new Set<string>();
 
   const append = (input: Omit<TrajectoryEventInput, "time">): void => {
     store.append({ ...input, time: nowIso(now) });
+  };
+
+  /** De-dupes double terminals; bounded FIFO. Returns false when already seen. */
+  const markTurnTerminated = (agentId: string, turnId: string): boolean => {
+    const key = `${agentId}\u0000${turnId}`;
+    if (terminatedTurns.has(key)) return false;
+    terminatedTurns.add(key);
+    if (terminatedTurns.size > MAX_TERMINATED_TURNS) {
+      const oldest = terminatedTurns.values().next().value;
+      if (oldest !== undefined) terminatedTurns.delete(oldest);
+    }
+    return true;
+  };
+
+  /** Pop the matching open turn; null when the recorder never saw it open. */
+  const takeOpenTurn = (agentId: string, turnId: string | null): OpenTurn | undefined => {
+    const turns = openTurns.get(agentId);
+    if (!turns || turns.length === 0) return undefined;
+    const index = turnId ? turns.findIndex((turn) => turn.turnId === turnId) : -1;
+    if (index < 0) return undefined;
+    const [open] = turns.splice(index, 1);
+    if (turns.length === 0) openTurns.delete(agentId);
+    return open;
   };
 
   const openTurnOf = (agentId: string, turnId?: string | null): OpenTurn | null => {
@@ -194,16 +230,23 @@ export function createRecorder(options: { store: TrajectoryStore; now?: () => Da
 
   return {
     turnStarted(input) {
+      // Hook and stream paths both fire turn_started for the same live turn;
+      // a turn already open with this id is a duplicate, not a new turn.
+      const existing = openTurns.get(input.agentId);
+      if (input.turnId && existing?.some((turn) => turn.turnId === input.turnId)) return;
       const turn: OpenTurn = {
         turnId: input.turnId,
         model: input.model ?? null,
         step: 0,
         stepOpen: false,
         openTools: new Map(),
+        usage: null,
       };
-      const turns = openTurns.get(input.agentId) ?? [];
+      const turns = existing ?? [];
       turns.push(turn);
       openTurns.set(input.agentId, turns);
+      // The id may repeat after a session reopens; it is live again now.
+      if (input.turnId) terminatedTurns.delete(`${input.agentId}\u0000${input.turnId}`);
       append({
         type: "turn/start",
         turn: input.turnId,
@@ -278,17 +321,16 @@ export function createRecorder(options: { store: TrajectoryStore; now?: () => Da
     },
 
     turnEnded(input) {
-      const turns = openTurns.get(input.agentId) ?? [];
-      const index = input.turnId ? turns.findIndex((turn) => turn.turnId === input.turnId) : -1;
-      const open = index >= 0 ? turns[index] : undefined;
-      if (index >= 0) turns.splice(index, 1);
-      if (turns.length === 0) openTurns.delete(input.agentId);
-      if (open) {
-        // Any tools still marked open at terminal time have no reported end.
-        open.openTools.clear();
-      }
+      const open = takeOpenTurn(input.agentId, input.turnId);
 
-      const usage = input.usage ?? undefined;
+      // Exactly one terminal per turn: a second terminal for an already
+      // terminated id is a no-op. Turns we never saw opened still record
+      // (lazy attach), and null-turnId terminals always record.
+      if (!open && input.turnId && !markTurnTerminated(input.agentId, input.turnId)) return;
+      // Any tools still marked open at terminal time have no reported end.
+      open?.openTools.clear();
+
+      const usage = input.usage ?? open?.usage ?? undefined;
       append({
         type: "turn/end",
         turn: input.turnId,
@@ -307,6 +349,12 @@ export function createRecorder(options: { store: TrajectoryStore; now?: () => Da
           },
         },
       });
+    },
+
+    usage(input) {
+      const open = openTurnOf(input.agentId, input.turnId);
+      if (!open) return; // Usage without turn context cannot be attributed.
+      open.usage = input.usage;
     },
   };
 }

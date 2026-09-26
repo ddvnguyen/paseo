@@ -60,6 +60,7 @@ function toEvent(row: RawRow): TrajectoryEvent {
 
 export function createNodeStore(path: string): TrajectoryStore {
   const db = new DatabaseSync(path);
+  let closed = false;
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA_SQL);
 
@@ -110,6 +111,9 @@ export function createNodeStore(path: string): TrajectoryStore {
     },
 
     close() {
+      // Idempotent: wiring cleanup and test teardown may both close.
+      if (closed) return;
+      closed = true;
       db.close();
     },
   };
