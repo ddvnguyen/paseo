@@ -1371,6 +1371,45 @@ describe("FreebuffAcpAgent", () => {
     });
   });
 
+  describe("S5: approval prompts name the account (owner directive)", () => {
+    it("the open-session prompt carries the account label (and email when known)", async () => {
+      const conn = makeConn();
+      conn.requestPermission.mockResolvedValueOnce({ outcome: { outcome: "cancelled" } });
+      const agent = new FreebuffAcpAgent(conn, testEnv());
+      stubClient(agent, makeClient({ type: "success" }));
+      const session = await agent.newSession({ cwd: "/tmp", mcpServers: [] } as never);
+      await agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "hi" }],
+      } as never);
+
+      interface PermissionParams {
+        toolCall: { content?: Array<{ content?: { text?: string } }> };
+        options?: Array<{ name?: string }>;
+      }
+      const permissionParams = (call: unknown[]): PermissionParams => call[0] as PermissionParams;
+      const hasPromptBody = (params: PermissionParams): boolean =>
+        params.toolCall?.content?.length !== undefined;
+      const permissionCall = conn.requestPermission.mock.calls
+        .map(permissionParams)
+        .find(hasPromptBody);
+      expect(permissionCall).toBeTruthy();
+      const text = permissionCall?.toolCall.content?.[0]?.content?.text ?? "";
+      // The account is named in the body: "... for <label> (<email>) on MODEL"
+      // or "... for <label> on MODEL" when no email is stored. The label comes
+      // from the environment (env key → "API key (env)"; a real login record
+      // resolves to its stored name/email), so assert the STRUCTURE, and that
+      // a label resolved at all (never the bare fallback-less old wording).
+      expect(text).toMatch(/Opening one for .+ on /);
+      expect(text).not.toContain("Opening one for z-ai");
+      // The approve option carries the account name too.
+      expect(permissionCall?.options?.[0]?.name).toMatch(/^Open session on .+ — /);
+      // REQUIRE_APPROVAL meta is preserved.
+      const raw = JSON.stringify(conn.requestPermission.mock.calls);
+      expect(raw).toContain("paseo/requireApproval");
+    });
+  });
+
   describe("session-end gate retry (R3)", () => {
     /** Flatten a sessionUpdate mock's captured params into update objects. */
     const updatesOf = (conn: ReturnType<typeof makeConn>) =>
@@ -1504,11 +1543,13 @@ describe("FreebuffAcpAgent", () => {
       expect(second.extraCodebuffMetadata).toEqual({ freebuff_instance_id: "inst-new-2" });
       // Exactly one notice, not an "free session has ended" failure. The
       // re-admit was an AUTO-RENEW (confirmSessionOpen bypassed once) because
-      // the original admission had a confirm hook.
+      // the original admission had a confirm hook. S5: the notice names the
+      // account (label resolved from the env; email appended when stored).
       const chunkTexts = chunkTextsOf(conn);
-      expect(chunkTexts).toContain(
-        "Freebuff session ended; auto-renewed the free session (one-time) and continuing.",
-      );
+      const isRenewNotice = (text: string): boolean =>
+        text.includes("auto-renewed the free session (one-time)");
+      const renewNotice = chunkTexts.find(isRenewNotice);
+      expect(renewNotice).toMatch(/^Freebuff session on .+ ended; auto-renewed/);
       expect(chunkTexts.join("\n")).not.toMatch(/session_expired/i);
       // Two admissions total: original + transparent re-admit.
       expect(postCount).toBe(2);

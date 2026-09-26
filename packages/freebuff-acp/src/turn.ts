@@ -57,6 +57,12 @@ export interface RunTurnOptions {
    */
   confirmSessionOpen?: (info: SessionOpenInfo) => Promise<boolean>;
   /**
+   * S5 (owner directive): display name of the account the session runs under
+   * (label plus email when known) — used in the auto-renew notice so the
+   * user knows WHICH account was renewed. Optional; falls back to no name.
+   */
+  accountPromptName?: string;
+  /**
    * Asked when the account's single seat is held on another model. Approve =
    * end it and open the requested model; omitted/declined = run on the held one.
    */
@@ -852,13 +858,14 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
         attempt === 0 ? options : { ...options, confirmSessionOpen: undefined };
       if (attempt > 0) {
         const autoRenewed = options.confirmSessionOpen !== undefined;
+        const account = options.accountPromptName ? ` on ${options.accountPromptName}` : "";
         emit({
           sessionUpdate: "agent_message_chunk",
           content: {
             type: "text",
             text: autoRenewed
-              ? "Freebuff session ended; auto-renewed the free session (one-time) and continuing."
-              : "Freebuff session ended; reopened and continuing.",
+              ? `Freebuff session${account} ended; auto-renewed the free session (one-time) and continuing.`
+              : `Freebuff session${account} ended; reopened and continuing.`,
           },
         });
       }

@@ -64,6 +64,7 @@ import {
   type AccountStatus,
   type ConfirmOpenMode,
 } from "./account.js";
+import { accountUserEmail } from "./account-admin.js";
 import type { ModelSwitchInfo, SessionOpenInfo } from "./freebuff-session.js";
 import { resolveRunMcpServers } from "./mcp.js";
 import { DEFAULT_MODE_ID, FREEBUFF_MODES, FREEBUFF_MODE_IDS } from "./modes.js";
@@ -111,6 +112,16 @@ function describeError(error: unknown): string {
 /** F8: a failed/timed-out quota refresh keeps the last known status. */
 function ignoreStatusError(error: unknown): void {
   logWarn(`quota refresh failed: ${describeError(error)}; keeping the last known status.`);
+}
+
+/**
+ * S5 (owner directive): approval prompts and renewal notices must name the
+ * account — label plus email when the login record has one. Falls back to
+ * the label alone; never tokens or internal ids.
+ */
+function accountPromptName(label: string | undefined, email: string | undefined): string {
+  if (label && email) return `${label} (${email})`;
+  return label || email || "this account";
 }
 
 /**
@@ -741,6 +752,9 @@ export class FreebuffAcpAgent {
             signal: abortController.signal,
             sessionId: session.id,
           };
+          // S5: the renewal notices name the account (label + email when known).
+          const email = this.accountEmailFor(session.accountId).accountEmail;
+          const accountName = accountPromptName(session.accountName, email);
           return await runTurn({
             client: session.client,
             cwd: session.cwd,
@@ -751,12 +765,23 @@ export class FreebuffAcpAgent {
             token: session.token,
             model: session.modelId,
             mcpServers: session.mcpServers,
+            accountPromptName: accountName,
             confirmSessionOpen:
               session.confirmOpen === "auto"
                 ? undefined
-                : (info) => this.confirmSessionOpen(session.id, info),
+                : (info) =>
+                    this.confirmSessionOpen(session.id, {
+                      ...info,
+                      accountLabel: session.accountName,
+                      ...this.accountEmailFor(session.accountId),
+                    }),
             // Ending the shared seat can cut another agent's run: always ask.
-            confirmModelSwitch: (info) => this.confirmModelSwitch(session.id, info),
+            confirmModelSwitch: (info) =>
+              this.confirmModelSwitch(session.id, {
+                ...info,
+                accountLabel: session.accountName,
+                ...this.accountEmailFor(session.accountId),
+              }),
             emit,
           });
         } finally {
@@ -1058,10 +1083,26 @@ export class FreebuffAcpAgent {
    * POST spends credit (one slot = 1 hour). Fails closed: a thrown request
    * or any selection other than `open-session` declines the spend.
    */
+  /**
+   * Email of a registered account from its stored login record (S5, owner
+   * directive: the approval prompts must name the account). Best-effort —
+   * an empty object means unknown, and the prompts fall back to the label.
+   * Never returns tokens or ids beyond the label/email pair.
+   */
+  private accountEmailFor(accountId: string): { accountEmail?: string } {
+    try {
+      const email = accountUserEmail(accountId, this.env);
+      return email ? { accountEmail: email } : {};
+    } catch {
+      return {};
+    }
+  }
+
   private async confirmSessionOpen(sessionId: string, info: SessionOpenInfo): Promise<boolean> {
     const cost = info.priceFreebucks != null ? `${info.priceFreebucks} Freebucks` : "Freebucks";
     const left =
       info.dailyRemaining != null ? ` — ${info.dailyRemaining} Freebucks left today` : "";
+    const account = accountPromptName(info.accountLabel, info.accountEmail);
     const response = await this.conn.requestPermission({
       sessionId,
       // Spends credit: hosts with auto-accept must still ask a person.
@@ -1075,7 +1116,7 @@ export class FreebuffAcpAgent {
             type: "content",
             content: {
               type: "text",
-              text: `No active Freebuff session. Opening one for ${info.model} costs ${cost} and lasts 1 hour${left}.`,
+              text: `No active Freebuff session. Opening one for ${account} on ${info.model} costs ${cost} and lasts 1 hour${left}.`,
             },
           },
         ],
@@ -1083,7 +1124,7 @@ export class FreebuffAcpAgent {
       options: [
         {
           optionId: "open-session",
-          name: `Open session — ${cost}, valid 1 hour`,
+          name: `Open session on ${account} — ${cost}, valid 1 hour`,
           kind: "allow_once",
         },
         { optionId: "cancel-open", name: "Cancel (no credit spent)", kind: "reject_once" },
@@ -1098,6 +1139,7 @@ export class FreebuffAcpAgent {
    */
   private async confirmModelSwitch(sessionId: string, info: ModelSwitchInfo): Promise<boolean> {
     const cost = info.priceFreebucks != null ? `${info.priceFreebucks} Freebucks` : "Freebucks";
+    const account = accountPromptName(info.accountLabel, info.accountEmail);
     const response = await this.conn.requestPermission({
       sessionId,
       _meta: REQUIRE_APPROVAL_META,
@@ -1112,7 +1154,7 @@ export class FreebuffAcpAgent {
             content: {
               type: "text",
               text:
-                `This account already has an open Freebuff session on ${info.currentModel} ` +
+                `The account ${account} already has an open Freebuff session on ${info.currentModel} ` +
                 `(one session per account, shared with other agents and CLIs). ` +
                 `Switching to ${info.requestedModel} ends it, which can interrupt another agent, ` +
                 `and opens a new one (${cost}, 1 hour).`,
@@ -1128,7 +1170,7 @@ export class FreebuffAcpAgent {
         },
         {
           optionId: "switch-model",
-          name: `Switch to ${info.requestedModel} — ${cost}`,
+          name: `Switch ${account} to ${info.requestedModel} — ${cost}`,
           kind: "allow_once",
         },
       ],

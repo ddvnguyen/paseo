@@ -85,6 +85,10 @@ export interface ModelSwitchInfo {
   /** Catalog price of one hour on `requestedModel`, when the probe reported it. */
   priceFreebucks?: number;
   dailyRemaining?: number;
+  /** Display label of the account whose seat is affected (S5, owner directive). */
+  accountLabel?: string;
+  /** Email of that account from the login record, when known (never tokens). */
+  accountEmail?: string;
 }
 
 /** What the host approves before a credit-spending session open. */
@@ -98,6 +102,10 @@ export interface SessionOpenInfo {
   probeUnknown?: boolean;
   /** Why the probe outcome is unknown (transport/HTTP failure text). */
   message?: string;
+  /** Display label of the account the new session opens for (S5, owner directive). */
+  accountLabel?: string;
+  /** Email of that account from the login record, when known (never tokens). */
+  accountEmail?: string;
 }
 
 function baseHeaders(token: string): Record<string, string> {

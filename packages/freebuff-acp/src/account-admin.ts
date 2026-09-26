@@ -6,6 +6,7 @@ import {
   accountConfigDir,
   accountDisplayName,
   credentialsForAccount,
+  findAccount,
   isValidAccountId,
   listAccounts,
   removeAccount,
@@ -169,6 +170,20 @@ export async function listAccountDetails(
     listAccounts(env).map((account) => describeAccount(account, env)),
   );
   return { accounts };
+}
+
+/**
+ * Email of a registered account from its stored login record (S5, owner
+ * directive: approval prompts must name the account). Best-effort: null when
+ * the account is unknown or has no stored email. Never returns tokens.
+ */
+export function accountUserEmail(
+  accountId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const account = findAccount(accountId, env);
+  if (!account) return null;
+  return readStoredIdentity(account, env).email ?? null;
 }
 
 export type EndSessionResult =
