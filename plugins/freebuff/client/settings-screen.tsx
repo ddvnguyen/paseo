@@ -19,6 +19,7 @@ import { AddAccountSection } from "./add-account";
 import { removeAccountMessage } from "./account-format";
 import { ConfirmModal } from "./confirm-modal";
 import { ModelsSection } from "./models-section";
+import { ScreenErrorBoundary } from "./screen-error-boundary";
 
 const END_SESSION_MESSAGES = {
   ended: "Session ended. The next prompt opens a new session (5 Freebucks).",
@@ -219,8 +220,10 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
     : undefined;
   const pendingIsEndSession = pendingAction?.kind === "end-session";
 
+  // Owner directive 2026-09-26: a load failure shows an error message, never
+  // a silent white screen (React #130 on host/plugin version skew).
   return (
-    <>
+    <ScreenErrorBoundary>
       <SettingsSection title="Accounts" info="Freebuff accounts registered on this host.">
         {accountsQuery.isPending ? <Text style={styles.muted}>Loading accounts…</Text> : null}
         {accountsQuery.isError ? (
@@ -265,6 +268,6 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
         onConfirm={handleConfirm}
         onCancel={closeAction}
       />
-    </>
+    </ScreenErrorBoundary>
   );
 }

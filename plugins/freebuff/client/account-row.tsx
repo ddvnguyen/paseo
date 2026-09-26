@@ -1,11 +1,4 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
-import {
-  SettingsCard,
-  SettingsIconButton,
-  SettingsIconRow,
-  SettingsInput,
-  SettingsSwitch,
-} from "@getpaseo/plugin/client/ui";
 import { useCallback, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 
@@ -20,6 +13,13 @@ import {
   type AccountDetail,
   type CliSettings,
 } from "./account-format";
+import {
+  resolveCard,
+  resolveIconButton,
+  resolveIconRow,
+  resolveInput,
+  resolveSwitch,
+} from "./host-ui";
 
 interface AccountRowProps {
   account: AccountDetail;
@@ -140,10 +140,12 @@ function RenameEditor({
     }),
     [],
   );
+  const IconButton = resolveIconButton();
+  const Input = resolveInput();
   return (
     <View style={styles.row}>
       <View style={styles.inputFlex}>
-        <SettingsInput
+        <Input
           label="New label"
           initialValue={initialLabel}
           placeholder="Work laptop"
@@ -151,14 +153,14 @@ function RenameEditor({
           error={labelError}
         />
       </View>
-      <SettingsIconButton
+      <IconButton
         icon="Check"
         accessibilityLabel="Save label"
         disabled={renameBusy || labelError != null}
         onPress={handleSave}
         testID="freebuff-rename-save"
       />
-      <SettingsIconButton
+      <IconButton
         icon="X"
         accessibilityLabel="Cancel rename"
         onPress={onCancel}
@@ -187,6 +189,10 @@ export function AccountRow({
   const [renaming, setRenaming] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
+  const IconRow = resolveIconRow();
+  const IconButton = resolveIconButton();
+  const Switch = resolveSwitch();
+  const Card = resolveCard();
   const styles = useMemo(
     () => ({
       muted: { color: theme.colors.foregroundMuted },
@@ -228,7 +234,7 @@ export function AccountRow({
   const nameLineActions = (
     <>
       {canMoveUp ? (
-        <SettingsIconButton
+        <IconButton
           icon="ChevronUp"
           accessibilityLabel={`Move ${account.label} up`}
           onPress={handleMoveUp}
@@ -236,14 +242,14 @@ export function AccountRow({
         />
       ) : null}
       {!renaming ? (
-        <SettingsIconButton
+        <IconButton
           icon="Pencil"
           accessibilityLabel={`Rename ${account.label}`}
           onPress={startRename}
           testID={`freebuff-rename-${account.id}`}
         />
       ) : null}
-      <SettingsSwitch
+      <Switch
         label="Default"
         value={account.isDefault}
         disabled={account.isDefault || setDefaultBusy}
@@ -256,7 +262,7 @@ export function AccountRow({
   const bottomLineActions = (
     <>
       {account.seat.state === "active" ? (
-        <SettingsIconButton
+        <IconButton
           icon="Power"
           accessibilityLabel={`End session for ${account.label}`}
           disabled={endSessionBusy}
@@ -265,7 +271,7 @@ export function AccountRow({
         />
       ) : null}
       {!account.isDefault ? (
-        <SettingsIconButton
+        <IconButton
           icon="Trash2"
           accessibilityLabel={`Remove ${account.label}`}
           destructive
@@ -278,7 +284,7 @@ export function AccountRow({
   );
 
   const menuButton = (
-    <SettingsIconButton
+    <IconButton
       icon="MoreHorizontal"
       accessibilityLabel={`Actions for ${account.label}`}
       onPress={toggleMenu}
@@ -287,8 +293,8 @@ export function AccountRow({
   );
 
   return (
-    <SettingsCard testID={`freebuff-account-${account.id}`}>
-      <SettingsIconRow
+    <Card testID={`freebuff-account-${account.id}`}>
+      <IconRow
         icon="User"
         label={renaming ? "Rename account" : account.label}
         hint={hint}
@@ -319,7 +325,7 @@ export function AccountRow({
           </View>
         ) : null}
         <View style={styles.prefsToggle}>
-          <SettingsIconButton
+          <IconButton
             icon={prefsOpen ? "ChevronDown" : "ChevronRight"}
             accessibilityLabel={prefsOpen ? "Hide CLI preferences" : "Show CLI preferences"}
             onPress={togglePrefs}
@@ -328,7 +334,7 @@ export function AccountRow({
           <Text style={styles.muted}>CLI preferences</Text>
         </View>
         {prefsOpen ? <CliPrefsBody cli={account.cliSettings} theme={theme} /> : null}
-      </SettingsIconRow>
-    </SettingsCard>
+      </IconRow>
+    </Card>
   );
 }
