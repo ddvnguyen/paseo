@@ -51,7 +51,6 @@ function resolveWorkerHangTimeoutMs(env: NodeJS.ProcessEnv = process.env): numbe
   const configured = Number(env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS);
   return Number.isFinite(configured) && configured > 0 ? configured : 10_000;
 }
-}
 
 interface SupervisorOptions {
   name: string;

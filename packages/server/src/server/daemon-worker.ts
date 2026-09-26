@@ -257,8 +257,7 @@ async function main() {
       if (typeof message !== "object" || message === null || !("type" in message)) {
         return;
       }
-      const type = (message as { type?: unknown }).type;
-      if (type === "paseo:supervisor-heartbeat") {
+      if ((message as SupervisorHeartbeatMessage).type === "paseo:supervisor-heartbeat") {
         lastSupervisorHeartbeatAt = Date.now();
         // Reply so the supervisor can distinguish a responsive worker from a
         // wedged one (event loop stuck, e.g. git-pool deadlock). Without this
@@ -267,7 +266,7 @@ async function main() {
         process.send?.(reply);
         return;
       }
-      if (type === "paseo:graceful-shutdown") {
+      if ((message as { type?: unknown }).type === "paseo:graceful-shutdown") {
         const reason = (message as { reason?: unknown }).reason;
         beginShutdown("Supervisor shutdown request", {
           reason: typeof reason === "string" ? reason : "supervisor_requested_shutdown",
