@@ -9,8 +9,10 @@ import {
   findAccount,
   isValidAccountId,
   listAccounts,
+  listAccountsOrdered,
   removeAccount,
   renameAccount,
+  reorderAccounts,
   resolveDefaultAccountId,
   setDefaultAccount,
   type FreebuffAccount,
@@ -166,10 +168,37 @@ async function describeAccount(
 export async function listAccountDetails(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ accounts: AccountDetail[] }> {
-  const accounts = await Promise.all(
-    listAccounts(env).map((account) => describeAccount(account, env)),
-  );
-  return { accounts };
+  return describeAccountsIn(listAccounts(env), env);
+}
+
+/**
+ * Every account in the stored display order (owner directive 2026-09-26:
+ * "allow change order"), with the same per-account detail as listAccountDetails.
+ */
+export async function listAccountDetailsOrdered(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ accounts: AccountDetail[] }> {
+  return describeAccountsIn(listAccountsOrdered(env), env);
+}
+
+/** Describe an account list in parallel (same shapes as listAccountDetails). */
+async function describeAccountsIn(
+  accounts: FreebuffAccount[],
+  env: NodeJS.ProcessEnv,
+): Promise<{ accounts: AccountDetail[] }> {
+  return { accounts: await Promise.all(accounts.map((account) => describeAccount(account, env))) };
+}
+
+/**
+ * Store the account display order. Ids must name known accounts without
+ * repeats; unlisted accounts keep registration order after the listed ones.
+ * Returns the full order that was stored.
+ */
+export function setAccountOrder(
+  ids: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): { order: string[] } {
+  return { order: reorderAccounts(ids, env) };
 }
 
 /**

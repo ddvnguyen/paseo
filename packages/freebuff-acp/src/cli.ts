@@ -3,10 +3,11 @@ import path from "node:path";
 
 import {
   endAccountSession,
-  listAccountDetails,
+  listAccountDetailsOrdered,
   removeAccountAndState,
   renameAccountLabel,
   setAccountDefault,
+  setAccountOrder,
 } from "./account-admin.js";
 import { accountsFilePath, addAccount, removeAccount } from "./accounts.js";
 import { cancelLogin, pollLogin, startLogin } from "./login.js";
@@ -31,7 +32,12 @@ const USAGE = `freebuff-acp-cli <command>
                                on success the account is registered (never prints tokens).
   accounts login-cancel --id <id>
                                Abandon an in-progress login: {"status":"cancelled"}
-  accounts list                Accounts with seat, quota and read-only CLI settings (JSON)
+  accounts list                Accounts in display order with seat, quota and
+                               read-only CLI settings (JSON)
+  accounts order --ids <id,id,…>
+                               Store the account display order (owner directive:
+                               the settings list follows it; unlisted accounts
+                               keep registration order after; JSON: {"order"})
   accounts delete --id <id>    Unregister an account and delete its adapter-managed
                                credentials (JSON)
   accounts set-default --id <id>
@@ -61,7 +67,13 @@ async function runAdminCommand(
   rest: string[],
 ): Promise<number | null> {
   if (command === "accounts" && subcommand === "list") {
-    console.log(JSON.stringify(await listAccountDetails(), null, 2));
+    console.log(JSON.stringify(await listAccountDetailsOrdered(), null, 2));
+    return 0;
+  }
+  if (command === "accounts" && subcommand === "order") {
+    const ids = flagValue("--ids", rest);
+    if (!ids) throw new Error("usage: accounts order --ids <id,id,…>");
+    console.log(JSON.stringify(setAccountOrder(ids.split(",")), null, 2));
     return 0;
   }
   if (command === "accounts" && subcommand === "delete") {

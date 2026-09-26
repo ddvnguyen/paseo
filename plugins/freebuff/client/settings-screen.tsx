@@ -8,6 +8,7 @@ import { Text } from "react-native";
 
 import {
   freebuffAccountDelete,
+  freebuffAccountOrder,
   freebuffAccountRename,
   freebuffAccountsList,
   freebuffAccountSetDefault,
@@ -47,6 +48,7 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
   const deleteAccount = useRpc(freebuffAccountDelete);
   const setDefault = useRpc(freebuffAccountSetDefault);
   const renameAccount = useRpc(freebuffAccountRename);
+  const setOrder = useRpc(freebuffAccountOrder);
   const queryClient = useQueryClient();
   const toast = useToast();
 
@@ -142,6 +144,47 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
   });
 
   const accounts = useMemo(() => accountsQuery.data?.accounts ?? [], [accountsQuery.data]);
+
+  // Owner directive 2026-09-26: allow change order. Optimistic move-up: the
+  // cached list is reordered immediately, the adapter stores the order, and
+  // the refetch replaces it with the server's canonical order.
+  const [orderHint, setOrderHint] = useState<string[] | null>(null);
+  const orderedAccounts = useMemo(() => {
+    if (!orderHint) return accounts;
+    const rank = new Map(orderHint.map((id, index) => [id, index]));
+    return [...accounts].sort(
+      (a, b) =>
+        (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+    );
+  }, [accounts, orderHint]);
+  const moveUpMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const result = await setOrder({ ids });
+      return result;
+    },
+    onSuccess: (result) => {
+      setOrderHint(result.order);
+    },
+    onError: (error: Error) => {
+      toast.error(error.message);
+    },
+    onSettled: () => {
+      refreshAccounts();
+    },
+  });
+  const handleMoveUp = useCallback(
+    (accountId: string) => {
+      const current = orderedAccounts.map((account) => account.id);
+      const index = current.indexOf(accountId);
+      if (index <= 0) return;
+      const next = [...current];
+      next.splice(index, 1);
+      next.splice(index - 1, 0, accountId);
+      setOrderHint(next);
+      moveUpMutation.mutate(next);
+    },
+    [orderedAccounts, moveUpMutation],
+  );
   const styles = useMemo(
     () => ({
       muted: { color: theme.colors.foregroundMuted },
@@ -186,7 +229,7 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
         {!accountsQuery.isPending && accounts.length === 0 ? (
           <Text style={styles.muted}>No accounts registered.</Text>
         ) : null}
-        {accounts.map((account) => (
+        {orderedAccounts.map((account, index) => (
           <AccountRow
             key={account.id}
             account={account}
@@ -200,6 +243,8 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
             onDelete={requestDelete}
             onSetDefault={handleSetDefault}
             onRename={handleRename}
+            onMoveUp={handleMoveUp}
+            canMoveUp={index > 0}
           />
         ))}
       </SettingsSection>

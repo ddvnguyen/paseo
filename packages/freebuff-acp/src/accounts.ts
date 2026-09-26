@@ -244,6 +244,13 @@ export interface AccountsPrefs {
   defaultAccountId?: string;
   /** Display-label override for the built-in default account. */
   defaultLabel?: string;
+  /**
+   * Display order of accounts (owner directive 2026-09-26): ids in the order
+   * the settings screen lists them. Ids not listed keep registration order
+   * after the listed ones. Purely cosmetic — never affects which account is
+   * the default or how credentials resolve.
+   */
+  accountOrder?: string[];
 }
 
 export function accountsPrefsFilePath(env: NodeJS.ProcessEnv = process.env): string {
@@ -253,12 +260,18 @@ export function accountsPrefsFilePath(env: NodeJS.ProcessEnv = process.env): str
 function parseAccountsPrefs(parsed: unknown): AccountsPrefs {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
   const prefs: AccountsPrefs = {};
-  const { defaultAccountId, defaultLabel } = parsed as Record<string, unknown>;
+  const { defaultAccountId, defaultLabel, accountOrder } = parsed as Record<string, unknown>;
   if (typeof defaultAccountId === "string" && defaultAccountId.trim()) {
     prefs.defaultAccountId = defaultAccountId.trim();
   }
   if (typeof defaultLabel === "string" && defaultLabel.trim()) {
     prefs.defaultLabel = defaultLabel.trim();
+  }
+  if (
+    Array.isArray(accountOrder) &&
+    accountOrder.every((id) => typeof id === "string" && id.trim())
+  ) {
+    prefs.accountOrder = accountOrder.map((id) => (id as string).trim());
   }
   return prefs;
 }
@@ -299,6 +312,52 @@ function writeAccountsPrefs(prefs: AccountsPrefs, env: NodeJS.ProcessEnv): void 
   } finally {
     fs.rmSync(tmp, { force: true });
   }
+}
+
+/**
+ * Accounts in display order: the stored accountOrder first (in stored order,
+ * unknown ids skipped), then any unlisted accounts in registration order.
+ * Always the same set as listAccounts — only the sequence differs.
+ */
+export function listAccountsOrdered(env: NodeJS.ProcessEnv = process.env): FreebuffAccount[] {
+  const accounts = listAccounts(env);
+  const order = readAccountsPrefs(env).accountOrder;
+  if (!order || order.length === 0) return accounts;
+  const rank = new Map<string, number>();
+  order.forEach((id, index) => {
+    if (!rank.has(id)) rank.set(id, index);
+  });
+  return [...accounts].sort(
+    (a, b) =>
+      (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+  );
+}
+
+/**
+ * Persist the display order of accounts. Every id must name a known account
+ * ("default" or registered) and none may repeat; unlisted accounts keep
+ * registration order after the listed ones. Returns the resolved order that
+ * was stored (not just the input).
+ */
+export function reorderAccounts(ids: string[], env: NodeJS.ProcessEnv = process.env): string[] {
+  const known = new Set(listAccounts(env).map((account) => account.id));
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const raw of ids) {
+    const id = raw.trim();
+    if (!known.has(id)) throw new Error(`No such account "${raw}".`);
+    if (seen.has(id)) throw new Error(`Duplicate account "${id}" in order.`);
+    seen.add(id);
+    ordered.push(id);
+  }
+  const rest = listAccounts(env)
+    .map((account) => account.id)
+    .filter((id) => !seen.has(id));
+  const full = [...ordered, ...rest];
+  const prefs = readAccountsPrefs(env);
+  prefs.accountOrder = full;
+  writeAccountsPrefs(prefs, env);
+  return full;
 }
 
 /** The default account first, then any registered extras. */

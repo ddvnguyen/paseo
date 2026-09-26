@@ -12,13 +12,11 @@ import { Text, View } from "react-native";
 import {
   ACCOUNT_LABEL_MAX_LENGTH,
   cliValue,
-  formatResetTime,
   identityLine,
-  quotaLine,
+  quotaSummaryLine,
   quotaUsedPercent,
   reasoningLine,
   seatLine,
-  walletLine,
   type AccountDetail,
   type CliSettings,
 } from "./account-format";
@@ -35,6 +33,10 @@ interface AccountRowProps {
   onDelete(accountId: string): void;
   onSetDefault(accountId: string): void;
   onRename(accountId: string, label: string): void;
+  /** Owner directive 2026-09-26: reorder — move this account up in the list. */
+  onMoveUp(accountId: string): void;
+  /** Whether this account is first in the rendered list (up arrow hidden). */
+  canMoveUp: boolean;
 }
 
 const READ_ONLY_NOTE =
@@ -62,7 +64,11 @@ function CliPrefsBody({
   );
 }
 
-/** Quota bar, quota/wallet line, reset, and seat for one account. */
+/**
+ * Single-line quota summary (owner directive 2026-09-26) with the used-bar
+ * when the numbers are known:
+ * '100% used · 0/25 daily · Resets Sep 27, 12:00 AM'.
+ */
 function QuotaBlock({
   account,
   theme,
@@ -73,7 +79,6 @@ function QuotaBlock({
   compact: boolean;
 }) {
   const percent = quotaUsedPercent(account);
-  const reset = formatResetTime(account.status?.resetAt);
   const styles = useMemo(
     () => ({
       lines: { gap: compact ? 2 : 4 },
@@ -94,17 +99,12 @@ function QuotaBlock({
   );
   return (
     <View style={styles.lines}>
-      {!account.authenticated ? <Text style={styles.muted}>Not logged in</Text> : null}
+      <Text style={styles.muted}>{quotaSummaryLine(account)}</Text>
       {percent != null ? (
         <View style={styles.barTrack}>
           <View style={styles.barFill} />
         </View>
       ) : null}
-      <Text style={styles.muted}>
-        {percent != null ? `${percent}% used · ` : ""}
-        {`${quotaLine(account)}${walletLine(account)}`}
-      </Text>
-      {reset ? <Text style={styles.muted}>{`Resets ${reset}`}</Text> : null}
       <Text style={styles.muted}>{seatLine(account)}</Text>
     </View>
   );
@@ -168,45 +168,78 @@ function RenameEditor({
   );
 }
 
-interface RowActionsProps {
-  account: AccountDetail;
-  setDefaultBusy: boolean;
-  endSessionBusy: boolean;
-  deleteBusy: boolean;
-  renaming: boolean;
-  onStartRename(): void;
-  onSetDefault(accountId: string): void;
-  onEndSession(accountId: string): void;
-  onDelete(accountId: string): void;
-}
-
-/** Pencil, Default switch, and conditional power/trash actions for one account. */
-function RowActions({
+/** One settings row per Freebuff account: identity, quota, seat, and actions. */
+export function AccountRow({
   account,
-  setDefaultBusy,
+  theme,
+  compact,
   endSessionBusy,
   deleteBusy,
-  renaming,
-  onStartRename,
-  onSetDefault,
+  setDefaultBusy,
+  renameBusy,
   onEndSession,
   onDelete,
-}: RowActionsProps) {
-  const handleDefaultChange = useCallback(
+  onSetDefault,
+  onRename,
+  onMoveUp,
+  canMoveUp,
+}: AccountRowProps) {
+  const [renaming, setRenaming] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [prefsOpen, setPrefsOpen] = useState(false);
+  const styles = useMemo(
+    () => ({
+      muted: { color: theme.colors.foregroundMuted },
+      menuRow: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" as const },
+      // Owner directive: delete bottom-right — name-line actions left, trash right.
+      actionLine: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 8,
+      },
+      actionLineSpacer: { flexGrow: 1 },
+      prefsToggle: { flexDirection: "row", alignItems: "center", gap: 8 },
+    }),
+    [theme],
+  );
+  const identity = identityLine(account);
+  const hint = identity || (account.isDefault ? "Default" : undefined);
+  const startRename = useCallback(() => setRenaming(true), []);
+  const cancelRename = useCallback(() => setRenaming(false), []);
+  const handleRename = useCallback(
+    (label: string) => {
+      onRename(account.id, label);
+      setRenaming(false);
+    },
+    [account.id, onRename],
+  );
+  const toggleMenu = useCallback(() => setMenuOpen((open) => !open), []);
+  const togglePrefs = useCallback(() => setPrefsOpen((open) => !open), []);
+  const handleMoveUp = useCallback(() => onMoveUp(account.id), [onMoveUp, account.id]);
+  const handleSetDefault = useCallback(
     (value: boolean) => {
       if (value) onSetDefault(account.id);
     },
-    [account.id, onSetDefault],
+    [onSetDefault, account.id],
   );
   const handleEndSession = useCallback(() => onEndSession(account.id), [onEndSession, account.id]);
   const handleDelete = useCallback(() => onDelete(account.id), [onDelete, account.id]);
-  return (
+
+  const nameLineActions = (
     <>
+      {canMoveUp ? (
+        <SettingsIconButton
+          icon="ChevronUp"
+          accessibilityLabel={`Move ${account.label} up`}
+          onPress={handleMoveUp}
+          testID={`freebuff-move-up-${account.id}`}
+        />
+      ) : null}
       {!renaming ? (
         <SettingsIconButton
           icon="Pencil"
           accessibilityLabel={`Rename ${account.label}`}
-          onPress={onStartRename}
+          onPress={startRename}
           testID={`freebuff-rename-${account.id}`}
         />
       ) : null}
@@ -214,9 +247,14 @@ function RowActions({
         label="Default"
         value={account.isDefault}
         disabled={account.isDefault || setDefaultBusy}
-        onValueChange={handleDefaultChange}
+        onValueChange={handleSetDefault}
         testID={`freebuff-default-${account.id}`}
       />
+    </>
+  );
+
+  const bottomLineActions = (
+    <>
       {account.seat.state === "active" ? (
         <SettingsIconButton
           icon="Power"
@@ -238,46 +276,7 @@ function RowActions({
       ) : null}
     </>
   );
-}
 
-/** One settings row per Freebuff account: identity, quota, seat, and actions. */
-export function AccountRow({
-  account,
-  theme,
-  compact,
-  endSessionBusy,
-  deleteBusy,
-  setDefaultBusy,
-  renameBusy,
-  onEndSession,
-  onDelete,
-  onSetDefault,
-  onRename,
-}: AccountRowProps) {
-  const [renaming, setRenaming] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [prefsOpen, setPrefsOpen] = useState(false);
-  const styles = useMemo(
-    () => ({
-      muted: { color: theme.colors.foregroundMuted },
-      menuRow: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
-      prefsToggle: { flexDirection: "row", alignItems: "center", gap: 8 },
-    }),
-    [theme],
-  );
-  const identity = identityLine(account);
-  const hint = identity || (account.isDefault ? "Default" : undefined);
-  const startRename = useCallback(() => setRenaming(true), []);
-  const cancelRename = useCallback(() => setRenaming(false), []);
-  const handleRename = useCallback(
-    (label: string) => {
-      onRename(account.id, label);
-      setRenaming(false);
-    },
-    [account.id, onRename],
-  );
-  const toggleMenu = useCallback(() => setMenuOpen((open) => !open), []);
-  const togglePrefs = useCallback(() => setPrefsOpen((open) => !open), []);
   const menuButton = (
     <SettingsIconButton
       icon="MoreHorizontal"
@@ -286,19 +285,7 @@ export function AccountRow({
       testID={`freebuff-menu-${account.id}`}
     />
   );
-  const actions = (
-    <RowActions
-      account={account}
-      setDefaultBusy={setDefaultBusy}
-      endSessionBusy={endSessionBusy}
-      deleteBusy={deleteBusy}
-      renaming={renaming}
-      onStartRename={startRename}
-      onSetDefault={onSetDefault}
-      onEndSession={onEndSession}
-      onDelete={onDelete}
-    />
-  );
+
   return (
     <SettingsCard testID={`freebuff-account-${account.id}`}>
       <SettingsIconRow
@@ -306,7 +293,8 @@ export function AccountRow({
         label={renaming ? "Rename account" : account.label}
         hint={hint}
         testID={`freebuff-account-row-${account.id}`}
-        trailing={compact ? menuButton : actions}
+        // Pencil + Default switch end the name line, vertically centered (wide).
+        trailing={compact ? menuButton : nameLineActions}
       >
         <QuotaBlock account={account} theme={theme} compact={compact} />
         {renaming ? (
@@ -319,7 +307,15 @@ export function AccountRow({
         ) : null}
         {compact && menuOpen ? (
           <View style={styles.menuRow} testID={`freebuff-menu-open-${account.id}`}>
-            {actions}
+            {nameLineActions}
+            {bottomLineActions}
+          </View>
+        ) : null}
+        {!compact ? (
+          // Delete (and end-session) bottom-right, under the quota/seat lines.
+          <View style={styles.actionLine} testID={`freebuff-bottom-actions-${account.id}`}>
+            <View style={styles.actionLineSpacer} />
+            {bottomLineActions}
           </View>
         ) : null}
         <View style={styles.prefsToggle}>

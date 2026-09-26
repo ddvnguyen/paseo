@@ -79,11 +79,32 @@ export function formatResetTime(resetAt: string | undefined): string | null {
   });
 }
 
-/** Optional '· 3 Freebucks in wallet' suffix. */
+/** Optional ' · 3 Freebucks in wallet' suffix. */
 export function walletLine(account: QuotaAccount): string {
   const balance = account.status?.walletBalance;
   if (balance == null || balance <= 0) return "";
   return ` · ${balance} Freebucks in wallet`;
+}
+
+/**
+ * One-line quota summary (owner directive 2026-09-26):
+ * '100% used · 0/25 daily · Resets Sep 27, 12:00 AM' — the reset time rides
+ * on the same line instead of its own row. 'Quota unavailable'/'Not logged
+ * in' alone when the numbers are unknown. Never returns an empty string.
+ */
+export function quotaSummaryLine(account: QuotaAccount): string {
+  if (!account.authenticated) return "Not logged in";
+  const remaining = account.status?.dailyRemaining;
+  if (remaining == null) return "Quota unavailable";
+  const limit = account.status?.dailyLimit;
+  const percent = quotaUsedPercent(account);
+  const parts = [
+    percent != null ? `${percent}% used` : null,
+    `${remaining}/${limit ?? "?"} daily`,
+  ].filter((part): part is string => part !== null);
+  const reset = formatResetTime(account.status?.resetAt);
+  if (reset) parts.push(`Resets ${reset}`);
+  return parts.join(" · ");
 }
 
 /** 'Session active on MODEL' / 'No active session' / 'Session status unavailable'. */

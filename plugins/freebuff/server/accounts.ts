@@ -2,6 +2,7 @@ import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 
 import type {
   freebuffAccountDelete,
+  freebuffAccountOrder,
   freebuffAccountRename,
   freebuffAccountsList,
   freebuffAccountSetDefault,
@@ -59,6 +60,12 @@ export function renameAccount({
   label,
 }: RpcInput<typeof freebuffAccountRename>): Promise<RpcOutput<typeof freebuffAccountRename>> {
   return runAdapterJson(["accounts", "rename", "--id", id, "--label", label]);
+}
+
+export function setAccountOrder({
+  ids,
+}: RpcInput<typeof freebuffAccountOrder>): Promise<RpcOutput<typeof freebuffAccountOrder>> {
+  return runAdapterJson(["accounts", "order", "--ids", ids.join(",")]);
 }
 
 export function endSession({

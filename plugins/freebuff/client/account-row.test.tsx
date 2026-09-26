@@ -165,21 +165,28 @@ interface RowCallbacks {
   onDelete: (id: string) => void;
   onSetDefault: (id: string) => void;
   onRename: (id: string, label: string) => void;
+  onMoveUp: (id: string) => void;
+  canMoveUp: boolean;
 }
 
-function callbacks(): RowCallbacks & { calls: Record<string, unknown[][]> } {
+function callbacks(options: { canMoveUp?: boolean } = {}): RowCallbacks & {
+  calls: Record<string, unknown[][]>;
+} {
   const calls: Record<string, unknown[][]> = {
     onEndSession: [],
     onDelete: [],
     onSetDefault: [],
     onRename: [],
+    onMoveUp: [],
   };
   return {
     calls,
+    canMoveUp: options.canMoveUp ?? false,
     onEndSession: (...args: unknown[]) => void calls.onEndSession.push(args),
     onDelete: (...args: unknown[]) => void calls.onDelete.push(args),
     onSetDefault: (...args: unknown[]) => void calls.onSetDefault.push(args),
     onRename: (...args: unknown[]) => void calls.onRename.push(args),
+    onMoveUp: (...args: unknown[]) => void calls.onMoveUp.push(args),
   };
 }
 
@@ -232,6 +239,8 @@ function renderRow(
           onDelete={handlers.onDelete}
           onSetDefault={handlers.onSetDefault}
           onRename={handlers.onRename}
+          onMoveUp={handlers.onMoveUp}
+          canMoveUp={handlers.canMoveUp}
         />
       </QueryClientProvider>,
     );
@@ -261,7 +270,8 @@ describe("AccountRow wide layout", () => {
     const view = renderRow(buildAccount(), false, handlers);
 
     expect(view.textContent).toContain("duc@x.y · Duc");
-    expect(view.textContent).toContain("20% used · 20/25 Freebucks left today");
+    // Owner directive: single-line quota text.
+    expect(view.textContent).toContain("20% used · 20/25 daily");
     expect(view.textContent).toContain("No active session");
     expect(byAriaLabel(view, "Rename Work")).not.toBeNull();
     expect(byAriaLabel(view, "Remove Work")).not.toBeNull();
@@ -330,6 +340,39 @@ describe("AccountRow wide layout", () => {
     click(byAriaLabel(view, "Show CLI preferences"));
     expect(view.textContent).toContain("Mode: LITE");
     expect(view.textContent).toContain("Model: z-ai/glm-5.3-flash");
+  });
+
+  it("puts the trash on the bottom action line, right-aligned (owner layout)", () => {
+    const handlers = callbacks();
+    const view = renderRow(buildAccount(), false, handlers);
+
+    const bottomLine = view.querySelector('[data-testid="freebuff-bottom-actions-work"]');
+    expect(bottomLine).not.toBeNull();
+    // The trash lives inside the bottom action line, not the trailing slot.
+    expect(bottomLine?.querySelector('[aria-label="Remove Work"]')).not.toBeNull();
+    const trailing = view.querySelector('[data-testid="freebuff-account-row-work-trailing"]');
+    expect(trailing?.querySelector('[aria-label="Remove Work"]')).toBeNull();
+  });
+
+  it("renders the Default switch in the trailing slot at the end of the name line", () => {
+    const handlers = callbacks();
+    const view = renderRow(buildAccount(), false, handlers);
+
+    const trailing = view.querySelector('[data-testid="freebuff-account-row-work-trailing"]');
+    expect(trailing?.querySelector('[data-testid="freebuff-default-work"]')).not.toBeNull();
+    expect(trailing?.querySelector('[aria-label="Rename Work"]')).not.toBeNull();
+  });
+
+  it("offers Move up only when canMoveUp is set and fires with the account id", () => {
+    const handlers = callbacks({ canMoveUp: true });
+    const view = renderRow(buildAccount(), false, handlers);
+
+    click(byAriaLabel(view, "Move Work up"));
+    expect(handlers.calls.onMoveUp).toEqual([["work"]]);
+
+    const hidden = callbacks({ canMoveUp: false });
+    const view2 = renderRow(buildAccount(), false, hidden);
+    expect(byAriaLabel(view2, "Move Work up")).toBeNull();
   });
 });
 

@@ -91,6 +91,13 @@ export const freebuffAccountRename = defineRpc({
   output: z.object({ id: z.string(), label: z.string() }),
 });
 
+/** Owner directive 2026-09-26: the accounts list follows the stored order. */
+export const freebuffAccountOrder = defineRpc({
+  name: "freebuff.account.order",
+  input: z.object({ ids: z.array(accountId).min(1) }),
+  output: z.object({ order: z.array(z.string()) }),
+});
+
 export const freebuffSessionEnd = defineRpc({
   name: "freebuff.session.end",
   input: z.object({ id: accountId }),
