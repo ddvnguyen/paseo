@@ -10,6 +10,9 @@ export interface AccountDetail {
   isDefault: boolean;
   authenticated: boolean;
   managed: boolean;
+  /** Login identity from the stored user record; absent when unknown. */
+  email?: string;
+  name?: string;
   seat: { state: "none" } | { state: "active"; model?: string } | { state: "unknown" };
   status: {
     dailyRemaining?: number;
@@ -124,4 +127,9 @@ export function reasoningLine(
 /** Empty label clears the override; trim before sending. */
 export function normalizeRenameLabel(label: string): string {
   return label.trim();
+}
+
+/** 'email · name' login identity line; empty when neither is known. */
+export function identityLine(account: Pick<AccountDetail, "email" | "name">): string {
+  return [account.email?.trim(), account.name?.trim()].filter(Boolean).join(" · ");
 }
