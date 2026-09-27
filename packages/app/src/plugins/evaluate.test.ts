@@ -290,6 +290,24 @@ describe("evaluatePluginClientBundle", () => {
     );
     expect(plugin.workspacePanels[0]?.locations).toEqual(["workspace", "explorer"]);
 
+    // Dialog-only panels (agent-context entries opened via Command Center)
+    // are valid: the dialog host renders them as a modal overlay.
+    const dialogPlugin = evaluatePluginClientBundle(
+      "review",
+      bundle(`
+        function ReviewPanel() { return null; }
+        plugin.addWorkspacePanel({
+          id: "review",
+          title: "Review",
+          icon: "Scan",
+          context: "agent",
+          locations: ["dialog"],
+          Component: ReviewPanel,
+        });
+      `),
+    );
+    expect(dialogPlugin.workspacePanels[0]?.locations).toEqual(["dialog"]);
+
     for (const [locations, message] of [
       ["[]", "must support at least one location"],
       ['["sidebar"]', "has invalid location: sidebar"],
