@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"],
+    "typeRoots": ["../../packages/plugin/node_modules/@types"],
+    "baseUrl": ".",
+    "paths": {
+      "zod": ["../../packages/plugin/node_modules/zod"],
+      "vitest": ["../../packages/plugin/node_modules/vitest"],
+      "react-native": ["../../packages/app/node_modules/react-native/types/index.d.ts"],
+      "@getpaseo/plugin/*": ["../../packages/plugin/dist/*"],
+      "@getpaseo/protocol/*": ["../../packages/protocol/dist/*"]
+    },
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["index.server.ts", "index.client.tsx", "server", "client", "shared", "types"]
+}
