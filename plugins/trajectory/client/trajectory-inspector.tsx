@@ -1,4 +1,5 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import type { TextStyle, ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { TrajectoryFoldRow } from "../shared/dsh/layout.js";
 import { formatDurationMillis } from "../shared/dsh/record.js";
@@ -101,17 +102,20 @@ function Field(props: {
   );
 }
 
-function overlayStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+// Plain style objects (not StyleSheet.create): web create takes
+// named-style dicts only — a flat object throws in its WeakMap cache.
+// Spreading absoluteFillObject is fine here: these ARE the style props.
+function overlayStyles(theme: PluginTheme): ViewStyle {
+  return {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: theme.colors.surface0,
     padding: 12,
     gap: 8,
-  });
+  };
 }
 
-function dockedStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+function dockedStyles(theme: PluginTheme): ViewStyle {
+  return {
     position: "absolute",
     top: 0,
     bottom: 0,
@@ -122,57 +126,57 @@ function dockedStyles(theme: PluginTheme) {
     borderLeftColor: theme.colors.border,
     padding: 12,
     gap: 8,
-  });
+  };
 }
 
-function headerStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+function headerStyles(theme: PluginTheme): ViewStyle {
+  return {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     paddingBottom: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.colors.border,
-  });
+  };
 }
 
-function titleStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+function titleStyles(theme: PluginTheme): TextStyle {
+  return {
     flex: 1,
     color: theme.colors.foreground,
     fontSize: 13,
     fontWeight: "600",
-  });
+  };
 }
 
-function closeStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+function closeStyles(theme: PluginTheme): TextStyle {
+  return {
     color: theme.colors.foregroundMuted,
     fontSize: 11,
-  });
+  };
 }
 
-function fieldStyles() {
-  return StyleSheet.create({
+function fieldStyles(): ViewStyle {
+  return {
     flexDirection: "row",
     alignItems: "baseline",
     gap: 12,
-  });
+  };
 }
 
-function fieldLabelStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+function fieldLabelStyles(theme: PluginTheme): TextStyle {
+  return {
     width: 72,
     color: theme.colors.foregroundMuted,
     fontSize: 11,
-  });
+  };
 }
 
-function valueStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+function valueStyles(theme: PluginTheme): TextStyle {
+  return {
     flex: 1,
     color: theme.colors.foreground,
     fontSize: 12,
     fontVariant: ["tabular-nums"],
-  });
+  };
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
+import type { TextStyle, ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginAgentPanelProps, PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { usePaseo } from "@getpaseo/plugin/client";
@@ -168,54 +169,57 @@ function PanelNotice(props: { theme: PluginTheme; testID: string; message: strin
   );
 }
 
-function panelStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+// Plain style objects (not StyleSheet.create): these carry dynamic theme
+// values and react-native-web's create only accepts named-style dicts —
+// a flat object throws inside its WeakMap cache on web.
+function panelStyles(theme: PluginTheme): ViewStyle {
+  return {
     flex: 1,
     backgroundColor: theme.colors.surface0,
-  });
+  };
 }
 
-function captionRowStyles() {
-  return StyleSheet.create({
+function captionRowStyles(): ViewStyle {
+  return {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 8,
     paddingVertical: 4,
-  });
+  };
 }
 
-function bodyStyles() {
-  return StyleSheet.create({
+function bodyStyles(): ViewStyle {
+  return {
     flex: 1,
     flexDirection: "row",
-  });
+  };
 }
 
-function ledgerStyles() {
-  return StyleSheet.create({
+function ledgerStyles(): ViewStyle {
+  return {
     flex: 1,
-  });
+  };
 }
 
-function dockSpacerStyles() {
-  return StyleSheet.create({
+function dockSpacerStyles(): ViewStyle {
+  return {
     width: 320,
-  });
+  };
 }
 
-function retryStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+function retryStyles(theme: PluginTheme): TextStyle {
+  return {
     color: theme.colors.foregroundMuted,
     fontSize: 11,
-  });
+  };
 }
 
-function captionStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+function captionStyles(theme: PluginTheme): TextStyle {
+  return {
     color: theme.colors.foregroundMuted,
     fontSize: 11,
     paddingHorizontal: 8,
     paddingVertical: 4,
-  });
+  };
 }
