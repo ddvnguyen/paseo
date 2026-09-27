@@ -3,8 +3,8 @@ import type {
   PluginLifecycleEvents,
   PluginServerContext,
 } from "@getpaseo/plugin/server";
-import { ChipQueue, type ChipSink, type StagedChip } from "./server/chip-queue.js";
-import { buildChipData, type SnapshotControls } from "./server/ctx-capture.js";
+import { ChipQueue, type ChipSink } from "./server/chip-queue.js";
+import { buildChipData } from "./server/ctx-capture.js";
 import { CTX_INJECT_KIND, CTX_INJECT_ROW_ID, CTX_INJECT_VERSION } from "./shared/ctx-schema.js";
 
 /**
@@ -39,41 +39,56 @@ export default function contribute(server: PluginServerContext) {
     paseoApi ??= context.paseo;
   };
 
-  const sink = (context: PluginHookContext): ChipSink => ({
-    buildData: async (staged: StagedChip) => {
-      const api = context.paseo ?? paseoApi;
-      if (!api) throw new Error("no PaseoApi available for the ctx-inject chip");
-      return buildChipData({
-        facts: staged.facts,
-        // Read at flush time: at session-open the agent may not be committed yet.
-        snapshot: readSnapshotControls(api, staged),
-        // A history/refetch open must not pay the config read on the hot path.
-        paseoToolsInjected:
-          staged.purpose === "interactive"
-            ? await readPaseoToolsInjected(api, staged.provider)
-            : null,
-        reason: staged.reason,
-        capturedAt: new Date().toISOString(),
-      });
-    },
-    append: async (agentId, data) => {
-      const api = context.paseo ?? paseoApi;
-      if (!api) throw new Error("no PaseoApi available for the ctx-inject chip");
-      // Constant row id per agent: a later session open REPLACES the row instead of
-      // stacking a new chip into the transcript on every resume.
-      await api.agents.ref(agentId).timeline.append({
-        type: "plugin",
-        id: CTX_INJECT_ROW_ID,
-        kind: CTX_INJECT_KIND,
-        version: CTX_INJECT_VERSION,
-        data,
-      });
-    },
-    onError: (agentId, stage, error) => {
-      const detail = error instanceof Error ? error.message : String(error);
-      console.error(`[ctx-inject] chip ${stage} failed for ${agentId}: ${detail}`);
-    },
-  });
+  const sink = (context: PluginHookContext): ChipSink => {
+    const api = (): PaseoApi => {
+      const resolved = context.paseo ?? paseoApi;
+      if (!resolved) throw new Error("no PaseoApi available for the ctx-inject chip");
+      return resolved;
+    };
+    return {
+      probe: async (staged) => {
+        // Whether the agent is live yet, and its controls if so. Read here rather
+        // than at session-open, where a create is not yet committed and a resume
+        // may be in the store but not loaded.
+        const current = readCurrentAgent(api(), staged.agentId);
+        if (!current) return { live: false, controls: null };
+        return {
+          live: true,
+          controls: { model: current.model ?? null, currentModeId: current.currentModeId ?? null },
+        };
+      },
+      buildData: async (staged, controls) => {
+        return buildChipData({
+          facts: staged.facts,
+          // Configured model/mode win; the live snapshot is the fallback for a
+          // session that never ran the create hook.
+          snapshot: controls,
+          // A history/refetch open must not pay the config read on the hot path.
+          paseoToolsInjected:
+            staged.purpose === "interactive"
+              ? await readPaseoToolsInjected(api(), staged.provider)
+              : null,
+          reason: staged.reason,
+          capturedAt: new Date().toISOString(),
+        });
+      },
+      append: async (agentId, data) => {
+        // Constant row id per agent: a later session open REPLACES the row instead of
+        // stacking a new chip into the transcript on every resume.
+        await api().agents.ref(agentId).timeline.append({
+          type: "plugin",
+          id: CTX_INJECT_ROW_ID,
+          kind: CTX_INJECT_KIND,
+          version: CTX_INJECT_VERSION,
+          data,
+        });
+      },
+      onError: (agentId, stage, error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(`[ctx-inject] chip ${stage} failed for ${agentId}: ${detail}`);
+      },
+    };
+  };
 
   const disposers: Array<() => void> = [];
 
@@ -114,13 +129,20 @@ export default function contribute(server: PluginServerContext) {
 
 type PaseoApi = PluginHookContext["paseo"];
 
-/** Model/mode from the agent snapshot. Any failure yields nulls, never guesses. */
-function readSnapshotControls(api: PaseoApi, staged: StagedChip): SnapshotControls | null {
-  if (!staged.agentId) return null;
+/** The subset of the agent record the chip reads. */
+interface AgentRecord {
+  model?: string | null;
+  currentModeId?: string | null;
+}
+
+/**
+ * The agent's current record, or null when it is not in agent-manager yet.
+ * Any read failure is treated as "not available" so the queue retries instead of
+ * writing a row full of em dashes from a premature read.
+ */
+function readCurrentAgent(api: PaseoApi, agentId: string): AgentRecord | null {
   try {
-    const agent = api.agents.ref(staged.agentId).current();
-    if (!agent) return null;
-    return { model: agent.model ?? null, currentModeId: agent.currentModeId ?? null };
+    return api.agents.ref(agentId).current() ?? null;
   } catch {
     return null;
   }

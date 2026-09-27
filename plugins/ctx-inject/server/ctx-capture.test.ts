@@ -22,7 +22,27 @@ const FACTS: ConfigFacts = {
   systemPromptLength: 12,
   systemPromptHash: "abcdef012345",
   mcpServers: ["github"],
+  model: "claude-opus-5",
+  modeId: "plan",
 };
+
+describe("configFacts model and mode", () => {
+  // QC round 9 defect: model/mode attach to the agent record AFTER agent.created,
+  // so a snapshot read there produced em dashes. The create config carries them.
+  it("captures model and mode as configured at create time", () => {
+    const facts = configFacts(config({ model: "space-bunny-free", modeId: "auto" }));
+
+    expect(facts.model).toBe("space-bunny-free");
+    expect(facts.modeId).toBe("auto");
+  });
+
+  it("leaves model and mode unknown when the config omits them", () => {
+    const facts = configFacts(config());
+
+    expect(facts.model).toBeNull();
+    expect(facts.modeId).toBeNull();
+  });
+});
 
 describe("systemPromptHash", () => {
   it("is a stable 12-char digest that differs per prompt", () => {
@@ -141,5 +161,33 @@ describe("buildChipData", () => {
     });
 
     expect(data.paseoToolsInjected).toBeNull();
+  });
+
+  it("prefers the configured model/mode over a later snapshot change", () => {
+    // The row documents what the session was created with; a snapshot read at
+    // flush time may already differ, and must not silently rewrite the record.
+    const data = buildChipData({
+      facts: FACTS,
+      snapshot: { model: "some-other-model", currentModeId: "bypass" },
+      paseoToolsInjected: true,
+      reason: "create",
+      capturedAt: "2026-09-27T00:00:00.000Z",
+    });
+
+    expect(data.model).toBe("claude-opus-5");
+    expect(data.modeId).toBe("plan");
+  });
+
+  it("falls back to the live snapshot when no create hook was correlated", () => {
+    const data = buildChipData({
+      facts: null,
+      snapshot: { model: "space-bunny-free", currentModeId: "auto" },
+      paseoToolsInjected: true,
+      reason: "resume",
+      capturedAt: "2026-09-27T00:00:00.000Z",
+    });
+
+    expect(data.model).toBe("space-bunny-free");
+    expect(data.modeId).toBe("auto");
   });
 });
