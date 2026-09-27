@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { formatElapsedSeconds } from "../shared/dsh/record.js";
@@ -142,11 +142,16 @@ export function TrajectoryCellRow(props: {
   cell: TrajectoryCellProps;
   compact: boolean;
   theme: PluginTheme;
-  onPress?: () => void;
+  onPress?: (cell: TrajectoryCellProps) => void;
   testID?: string;
 }) {
   const { cell, compact, theme, onPress, testID } = props;
   const styles = useMemo(() => cellStyles(theme, cell.isError === true), [theme, cell.isError]);
+  // Bound here (not inline in JSX): Pressable passes the press event as the
+  // first argument, so an unbound handler would receive the event, not the cell.
+  const handlePress = useCallback(() => {
+    onPress?.(cell);
+  }, [onPress, cell]);
   const body = (
     <View style={styles.row} testID={testID}>
       <KindTag kind={cell.kind} compact={compact} theme={theme} error={cell.isError === true} />
@@ -181,7 +186,7 @@ export function TrajectoryCellRow(props: {
   );
   if (onPress === undefined) return body;
   return (
-    <Pressable accessibilityRole="button" onPress={onPress}>
+    <Pressable accessibilityRole="button" onPress={handlePress}>
       {body}
     </Pressable>
   );

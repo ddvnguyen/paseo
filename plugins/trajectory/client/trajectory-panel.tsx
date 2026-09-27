@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginAgentPanelProps, PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { usePaseo } from "@getpaseo/plugin/client";
+import type { TrajectoryCellProps } from "../shared/dsh/record.js";
 import { LedgerScreen } from "./ledger-screen.js";
+import { TrajectoryInspector } from "./trajectory-inspector.js";
 import { useTrajectoryDelta } from "./use-trajectory-delta.js";
 
 export type TrajectoryPanelProps = PluginAgentPanelProps | PluginWorkspacePanelProps;
@@ -50,12 +52,31 @@ export function TrajectoryPanel(props: TrajectoryPanelProps) {
 function LiveLedger(props: { agentId: string; compact: boolean; theme: PluginTheme }) {
   const { agentId, compact, theme } = props;
   const delta = useTrajectoryDelta(agentId);
+  // Selected row seq (null = inspector closed, the default). Seq — not the
+  // row object — so live updates refresh the inspector content in place; a
+  // selection whose row left the window resolves to null and closes it.
+  const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
+
+  useEffect(() => {
+    setSelectedSeq(null);
+  }, [agentId]);
+
+  const onCellPress = useCallback((cell: TrajectoryCellProps) => {
+    if (cell.sourceSeq !== undefined) setSelectedSeq(cell.sourceSeq);
+  }, []);
+
+  const onCloseInspector = useCallback(() => {
+    setSelectedSeq(null);
+  }, []);
 
   if (delta.status === "loading") {
     return (
       <PanelNotice theme={theme} testID="trajectory-panel-loading" message="loading trajectory…" />
     );
   }
+
+  const selectedRow =
+    selectedSeq === null ? null : (delta.rows.find((row) => row.seq === selectedSeq) ?? null);
 
   return (
     <View style={panelStyles(theme)} testID="trajectory-panel">
@@ -73,7 +94,24 @@ function LiveLedger(props: { agentId: string; compact: boolean; theme: PluginThe
           </Pressable>
         ) : null}
       </View>
-      <LedgerScreen rows={delta.rows} compact={compact} theme={theme} />
+      <View style={bodyStyles()}>
+        <View style={ledgerStyles()}>
+          <LedgerScreen
+            rows={delta.rows}
+            compact={compact}
+            theme={theme}
+            onCellPress={onCellPress}
+          />
+        </View>
+        {/* Wide dock takes layout space; compact overlays (absolute fill). */}
+        {selectedRow === null || compact ? null : <View style={dockSpacerStyles()} />}
+        <TrajectoryInspector
+          row={selectedRow}
+          compact={compact}
+          theme={theme}
+          onClose={onCloseInspector}
+        />
+      </View>
     </View>
   );
 }
@@ -144,6 +182,25 @@ function captionRowStyles() {
     justifyContent: "space-between",
     paddingHorizontal: 8,
     paddingVertical: 4,
+  });
+}
+
+function bodyStyles() {
+  return StyleSheet.create({
+    flex: 1,
+    flexDirection: "row",
+  });
+}
+
+function ledgerStyles() {
+  return StyleSheet.create({
+    flex: 1,
+  });
+}
+
+function dockSpacerStyles() {
+  return StyleSheet.create({
+    width: 320,
   });
 }
 
