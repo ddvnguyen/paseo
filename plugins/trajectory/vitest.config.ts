@@ -16,19 +16,35 @@ const appPkg = resolve(here, "..", "..", "packages", "app");
 
 export default defineConfig({
   resolve: {
-    alias: {
-      zod: resolve(pluginPkg, "node_modules", "zod"),
+    // Array form: string finds match exactly and by subpath; the plugin
+    // client maps to the built dist dir so both the entry and subpaths
+    // (client/ui, client/react-native) resolve.
+    alias: [
+      { find: "zod", replacement: resolve(pluginPkg, "node_modules", "zod") },
       // JSX runtime + react must resolve to the SAME react instance the
       // component modules import; plugins/ has no local react install.
-      "react/jsx-dev-runtime": resolve(pluginPkg, "node_modules", "react", "jsx-dev-runtime.js"),
-      "react/jsx-runtime": resolve(pluginPkg, "node_modules", "react", "jsx-runtime.js"),
-      react: resolve(pluginPkg, "node_modules", "react"),
+      {
+        find: "react/jsx-dev-runtime",
+        replacement: resolve(pluginPkg, "node_modules", "react", "jsx-dev-runtime.js"),
+      },
+      {
+        find: "react/jsx-runtime",
+        replacement: resolve(pluginPkg, "node_modules", "react", "jsx-runtime.js"),
+      },
+      { find: "react", replacement: resolve(pluginPkg, "node_modules", "react") },
       // Test-only renderer (jsdom stand-in for RN); never imported by plugin code.
-      "react-dom/client": resolve(appPkg, "node_modules", "react-dom", "client.js"),
-      "react-dom": resolve(appPkg, "node_modules", "react-dom"),
+      {
+        find: "react-dom/client",
+        replacement: resolve(appPkg, "node_modules", "react-dom", "client.js"),
+      },
+      { find: "react-dom", replacement: resolve(appPkg, "node_modules", "react-dom") },
       // RN resolves from packages/app (same version the host ships).
-      "react-native": resolve(appPkg, "node_modules", "react-native"),
-    },
+      { find: "react-native", replacement: resolve(appPkg, "node_modules", "react-native") },
+      // Plugin host contracts (useRpc/usePaseo) resolve to the built
+      // workspace package. Test files vi.mock this module with a factory,
+      // but vite still needs the path to resolve for import analysis.
+      { find: "@getpaseo/plugin/client", replacement: resolve(pluginPkg, "dist", "client") },
+    ],
   },
   test: {
     environment: "node",

@@ -39,6 +39,7 @@ export function useTrajectoryDelta(agentId: string): TrajectoryDelta & {
     let inFlight = false;
     const buffer: TrajectoryEvent[] = [];
     let headSeq = 0;
+    let firstPage = true;
     let frame: { cancel: () => void } | null = null;
 
     setDelta({ status: "loading", rows: [], headSeq: 0 });
@@ -69,18 +70,28 @@ export function useTrajectoryDelta(agentId: string): TrajectoryDelta & {
       if (cancelled || inFlight) return;
       inFlight = true;
       try {
-        const page =
-          buffer.length === 0 && headSeq === 0
-            ? await list({ agentId })
-            : await changes({ agentId, afterSeq: headSeq });
-        if (cancelled) return;
-        headSeq = page.headSeq;
-        if (page.events.length > 0) {
+        for (;;) {
+          const page =
+            buffer.length === 0 && headSeq === 0
+              ? await list({ agentId })
+              : await changes({ agentId, afterSeq: headSeq });
+          if (cancelled) return;
+          headSeq = page.headSeq;
+          if (page.events.length === 0) {
+            // Park until the next kick. The first page resolves the initial
+            // loading state even when the ledger is still empty.
+            if (firstPage) {
+              firstPage = false;
+              setDelta({ status: "live", rows: [], headSeq });
+            }
+            return;
+          }
+          firstPage = false;
           buffer.push(...page.events);
           scheduleFlush();
-          await loop();
         }
-        // Empty page: park until the next kick (no timers, no hot loop).
+        // Unreachable: the loop returns on empty pages, errors, or cancel.
+        // No timers, no hot loop — kicks come from mount/agent change/refresh.
       } catch (error) {
         if (cancelled) return;
         setDelta({
