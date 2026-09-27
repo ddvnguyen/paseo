@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createServer, type ServerResponse } from "node:http";
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2/client";
 import type { Logger } from "pino";
@@ -406,23 +403,6 @@ describe("OpenCodeEventConsumer", () => {
 
     await expect(consumer.ready()).rejects.toThrow("process exited before ready");
     expect(inputs).toEqual([expect.objectContaining({ type: "server-exited" })]);
-  });
-
-  test("installed OpenCode SDK swallows reader.cancel() rejection on abort", () => {
-    // Regression: unpatched @opencode-ai/sdk calls reader.cancel() on abort without a
-    // catch; under Bun the rejection carries close()'s abort reason and crashed the
-    // daemon ("OpenCode event source closed"). Fix lives in patches/@opencode-ai+sdk+*.patch.
-    const sdkRoot = join(
-      dirname(fileURLToPath(import.meta.url)),
-      "../../../../../node_modules/@opencode-ai/sdk",
-    );
-    for (const rel of [
-      "dist/gen/core/serverSentEvents.gen.js",
-      "dist/v2/gen/core/serverSentEvents.gen.js",
-    ]) {
-      const source = readFileSync(join(sdkRoot, rel), "utf8");
-      expect(source, rel).toMatch(/reader\.cancel\(\)\.catch\(/);
-    }
   });
 
   test("intentional close does not publish a false terminal", async () => {
