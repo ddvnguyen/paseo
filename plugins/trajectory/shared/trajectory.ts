@@ -62,6 +62,27 @@ export const trajectoryChanges = defineTrajectoryRpc({
   }),
 });
 
+/**
+ * Push seam (reserved). The plugin client API has no server-push primitive,
+ * so today the client drives `list` once and re-fires `changes` on settle;
+ * the payload shape is intentionally identical to `changes` so a future push
+ * transport slots in without touching the fold. The server handler currently
+ * delegates to the same paged read; the live fan-out point is the recorder's
+ * onAppend hub (server/wiring.ts), not this RPC.
+ */
+export const trajectorySubscribe = defineTrajectoryRpc({
+  name: "trajectory.subscribe",
+  input: z.object({
+    agentId: z.string().min(1),
+    afterSeq: z.number().int().nonnegative(),
+    limit: z.number().int().positive().max(1000).default(200),
+  }),
+  output: z.object({
+    events: z.array(TrajectoryEventSchema),
+    headSeq: z.number().int().nonnegative(),
+  }),
+});
+
 function defineTrajectoryRpc<Input extends z.ZodType, Output extends z.ZodType>(definition: {
   name: string;
   input: Input;

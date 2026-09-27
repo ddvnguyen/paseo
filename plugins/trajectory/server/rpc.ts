@@ -1,16 +1,21 @@
 import type { PluginRpcContract } from "@getpaseo/plugin";
 import type { z } from "zod";
-import { trajectoryChanges, trajectoryList } from "../shared/trajectory.js";
+import { trajectoryChanges, trajectoryList, trajectorySubscribe } from "../shared/trajectory.js";
 import type { TrajectoryStore } from "./store.js";
 
 /**
  * Read handlers. `trajectory.list` is the initial paged read;
  * `trajectory.changes` is the delta poll the client uses after its
  * `afterSeq` cursor (push-style refresh without polling intervals).
+ * `trajectory.subscribe` is the push-reserved name: it serves the same paged
+ * read today so the contract is callable and tested; live fan-out happens at
+ * the recorder's onAppend hub, and a future push transport keeps this
+ * payload shape unchanged.
  */
 
 type ListContract = typeof trajectoryList;
 type ChangesContract = typeof trajectoryChanges;
+type SubscribeContract = typeof trajectorySubscribe;
 
 function readPage(
   store: TrajectoryStore,
@@ -37,4 +42,15 @@ export function handleChanges(
   return async (input) => readPage(store, input);
 }
 
-export type { ListContract, ChangesContract as ChangesContractType, PluginRpcContract };
+export function handleSubscribe(
+  store: TrajectoryStore,
+): (input: z.input<SubscribeContract["input"]>) => Promise<z.input<SubscribeContract["output"]>> {
+  return async (input) => readPage(store, input);
+}
+
+export type {
+  ListContract,
+  ChangesContract as ChangesContractType,
+  SubscribeContract as SubscribeContractType,
+  PluginRpcContract,
+};
