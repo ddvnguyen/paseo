@@ -84,8 +84,8 @@ importers:
         specifier: 1.29.0
         version: 1.29.0(zod@4.6.5)
       '@opencode-ai/sdk':
-        specifier: 1.14.46
-        version: 1.14.46
+        specifier: 1.18.23
+        version: 1.18.23
       '@parcel/watcher':
         specifier: ^2.6.0
         version: 2.6.0
@@ -553,8 +553,8 @@ packages:
       '@cfworker/json-schema':
         optional: true
 
-  '@opencode-ai/sdk@1.14.46':
-    resolution: {integrity: sha512-7KOMuoCkNI+bLOw3GCg0nWZ5m7A/MzNsyLfTbZYmE/DIaUqkV2LNRULtrW6PHL1WtYVmJEFPws4dbw/4dVxjzA==}
+  '@opencode-ai/sdk@1.18.23':
+    resolution: {integrity: sha512-VouYbL8O2ynLq0atr5fjzCv8YLtFi/zKLQ/uYkCvTJ4CmUdA01XwPn8om+u3TvxnGEfQsBfmThGU141vt3sg5w==}
 
   '@opentelemetry/api@1.9.0':
     resolution: {integrity: sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg==}
@@ -1896,7 +1896,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@opencode-ai/sdk@1.14.46':
+  '@opencode-ai/sdk@1.18.23':
     dependencies:
       cross-spawn: 7.0.6
 
