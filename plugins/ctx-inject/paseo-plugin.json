@@ -1,0 +1,5 @@
+{
+  "id": "ctx-inject",
+  "description": "Context-inject chip: what context was configured for an agent when its session opened",
+  "requirements": { "paseo": ">=0.9.2-0" }
+}
