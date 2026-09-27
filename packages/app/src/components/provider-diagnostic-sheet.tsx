@@ -50,7 +50,7 @@ function rankModels<T>(items: T[], query: string, fields: (item: T) => string[])
   return scored.map((entry) => entry.item);
 }
 
-function DiscoveredModelRow({
+export function DiscoveredModelRow({
   model,
   serverId,
   provider,
@@ -93,7 +93,7 @@ function DiscoveredModelRow({
   );
 }
 
-function CustomModelRow({
+export function CustomModelRow({
   model,
   serverId,
   provider,
@@ -794,14 +794,20 @@ const sheetStyles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     color: theme.colors.foregroundMuted,
   },
+  // minWidth: 0 is load-bearing, not a nicety. A single-line model id only ellipsizes when the
+  // Text is width-constrained, so the row needs flexShrink: 1 — and on web a CSS flex item
+  // defaults to min-width: auto, which pins the id to its intrinsic width and pushes the
+  // trailing switch off the row even with flexShrink: 1. The two properties travel together.
   monoHint: {
     fontFamily: theme.fontFamily.mono,
     fontSize: theme.fontSize.code,
     color: theme.colors.foregroundMuted,
-    flexShrink: 0,
+    flexShrink: 1,
+    minWidth: 0,
   },
   descriptionInline: {
     flex: 1,
+    minWidth: 0,
     fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
   },
@@ -865,15 +871,20 @@ const sheetStyles = StyleSheet.create((theme) => ({
   modelTitle: {
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
-    flexShrink: 0,
+    flexShrink: 1,
+    minWidth: 0,
   },
   modelRowFiller: {
     flex: 1,
   },
+  // The trailing slot holds the rail, so it never shrinks. The cap bounds only the variable-width
+  // part — the "last model" hint — which would otherwise widen the slot enough to push the delete
+  // button off a narrow row. The switch is a fixed 34px track and is never the constraint.
   toggleColumn: {
     alignItems: "flex-end",
     gap: theme.spacing[1],
     flexShrink: 0,
+    maxWidth: "45%",
   },
   toggleHint: {
     color: theme.colors.foregroundMuted,

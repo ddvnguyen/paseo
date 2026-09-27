@@ -5,11 +5,22 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useDisabledModelsStore } from "@/stores/disabled-models-store";
-import "@/i18n/i18next";
+import { i18n as testI18n } from "@/i18n/i18next";
 import { ModelDisableSwitch } from "./provider-model-toggle";
 
-// @ts-expect-error repo pattern: expose act() support flag for react-dom test renders
+// Load translations so the hint renders as copy rather than a key.
+void testI18n;
+
+// Expose act() support for react-dom test renders. The cast needs no directive — the directive
+// that was here was flagged as unused, which is what kept this file's typecheck red.
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+
+// provider-model-toggle.tsx imports only `useCallback` from react, so its classic JSX compiles
+// to a free `React.createElement` and needs React on the global. Other component tests in this
+// repo either import React themselves or stub it this way.
+beforeEach(() => {
+  vi.stubGlobal("React", React);
+});
 
 vi.mock("react-native", () => ({
   View: ({ children }: React.PropsWithChildren) => React.createElement("div", null, children),
