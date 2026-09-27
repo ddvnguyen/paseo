@@ -1,5 +1,6 @@
 import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import type { ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { deriveTrajectoryLayout } from "../shared/dsh/layout.js";
 import type {
@@ -243,13 +244,13 @@ function toolbarStyles(theme: PluginTheme) {
   });
 }
 
-/** Heavier rule between turns (dsh turn separator parity). */
-function turnRuleStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+/** Heavier rule between turns (dsh turn separator parity). Plain object: web create takes named-style dicts only. */
+function turnRuleStyles(theme: PluginTheme): ViewStyle {
+  return {
     height: 2,
     backgroundColor: theme.colors.border,
     marginVertical: 4,
-  });
+  };
 }
 
 function TurnHeaderRow(props: {
@@ -492,9 +493,9 @@ function chromeKey(record: LeadRecord): string {
   return `rule-${record.turn}`;
 }
 
-function screenStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+function screenStyles(theme: PluginTheme): ViewStyle {
+  return {
     flex: 1,
     backgroundColor: theme.colors.surface0,
-  });
+  };
 }

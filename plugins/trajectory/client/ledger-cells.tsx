@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import type { TextStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { formatElapsedSeconds } from "../shared/dsh/record.js";
 import type { TrajectoryCellProps } from "../shared/dsh/record.js";
@@ -76,12 +77,13 @@ export function DurationText(props: { timeSeconds: number | null; theme: PluginT
   );
 }
 
-function durationStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+// Plain objects: web StyleSheet.create takes named-style dicts only.
+function durationStyles(theme: PluginTheme): TextStyle {
+  return {
     color: theme.colors.foregroundMuted,
     fontSize: 11,
     fontVariant: ["tabular-nums"],
-  });
+  };
 }
 
 /** Message token columns: `In N(cache) / out N`; `—` when the bucket is unknown. */
@@ -109,12 +111,12 @@ export function TokenText(props: {
   );
 }
 
-function tokenStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+function tokenStyles(theme: PluginTheme): TextStyle {
+  return {
     color: theme.colors.foregroundMuted,
     fontSize: 11,
     fontVariant: ["tabular-nums"],
-  });
+  };
 }
 
 /** Tool output size: `characters: N`; `—` when the size is unknown. */
@@ -129,12 +131,12 @@ export function CharsText(props: { outputChars: number | null; theme: PluginThem
   );
 }
 
-function charsStyles(theme: PluginTheme) {
-  return StyleSheet.create({
+function charsStyles(theme: PluginTheme): TextStyle {
+  return {
     color: theme.colors.foregroundMuted,
     fontSize: 11,
     fontVariant: ["tabular-nums"],
-  });
+  };
 }
 
 /** One ledger cell row: kind tag + text + trailing metrics. */
