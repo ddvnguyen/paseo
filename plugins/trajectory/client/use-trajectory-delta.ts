@@ -41,25 +41,31 @@ export function useTrajectoryDelta(agentId: string): TrajectoryDelta & {
     let headSeq = 0;
     let firstPage = true;
     let frame: { cancel: () => void } | null = null;
+    // Epoch guards the frame gate: a flush scheduled before an error (or a
+    // reload) must not clobber the newer status when its timer fires. Every
+    // non-flush setDelta bumps the epoch; flush applies only on a match.
+    let epoch = 0;
 
+    epoch += 1;
     setDelta({ status: "loading", rows: [], headSeq: 0 });
 
-    const flush = () => {
+    const flush = (ticket: number) => {
       frame = null;
-      if (cancelled) return;
+      if (cancelled || ticket !== epoch) return;
       const rows = eventsToFoldRows(buffer);
       setDelta({ status: "live", rows, headSeq });
     };
 
     const scheduleFlush = () => {
       if (frame !== null || cancelled) return;
+      const ticket = epoch;
       if (Platform.OS === "web" && typeof requestAnimationFrame === "function") {
-        const id = requestAnimationFrame(flush);
+        const id = requestAnimationFrame(() => flush(ticket));
         frame = {
           cancel: () => cancelAnimationFrame(id),
         };
       } else {
-        const id = setTimeout(flush, 0);
+        const id = setTimeout(() => flush(ticket), 0);
         frame = {
           cancel: () => clearTimeout(id),
         };
@@ -94,6 +100,7 @@ export function useTrajectoryDelta(agentId: string): TrajectoryDelta & {
         // No timers, no hot loop — kicks come from mount/agent change/refresh.
       } catch (error) {
         if (cancelled) return;
+        epoch += 1;
         setDelta({
           status: "error",
           error: error instanceof Error ? error.message : String(error),

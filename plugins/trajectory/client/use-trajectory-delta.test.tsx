@@ -85,9 +85,14 @@ function Probe({ agentId }: { agentId: string }) {
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-function renderProbe(agentId: string) {
+async function renderProbe(agentId: string): Promise<void> {
   ensureMounted();
-  root?.render(React.createElement(Probe, { agentId }));
+  // Render inside act so effects (and the delta loop kick) flush before
+  // the caller polls: cross-scope commits are at the mercy of scheduler
+  // timing and flaked under parallel workers.
+  await act(async () => {
+    root?.render(React.createElement(Probe, { agentId }));
+  });
 }
 
 function ensureMounted() {
@@ -107,7 +112,9 @@ function ensureMounted() {
  */
 async function settleUntil(
   predicate: (current: ProbeView) => boolean,
-  timeoutMs = 4_000,
+  // Generous: happy paths resolve in a few hops; only failure paths pay.
+  // (Loaded dev boxes stretch 25ms hops under parallel vitest workers.)
+  timeoutMs = 10_000,
 ): Promise<ProbeView> {
   const start = Date.now();
   for (;;) {
@@ -174,7 +181,7 @@ describe("useTrajectoryDelta", () => {
       }) as RpcHandler,
     };
 
-    renderProbe("a1");
+    await renderProbe("a1");
     const done = await settleUntil(settledLive);
     expect(done).toMatchObject({ status: "live", rows: 3, headSeq: 4 });
 
@@ -192,7 +199,7 @@ describe("useTrajectoryDelta", () => {
       "trajectory.changes": (async () => ({ events: [], headSeq: 1 })) as RpcHandler,
     };
 
-    renderProbe("a1");
+    await renderProbe("a1");
     await settleUntil(settledLive);
 
     expect(view().status).toBe("live");
@@ -205,7 +212,7 @@ describe("useTrajectoryDelta", () => {
       "trajectory.changes": (async () => ({ events: [], headSeq: 0 })) as RpcHandler,
     };
 
-    renderProbe("fresh");
+    await renderProbe("fresh");
     const done = await settleUntil(settledLive);
     expect(done).toMatchObject({ status: "live", rows: 0, headSeq: 0 });
   });
@@ -227,7 +234,7 @@ describe("useTrajectoryDelta", () => {
       }) as RpcHandler,
     };
 
-    renderProbe("a1");
+    await renderProbe("a1");
     await settleUntil(settledError);
 
     // list(2 rows) ok, first changes throws -> error keeps the 2 folded rows.
@@ -236,7 +243,7 @@ describe("useTrajectoryDelta", () => {
 
     // New agent resets to loading, then lists its own window. Key the wait
     // on the new headSeq: the stale a1 error already satisfies settledError.
-    renderProbe("a2");
+    await renderProbe("a2");
     await settleUntil((current) => current.status === "error" && current.headSeq === 12);
     expect(view()).toMatchObject({ status: "error", rows: 2, headSeq: 12 });
   });
