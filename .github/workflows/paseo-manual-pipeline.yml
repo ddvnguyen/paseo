@@ -574,6 +574,9 @@ jobs:
             fi
           done
           echo "Server + protocol/client deps deployed to TEST via pnpm-built dist"
+      - name: Patch runtime deps (TEST)
+        run: bash "${{ steps.locate.outputs.dir }}/deploy/patch-runtime-deps.sh" "${{ env.TEST_HOME }}"
+
       - name: Verify runtime dep closure resolves (TEST)
         run: |
           set -euo pipefail
@@ -672,6 +675,9 @@ jobs:
             fi
           done
           echo "Server + protocol/client deps deployed to PROD via pnpm-built dist"
+      - name: Patch runtime deps (PROD)
+        run: bash "${{ steps.locate.outputs.dir }}/deploy/patch-runtime-deps.sh" "${{ env.PROD_HOME }}"
+
       - name: Verify runtime dep closure resolves (PROD)
         run: |
           set -euo pipefail
