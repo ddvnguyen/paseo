@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { isLastEnabledModel, useDisabledModelsStore } from "./disabled-models-store";
+import {
+  buildExcludedByProviderMap,
+  isLastEnabledModel,
+  useDisabledModelsStore,
+} from "./disabled-models-store";
 
 const SERVER = "host-a";
 const PROVIDER = "claude";
@@ -48,6 +52,26 @@ describe("useDisabledModelsStore", () => {
     expect(useDisabledModelsStore.getState().disabledByServerProvider).toEqual({});
     expect(store.isModelDisabled("", PROVIDER, "m1")).toBe(false);
     expect(store.getDisabledModelIds(SERVER, "")).toEqual([]);
+  });
+});
+
+describe("buildExcludedByProviderMap", () => {
+  it("scopes the exclusion map to one server as id sets", () => {
+    const persisted = {
+      "host-a": { claude: ["m1", "m2"], codex: [] },
+      "host-b": { claude: ["m9"] },
+    };
+    const map = buildExcludedByProviderMap(persisted, "host-a");
+    expect(map.get("claude")).toEqual(new Set(["m1", "m2"]));
+    // Providers without disabled models stay absent (builders exclude nothing).
+    expect(map.has("codex")).toBe(false);
+    expect(map.has("m9")).toBe(false);
+  });
+
+  it("returns an empty map without a server or stored state", () => {
+    expect(buildExcludedByProviderMap({}, "host-a").size).toBe(0);
+    expect(buildExcludedByProviderMap({ "host-a": { claude: ["m1"] } }, null).size).toBe(0);
+    expect(buildExcludedByProviderMap({ "host-a": { claude: ["m1"] } }, "host-b").size).toBe(0);
   });
 });
 

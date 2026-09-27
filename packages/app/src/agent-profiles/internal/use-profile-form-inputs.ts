@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useFetchQuery } from "@/data/query";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
+import { useExcludedModelIdsByProvider } from "@/stores/disabled-models-store";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import type { AgentProfileFormModel, AgentProfileFormState } from "./profile-form-model";
 
@@ -18,13 +19,15 @@ export function useAgentProfileFormCatalog(input: {
   model: AgentProfileFormModel;
 }): void {
   const { entries } = useProvidersSnapshot(input.serverId, { cwd: null });
+  // Disabled models stay hidden from new selection (C2); re-applied live.
+  const excludedByProvider = useExcludedModelIdsByProvider(input.serverId);
 
   useEffect(() => {
     if (!entries) {
       return;
     }
-    input.model.applyProviderCatalog(entries);
-  }, [entries, input.model]);
+    input.model.applyProviderCatalog(entries, excludedByProvider);
+  }, [entries, excludedByProvider, input.model]);
 }
 
 export function useAgentProfileFormFeatures(input: {

@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useMemo } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { z } from "zod";
@@ -101,3 +102,42 @@ export const useDisabledModelsStore = create<DisabledModelsStoreState>()(
     },
   ),
 );
+
+/**
+ * Pure derivation for picker threading (C2 step 4/4): the exclusion map the
+ * selector builders expect, scoped to one server. Providers without disabled
+ * models are absent from the map, which the builders treat as "exclude
+ * nothing".
+ */
+export function buildExcludedByProviderMap(
+  disabledByServerProvider: Record<string, Record<string, string[]>>,
+  serverId: string | null,
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const map = new Map<string, ReadonlySet<string>>();
+  if (!serverId) return map;
+  const byProvider = disabledByServerProvider[serverId];
+  if (!byProvider) return map;
+  for (const [providerId, ids] of Object.entries(byProvider)) {
+    if (ids.length > 0) {
+      map.set(providerId, new Set(ids));
+    }
+  }
+  return map;
+}
+
+/**
+ * Subscribed exclusion map for new-selection surfaces. Pickers re-render live
+ * when the disable set changes, so a toggle in Settings hides the model
+ * without waiting for the next snapshot refresh.
+ */
+export function useExcludedModelIdsByProvider(
+  serverId: string | null,
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const disabledByServerProvider = useDisabledModelsStore(
+    (state) => state.disabledByServerProvider,
+  );
+  return useMemo(
+    () => buildExcludedByProviderMap(disabledByServerProvider, serverId),
+    [disabledByServerProvider, serverId],
+  );
+}
