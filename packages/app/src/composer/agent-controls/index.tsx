@@ -34,6 +34,7 @@ import {
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
 import { filterSelectableModels } from "@/provider-selection/model-catalog";
+import { useExcludedModelIdsByProvider } from "@/stores/disabled-models-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { resolveProviderDefinition } from "@/utils/provider-definitions";
@@ -1563,7 +1564,13 @@ export const AgentControls = memo(function AgentControls({
     [snapshotEntries, agent?.provider],
   );
 
-  const models = filterSelectableModels(snapshotSelectedEntry?.models ?? null);
+  // Disabled models stay hidden from new selection (C2); the running model
+  // keeps displaying via the C1 raw-id fallback.
+  const excludedByProvider = useExcludedModelIdsByProvider(serverId);
+  const models = filterSelectableModels(
+    snapshotSelectedEntry?.models ?? null,
+    snapshotSelectedEntry ? excludedByProvider.get(snapshotSelectedEntry.provider) : undefined,
+  );
   const selectedProviderIsLoading = snapshotSelectedEntry?.status === "loading";
 
   const agentProviderDefinitions = useMemo(
@@ -1577,13 +1584,14 @@ export const AgentControls = memo(function AgentControls({
   );
   const agentModelSelectorProviders = useMemo(() => {
     if (snapshotSelectedEntry) {
-      return buildSelectableProviderSelectorProviders([snapshotSelectedEntry]);
+      return buildSelectableProviderSelectorProviders([snapshotSelectedEntry], excludedByProvider);
     }
     return buildProviderSelectorProviders({
       providerDefinitions: agentProviderDefinitions,
       modelsByProvider: agentProviderModels,
+      excludedByProvider,
     });
-  }, [agentProviderDefinitions, agentProviderModels, snapshotSelectedEntry]);
+  }, [agentProviderDefinitions, agentProviderModels, excludedByProvider, snapshotSelectedEntry]);
 
   const modelSelection = resolveAgentModelSelection({
     models,

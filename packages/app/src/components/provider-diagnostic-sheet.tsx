@@ -12,6 +12,7 @@ import {
 } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { ModelDisableSwitch } from "@/components/provider-model-toggle";
 import { ScrollableCodeSurface, SurfaceCard } from "@/components/ui/scrollable-code-surface";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
@@ -49,7 +50,17 @@ function rankModels<T>(items: T[], query: string, fields: (item: T) => string[])
   return scored.map((entry) => entry.item);
 }
 
-function DiscoveredModelRow({ model }: { model: AgentModelDefinition }) {
+function DiscoveredModelRow({
+  model,
+  serverId,
+  provider,
+  catalogIds,
+}: {
+  model: AgentModelDefinition;
+  serverId: string;
+  provider: string;
+  catalogIds: string[];
+}) {
   return (
     <View style={sheetStyles.modelRow}>
       <Text style={sheetStyles.modelTitle} numberOfLines={1}>
@@ -68,16 +79,32 @@ function DiscoveredModelRow({ model }: { model: AgentModelDefinition }) {
           {model.description}
         </Text>
       ) : null}
+      <View style={sheetStyles.modelRowFiller} />
+      <ModelDisableSwitch
+        serverId={serverId}
+        provider={provider}
+        modelId={model.id}
+        modelLabel={model.label}
+        catalogIds={catalogIds}
+        style={sheetStyles.toggleColumn}
+        hintStyle={sheetStyles.toggleHint}
+      />
     </View>
   );
 }
 
 function CustomModelRow({
   model,
+  serverId,
+  provider,
+  catalogIds,
   deleting,
   onDelete,
 }: {
   model: ProviderProfileModel;
+  serverId: string;
+  provider: string;
+  catalogIds: string[];
   deleting: boolean;
   onDelete: (modelId: string) => void;
 }) {
@@ -107,6 +134,15 @@ function CustomModelRow({
         {model.id}
       </Text>
       <View style={sheetStyles.modelRowFiller} />
+      <ModelDisableSwitch
+        serverId={serverId}
+        provider={provider}
+        modelId={model.id}
+        modelLabel={model.label}
+        catalogIds={catalogIds}
+        style={sheetStyles.toggleColumn}
+        hintStyle={sheetStyles.toggleHint}
+      />
       <Pressable
         onPress={handleDelete}
         disabled={deleting}
@@ -394,6 +430,9 @@ function DiagnosticSubSheet({
 }
 
 interface ProviderModalBodyProps {
+  serverId: string;
+  provider: string;
+  catalogIds: string[];
   discoveredCount: number;
   additionalCount: number;
   providerSnapshotRefreshing: boolean;
@@ -480,6 +519,9 @@ function renderProviderSheetFooter({
 function ProviderModalBody(props: ProviderModalBodyProps) {
   const { t } = useTranslation();
   const {
+    serverId,
+    provider,
+    catalogIds,
     discoveredCount,
     additionalCount,
     providerSnapshotRefreshing,
@@ -539,7 +581,13 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
           />
           <View style={settingsStyles.card}>
             {filteredDiscovered.map((model) => (
-              <DiscoveredModelRow key={model.id} model={model} />
+              <DiscoveredModelRow
+                key={model.id}
+                model={model}
+                serverId={serverId}
+                provider={provider}
+                catalogIds={catalogIds}
+              />
             ))}
           </View>
         </View>
@@ -555,6 +603,9 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
               <CustomModelRow
                 key={model.id}
                 model={model}
+                serverId={serverId}
+                provider={provider}
+                catalogIds={catalogIds}
                 deleting={deletingModelId === model.id}
                 onDelete={onDeleteCustom}
               />
@@ -638,6 +689,13 @@ export function ProviderDiagnosticSheet({
     () => rankModels(additionalModels, q, (m) => [m.label, m.id]),
     [additionalModels, q],
   );
+  const catalogIds = useMemo(
+    () => [
+      ...discoveredModels.map((model) => model.id),
+      ...additionalModels.map((model) => model.id),
+    ],
+    [discoveredModels, additionalModels],
+  );
 
   const handleRefreshModels = useCallback(() => {
     void refresh([provider]);
@@ -697,6 +755,9 @@ export function ProviderDiagnosticSheet({
         snapPoints={MAIN_SNAP_POINTS}
       >
         <ProviderModalBody
+          serverId={serverId}
+          provider={provider}
+          catalogIds={catalogIds}
           discoveredCount={discoveredModels.length}
           additionalCount={additionalModels.length}
           providerSnapshotRefreshing={providerSnapshotRefreshing}
@@ -808,6 +869,15 @@ const sheetStyles = StyleSheet.create((theme) => ({
   },
   modelRowFiller: {
     flex: 1,
+  },
+  toggleColumn: {
+    alignItems: "flex-end",
+    gap: theme.spacing[1],
+    flexShrink: 0,
+  },
+  toggleHint: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
   },
   emptyState: {
     paddingVertical: theme.spacing[8],

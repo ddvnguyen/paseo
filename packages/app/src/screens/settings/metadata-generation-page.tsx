@@ -10,6 +10,7 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { buildSelectableProviderSelectorProviders } from "@/provider-selection/provider-selection";
+import { useExcludedModelIdsByProvider } from "@/stores/disabled-models-store";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { settingsStyles } from "@/styles/settings";
 
@@ -20,9 +21,10 @@ export function MetadataGenerationPage({ serverId }: { serverId: string }) {
   const { t } = useTranslation();
   const { config, isLoading: isConfigLoading, patchConfig } = useDaemonConfig(serverId);
   const snapshot = useProvidersSnapshot(serverId);
+  const excludedByProvider = useExcludedModelIdsByProvider(serverId);
   const providers = useMemo(
-    () => buildSelectableProviderSelectorProviders(snapshot.entries),
-    [snapshot.entries],
+    () => buildSelectableProviderSelectorProviders(snapshot.entries, excludedByProvider),
+    [excludedByProvider, snapshot.entries],
   );
   const configuredProviders = config?.metadataGeneration.providers;
   const configuredProvider = configuredProviders?.[0] ?? null;

@@ -89,11 +89,12 @@ function buildModelSelection(
   provider: string,
   providerLabel: string,
   models: AgentModelDefinition[] | null,
+  excludedModelIds?: ReadonlySet<string>,
 ): ProviderModelSelection {
   if (models === null) {
     return { kind: "loading" };
   }
-  const selectableModels = filterSelectableModels(models) ?? [];
+  const selectableModels = filterSelectableModels(models, excludedModelIds) ?? [];
   if (selectableModels.length === 0) {
     return { kind: "models", rows: [buildSyntheticDefaultRow(provider, providerLabel)] };
   }
@@ -103,12 +104,13 @@ function buildModelSelection(
 function buildEntryModelSelection(
   entry: ProviderSnapshotEntry,
   label: string,
+  excludedModelIds?: ReadonlySet<string>,
 ): ProviderModelSelection {
   if ((entry.models?.length ?? 0) > 0) {
-    return buildModelSelection(entry.provider, label, entry.models ?? null);
+    return buildModelSelection(entry.provider, label, entry.models ?? null, excludedModelIds);
   }
   if (entry.status === "ready") {
-    return buildModelSelection(entry.provider, label, entry.models ?? null);
+    return buildModelSelection(entry.provider, label, entry.models ?? null, excludedModelIds);
   }
   if (entry.status === "loading") {
     return { kind: "loading" };
@@ -126,6 +128,7 @@ function buildEntryModelSelection(
 export function buildProviderSelectorProviders(input: {
   providerDefinitions: AgentProviderDefinition[];
   modelsByProvider: Map<string, AgentModelDefinition[]>;
+  excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>;
 }): ProviderSelectorProvider[] {
   return input.providerDefinitions.map((definition) => ({
     id: definition.id,
@@ -136,12 +139,14 @@ export function buildProviderSelectorProviders(input: {
       input.modelsByProvider.has(definition.id)
         ? (input.modelsByProvider.get(definition.id) ?? [])
         : null,
+      input.excludedByProvider?.get(definition.id),
     ),
   }));
 }
 
 export function buildSelectableProviderSelectorProviders(
   entries: ProviderSnapshotEntry[] | undefined,
+  excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>,
 ): ProviderSelectorProvider[] {
   return (entries ?? [])
     .filter((entry) => entry.enabled)
@@ -150,7 +155,11 @@ export function buildSelectableProviderSelectorProviders(
       return {
         id: entry.provider,
         label,
-        modelSelection: buildEntryModelSelection(entry, label),
+        modelSelection: buildEntryModelSelection(
+          entry,
+          label,
+          excludedByProvider?.get(entry.provider),
+        ),
       };
     });
 }
