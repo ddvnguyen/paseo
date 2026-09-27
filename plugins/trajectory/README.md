@@ -6,14 +6,14 @@ dsh-style ledger UI. Plugin-only — no core paseo edits (upstream-merge-safe).
 
 ## Layout
 
-| Path                   | Owns                                                                                    |
-| ---------------------- | --------------------------------------------------------------------------------------- |
-| `shared/events.ts`     | `TrajectoryEventSchema` envelope (zod) — the only wire contract so far                  |
-| `server/store.ts`      | `TrajectoryStore` interface; `seq` is DB-assigned (`INTEGER PRIMARY KEY AUTOINCREMENT`) |
-| `server/node-store.ts` | node:sqlite driver; camelCase rows via SQL aliases; `data` JSON-parsed                  |
-| `server/recorder.ts`   | pure recorder: paseo events -> ledger rows (turn attribution, dedupe)                   |
-| `server/wiring.ts`     | idempotent lazy stream attach; one recorder+store per plugin process                    |
-| `index.server.ts`      | hook registration; every callback calls `ensureAttached(paseo)` first                   |
+| Path                   | Owns                                                                                                   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------ |
+| `shared/trajectory.ts` | `TrajectoryEventSchema` envelope + `list`/`changes`/`subscribe` RPC contracts + snapshot schemas (zod) |
+| `server/store.ts`      | `TrajectoryStore` interface; `seq` is DB-assigned (`INTEGER PRIMARY KEY AUTOINCREMENT`)                |
+| `server/node-store.ts` | node:sqlite driver; camelCase rows via SQL aliases; `data` JSON-parsed                                 |
+| `server/recorder.ts`   | pure recorder: paseo events -> ledger rows (turn attribution, dedupe)                                  |
+| `server/wiring.ts`     | idempotent lazy stream attach; one recorder+store per plugin process                                   |
+| `index.server.ts`      | hook registration; every callback calls `ensureAttached(paseo)` first                                  |
 
 ## Tests
 

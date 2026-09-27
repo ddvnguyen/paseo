@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { createNodeStore } from "./node-store.js";
 import { createRecorder } from "./recorder.js";
-import type { TrajectoryEvent } from "../shared/events.js";
+import type { TrajectoryEvent } from "../shared/trajectory.js";
 import type { TrajectoryStore } from "./store.js";
 
 function harness() {

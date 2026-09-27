@@ -1,5 +1,5 @@
 import type { AgentTimelineItem, AgentUsage, ToolCallDetail } from "@getpaseo/protocol/agent-types";
-import type { TrajectoryEvent } from "../shared/events.js";
+import type { TrajectoryEvent } from "../shared/trajectory.js";
 import type { TrajectoryEventInput, TrajectoryStore } from "./store.js";
 
 /**

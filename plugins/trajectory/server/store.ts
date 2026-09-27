@@ -1,4 +1,4 @@
-import type { TrajectoryEvent } from "../shared/events.js";
+import type { TrajectoryEvent } from "../shared/trajectory.js";
 
 /** A new ledger row: everything except the database-assigned `seq`. */
 export type TrajectoryEventInput = Omit<TrajectoryEvent, "seq">;
