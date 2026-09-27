@@ -1,6 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { handleChanges, handleList } from "./server/rpc.js";
-import { trajectoryChanges, trajectoryList } from "./shared/trajectory.js";
+import { handleChanges, handleList, handleSubscribe } from "./server/rpc.js";
+import { trajectoryChanges, trajectoryList, trajectorySubscribe } from "./shared/trajectory.js";
 import { createWiring, openDefaultStore } from "./server/wiring.js";
 
 export default function contribute(server: PluginServerContext) {
@@ -65,6 +65,10 @@ export default function contribute(server: PluginServerContext) {
     server.handle(trajectoryChanges, async (input, context) => {
       withPaseo(context.paseo);
       return handleChanges(wiring.store)(input);
+    });
+    server.handle(trajectorySubscribe, async (input, context) => {
+      withPaseo(context.paseo);
+      return handleSubscribe(wiring.store)(input);
     });
 
     cleanup = () => {

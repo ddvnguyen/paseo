@@ -1,4 +1,5 @@
 import type { AgentTimelineItem, AgentUsage, ToolCallDetail } from "@getpaseo/protocol/agent-types";
+import type { TrajectoryEvent } from "../shared/trajectory.js";
 import type { TrajectoryEventInput, TrajectoryStore } from "./store.js";
 
 /**
@@ -44,6 +45,10 @@ export interface UsageInput {
   turnId?: string | null;
   usage: AgentUsage;
 }
+
+/** Fires after each row is stored (with its assigned seq). The push seam: a
+ *  future server-push transport fans out from here; today nobody subscribes. */
+export type LedgerAppendListener = (event: TrajectoryEvent) => void;
 
 export interface Recorder {
   turnStarted(input: TurnStartedInput): void;
@@ -122,8 +127,12 @@ function toolOutputChars(detail: ToolCallDetail | undefined): number | null {
   return null;
 }
 
-export function createRecorder(options: { store: TrajectoryStore; now?: () => Date }): Recorder {
-  const { store, now = () => new Date() } = options;
+export function createRecorder(options: {
+  store: TrajectoryStore;
+  now?: () => Date;
+  onAppend?: LedgerAppendListener;
+}): Recorder {
+  const { store, now = () => new Date(), onAppend } = options;
 
   /** agentId -> its open turns, newest last. */
   const openTurns = new Map<string, OpenTurn[]>();
@@ -133,7 +142,8 @@ export function createRecorder(options: { store: TrajectoryStore; now?: () => Da
   const terminatedTurns = new Set<string>();
 
   const append = (input: Omit<TrajectoryEventInput, "time">): void => {
-    store.append({ ...input, time: nowIso(now) });
+    const stored = store.append({ ...input, time: nowIso(now) });
+    onAppend?.(stored);
   };
 
   /** De-dupes double terminals; bounded FIFO. Returns false when already seen. */

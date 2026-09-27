@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentUsage, AgentTimelineItem } from "@getpaseo/protocol/agent-types";
-import { createRecorder, type Recorder } from "./recorder.js";
+import { createRecorder, type LedgerAppendListener, type Recorder } from "./recorder.js";
 import { createNodeStore } from "./node-store.js";
 import type { TrajectoryStore } from "./store.js";
 
@@ -75,13 +75,26 @@ export interface Wiring {
   ensureAttached(paseo: PaseoLike): void;
   /** True after the first successful ensureAttached call. */
   readonly attached: boolean;
+  /**
+   * Push seam: fan-out for every stored ledger row. Returns an unsubscribe
+   * function. A future server-push transport subscribes here; the client
+   * cursor loop (list + changes on settle) does not need it.
+   */
+  onLedgerAppend(listener: LedgerAppendListener): () => void;
   /** Runs all disposers (subscriptions), then closes the store. */
   cleanup(): Promise<void>;
 }
 
 export function createWiring(options: { store: TrajectoryStore }): Wiring {
   const store = options.store;
-  const recorder = createRecorder({ store });
+  /** Push-seam fan-out; a future server-push transport subscribes here. */
+  const appendListeners = new Set<LedgerAppendListener>();
+  const recorder = createRecorder({
+    store,
+    onAppend: (event) => {
+      for (const listener of appendListeners) listener(event);
+    },
+  });
 
   let attachStarted = false;
   let cleanedUp = false;
@@ -249,6 +262,12 @@ export function createWiring(options: { store: TrajectoryStore }): Wiring {
       return attachStarted;
     },
     ensureAttached,
+    onLedgerAppend(listener: LedgerAppendListener): () => void {
+      appendListeners.add(listener);
+      return () => {
+        appendListeners.delete(listener);
+      };
+    },
     async cleanup() {
       cleanedUp = true;
       for (const dispose of disposers.splice(0, disposers.length)) dispose();

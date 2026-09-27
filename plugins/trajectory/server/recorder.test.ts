@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { createNodeStore } from "./node-store.js";
 import { createRecorder } from "./recorder.js";
-import type { TrajectoryEvent } from "../shared/events.js";
+import type { TrajectoryEvent } from "../shared/trajectory.js";
 import type { TrajectoryStore } from "./store.js";
 
 function harness() {
@@ -180,5 +180,16 @@ describe("recorder", () => {
       cachedInputTokens: null,
       reasoningTokens: null,
     });
+  });
+
+  test("onAppend fires per stored row with assigned seqs in order", () => {
+    const store: TrajectoryStore = createNodeStore(":memory:");
+    const seen: TrajectoryEvent[] = [];
+    const recorder = createRecorder({ store, onAppend: (event) => seen.push(event) });
+    recorder.turnStarted({ agentId: "agent-1", turnId: "t1" });
+    recorder.turnEnded({ agentId: "agent-1", turnId: "t1", outcome: "completed" });
+    expect(seen.map((event) => event.type)).toEqual(["turn/start", "turn/end"]);
+    expect(seen.map((event) => event.seq)).toEqual([1, 2]);
+    store.close();
   });
 });

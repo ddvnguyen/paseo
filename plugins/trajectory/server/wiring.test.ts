@@ -109,4 +109,21 @@ describe("wiring", () => {
     expect(fake.released).toContain("agent-A");
     expect(fake.directoryReleased).toBe(true);
   });
+
+  test("(e) onLedgerAppend fans out stored rows; unsubscribe stops delivery", () => {
+    const store = createNodeStore(":memory:");
+    const wiring = createWiring({ store });
+    const first: string[] = [];
+    const second: string[] = [];
+    const off = wiring.onLedgerAppend((event) => first.push(event.type));
+    wiring.onLedgerAppend((event) => second.push(event.type));
+    wiring.recorder.turnStarted({ agentId: "agent-B", turnId: "t9" });
+    expect(first).toEqual(["turn/start"]);
+    expect(second).toEqual(["turn/start"]);
+    off();
+    wiring.recorder.turnEnded({ agentId: "agent-B", turnId: "t9", outcome: "completed" });
+    expect(first).toEqual(["turn/start"]);
+    expect(second).toEqual(["turn/start", "turn/end"]);
+    return wiring.cleanup();
+  });
 });

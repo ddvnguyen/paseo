@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { TrajectoryEventSchema, type TrajectoryEvent } from "../shared/events.js";
+import { TrajectoryEventSchema, type TrajectoryEvent } from "../shared/trajectory.js";
 import type { ListByAgentOptions, TrajectoryEventInput, TrajectoryStore } from "./store.js";
 
 /**
