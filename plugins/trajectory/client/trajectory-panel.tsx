@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginAgentPanelProps, PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { usePaseo } from "@getpaseo/plugin/client";
 import { LedgerScreen } from "./ledger-screen.js";
-import { FIXTURE_ROWS } from "./fixtures.js";
+import { useTrajectoryDelta } from "./use-trajectory-delta.js";
 
 export type TrajectoryPanelProps = PluginAgentPanelProps | PluginWorkspacePanelProps;
 
@@ -15,12 +15,13 @@ type AgentSelection =
   | { status: "error"; error: string };
 
 /**
- * Trajectory panel root (T2 shell). Agent-context opens carry their agentId;
+ * Trajectory panel root. Agent-context opens carry their agentId;
  * workspace-context opens auto-select the workspace's first agent via
  * `paseo.agents.list` (entries are `{agent, project}`; filter client-side on
- * `agent.workspaceId` — fetch_agents has no workspace filter). Rows are
- * fixtures until the T2.4 delta loop lands; the ledger underneath is the real
- * dsh-parity screen (folds, tail-follow, compact tags).
+ * `agent.workspaceId` — fetch_agents has no workspace filter). Rows come
+ * from the settle-driven delta loop (list once, changes on settle,
+ * frame-coalesced); the ledger underneath is the dsh-parity screen (folds,
+ * tail-follow only at bottom, compact tags, in-flight "—").
  */
 export function TrajectoryPanel(props: TrajectoryPanelProps) {
   const { theme, layout } = props;
@@ -36,12 +37,43 @@ export function TrajectoryPanel(props: TrajectoryPanelProps) {
     );
   }
 
+  return <LiveLedger agentId={selection.agentId} compact={layout.compact} theme={theme} />;
+}
+
+/**
+ * Live ledger for one agent. Split so the delta hook runs unconditionally
+ * for a fixed agentId (no conditional-hook lint/ordering hazard in the
+ * selection branch above). Loading shows a notice; errors keep the last
+ * rows with a retry kick (the loop parks on error — no timers, no auto
+ * retry — so manual refresh is the only recovery).
+ */
+function LiveLedger(props: { agentId: string; compact: boolean; theme: PluginTheme }) {
+  const { agentId, compact, theme } = props;
+  const delta = useTrajectoryDelta(agentId);
+
+  if (delta.status === "loading") {
+    return (
+      <PanelNotice theme={theme} testID="trajectory-panel-loading" message="loading trajectory…" />
+    );
+  }
+
   return (
     <View style={panelStyles(theme)} testID="trajectory-panel">
-      <Text style={captionStyles(theme)} testID="trajectory-panel-agent">
-        trajectory · {selection.agentId}
-      </Text>
-      <LedgerScreen rows={FIXTURE_ROWS} compact={layout.compact} theme={theme} />
+      <View style={captionRowStyles()}>
+        <Text style={captionStyles(theme)} testID="trajectory-panel-agent">
+          trajectory · {agentId}
+        </Text>
+        {delta.status === "error" ? (
+          <Pressable
+            accessibilityRole="button"
+            onPress={delta.refresh}
+            testID="trajectory-panel-retry"
+          >
+            <Text style={retryStyles(theme)}>retry</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      <LedgerScreen rows={delta.rows} compact={compact} theme={theme} />
     </View>
   );
 }
@@ -102,6 +134,23 @@ function panelStyles(theme: PluginTheme) {
   return StyleSheet.create({
     flex: 1,
     backgroundColor: theme.colors.surface0,
+  });
+}
+
+function captionRowStyles() {
+  return StyleSheet.create({
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  });
+}
+
+function retryStyles(theme: PluginTheme) {
+  return StyleSheet.create({
+    color: theme.colors.foregroundMuted,
+    fontSize: 11,
   });
 }
 
