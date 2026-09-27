@@ -46,22 +46,11 @@ export default function contribute(server: PluginServerContext) {
       return resolved;
     };
     return {
-      probe: async (staged) => {
-        // Whether the agent is live yet, and its controls if so. Read here rather
-        // than at session-open, where a create is not yet committed and a resume
-        // may be in the store but not loaded.
-        const current = readCurrentAgent(api(), staged.agentId);
-        if (!current) return { live: false, controls: null };
-        return {
-          live: true,
-          controls: { model: current.model ?? null, currentModeId: current.currentModeId ?? null },
-        };
-      },
       buildData: async (staged, controls) => {
         return buildChipData({
           facts: staged.facts,
-          // Configured model/mode win; the live snapshot is the fallback for a
-          // session that never ran the create hook.
+          // Null on the first write. Supplied only on the refinement pass, which
+          // runs after an append has already proven the agent is committed.
           snapshot: controls,
           // A history/refetch open must not pay the config read on the hot path.
           paseoToolsInjected:
@@ -73,8 +62,10 @@ export default function contribute(server: PluginServerContext) {
         });
       },
       append: async (agentId, data) => {
-        // Constant row id per agent: a later session open REPLACES the row instead of
-        // stacking a new chip into the transcript on every resume.
+        // Constant row id per agent: a later write REPLACES the row instead of
+        // stacking a new chip into the transcript on every resume. That is also
+        // what makes the post-commit refinement write a correction rather than a
+        // second row.
         await api().agents.ref(agentId).timeline.append({
           type: "plugin",
           id: CTX_INJECT_ROW_ID,
@@ -82,6 +73,13 @@ export default function contribute(server: PluginServerContext) {
           version: CTX_INJECT_VERSION,
           data,
         });
+      },
+      // Only reached once an append has succeeded, so a missing agent here is a
+      // genuine "unknown" and not a read-too-early.
+      readControls: (agentId) => {
+        const current = readCurrentAgent(api(), agentId);
+        if (!current) return null;
+        return { model: current.model ?? null, currentModeId: current.currentModeId ?? null };
       },
       onError: (agentId, stage, error) => {
         const detail = error instanceof Error ? error.message : String(error);
@@ -136,9 +134,8 @@ interface AgentRecord {
 }
 
 /**
- * The agent's current record, or null when it is not in agent-manager yet.
- * Any read failure is treated as "not available" so the queue retries instead of
- * writing a row full of em dashes from a premature read.
+ * The agent's current record, or null when it is not available. Only called after
+ * an append has succeeded, so null here means "unknown", not "read too early".
  */
 function readCurrentAgent(api: PaseoApi, agentId: string): AgentRecord | null {
   try {

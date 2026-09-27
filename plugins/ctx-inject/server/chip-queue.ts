@@ -5,23 +5,40 @@ import { configFacts, type ConfigFacts, type SnapshotControls } from "./ctx-capt
 /**
  * Decides WHEN the chip row may be written.
  *
- * The daemon commits an agent to agent-manager some time after the hooks run, and
- * the plugin API exposes no event for "the agent is now live". Both observed
- * races come from that gap:
+ * The daemon commits an agent to agent-manager after the hooks run, and until it
+ * does, `timeline.append` is rejected with "Unknown agent". Three rounds of QC
+ * shaped this, and the rule they add up to is narrow:
  *
- * - QC round 8, a fresh create: `agent.session_open` is pre-commit, and the
- *   append failed with "Unknown agent" ~770ms before "Created agent". A create
- *   therefore parks its row until `agent.created` (the post-commit signal).
- * - QC round 9, a resume: the agent is in the store but not yet live when
- *   `agent.session_open` runs, so the inline write was rejected the same way.
- *   There is no deterministic signal for this one — `agent.created` explicitly
- *   excludes resume — so a bounded retry is the only option.
+ *   The append's own rejection is the ONLY ground truth for "is this agent
+ *   committable". Never pre-check it.
  *
- * Retrying is scoped to the "agent not available yet" condition, which is
- * detected two ways: an explicit `probe` that reports the agent as not live, and
- * an "Unknown agent" rejection. Any other error fails fast, because retrying a
- * schema violation or a closed session just delays the report.
+ * - Round 8, a fresh create: `agent.session_open` is pre-commit, so the append
+ *   failed and the row was lost. A create now parks its row until
+ *   `agent.created`, the post-commit signal.
+ * - Round 9, a resume: the agent is in the store but not yet committed, so the
+ *   inline write was rejected. There is no event for "now committed" —
+ *   `agent.created` explicitly excludes resume — so this path retries.
+ * - Round 10, a regression I introduced: the retry was gated behind
+ *   `ref().current() != null`, a LIVE SESSION HANDLE. That is strictly stronger
+ *   than the map commit the append needs, so on a slow or failing provider setup
+ *   the gate never opened and the append was never attempted at all. The chip
+ *   vanished. A gate stricter than the operation it guards is a bug, not caution.
+ *
+ * So there is no liveness precondition here. `buildData` runs, `append` is
+ * attempted, and only an "Unknown agent" rejection buys another attempt.
+ *
+ * Model and mode need no read at all on the create path: they come from the
+ * create config. A session that never ran the create hook has no such facts, so
+ * its controls are read only AFTER an append has succeeded — at that point the
+ * commit is proven, and re-appending the same row id replaces it in place.
  */
+
+/** Unbound create facts older than this are dropped rather than misattributed. */
+const PENDING_TTL_MS = 60_000;
+/** A staged row whose agent never materialises is dropped after this. */
+const STAGED_TTL_MS = 120_000;
+/** Backstop against an unbounded map if many creations fail to commit. */
+const STAGED_MAX = 256;
 
 export interface StagedChip {
   agentId: string;
@@ -31,31 +48,22 @@ export interface StagedChip {
   purpose: string;
 }
 
-/** Whether the agent is available, and its controls if so. */
-export interface ProbeResult {
-  live: boolean;
-  controls: SnapshotControls | null;
-}
-
 /** Host operations the queue needs, injected so the ordering is testable. */
 export interface ChipSink {
   /**
-   * Is the agent live in agent-manager yet? Read at flush time, never at
-   * session-open time, where a create is not yet committed.
+   * Assemble the row. `controls` is null on the first write and only supplied on
+   * the refinement pass that runs after an append has proven the commit.
    */
-  probe(staged: StagedChip): Promise<ProbeResult>;
   buildData(staged: StagedChip, controls: SnapshotControls | null): Promise<CtxInjectChipData>;
   append(agentId: string, data: CtxInjectChipData): Promise<void>;
+  /**
+   * Best-effort model/mode for a session that never ran the create hook. Only
+   * ever called after a successful append. Returns null when unavailable.
+   */
+  readControls(agentId: string): SnapshotControls | null;
   /** Failures are always reported; a dropped chip row must never be silent. */
-  onError(agentId: string, stage: "append" | "build" | "not-live", error: unknown): void;
+  onError(agentId: string, stage: "append" | "build", error: unknown): void;
 }
-
-/** Unbound create facts older than this are dropped rather than misattributed. */
-const PENDING_TTL_MS = 60_000;
-/** A staged row whose agent never materialises is dropped after this. */
-const STAGED_TTL_MS = 120_000;
-/** Backstop against an unbounded map if many creations fail to commit. */
-const STAGED_MAX = 256;
 
 export interface RetryPolicy {
   /** Total attempts, including the first. */
@@ -64,15 +72,20 @@ export interface RetryPolicy {
   backoffMs: number[];
 }
 
+/**
+ * Generous on purpose. A 403-disabled or slow provider can take many seconds to
+ * register, and round 10 showed a ~1.7s budget losing the row outright. The flush
+ * is fire-and-forget from the hook, so a long budget never delays a session open.
+ */
 export const DEFAULT_RETRY: RetryPolicy = {
-  attempts: 4,
-  // ~1.7s total, inside the window a manager load is expected to take.
-  backoffMs: [200, 500, 1000],
+  attempts: 8,
+  // ~15.75s total.
+  backoffMs: [250, 500, 1000, 2000, 3000, 4000, 5000],
 };
 
 /**
  * The rejection the daemon returns while an agent is in the store but not yet
- * live: "Request failed: Unknown agent '<id>' ... code=handler_error".
+ * committed: "Request failed: Unknown agent '<id>' ... code=handler_error".
  */
 function isNotAvailable(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -139,8 +152,8 @@ export class ChipQueue {
 
   /**
    * Stage 2. A `create` is parked until `agent.created`; every other reason runs
-   * inline and relies on the retry, because the agent already exists in the store
-   * and only needs to become live.
+   * inline, because the agent already exists in the store and only needs to
+   * become committed.
    */
   async handleSessionOpen(request: SessionOpenInput, sink: ChipSink): Promise<void> {
     const staged: StagedChip = {
@@ -175,47 +188,65 @@ export class ChipQueue {
   }
 
   /**
-   * Write the row, retrying only while the agent is unavailable. The controls
-   * come from the probe that preceded a successful attempt, so a resume reads
-   * model/mode only once the agent is actually live.
+   * Write the row, then — only if the first write lacked model/mode — read the
+   * controls and rewrite in place. The append is both the action and the proof:
+   * there is no separate liveness check to disagree with it.
    */
   private async flush(agentId: string, staged: StagedChip, sink: ChipSink): Promise<void> {
+    const data = await this.build(staged, null, sink);
+    if (!data) return;
+    if (!(await this.appendWithRetry(agentId, data, sink))) return;
+
+    // Proven committed. Only now is a controls read meaningful, and only for a
+    // session that never ran the create hook.
+    if (data.model !== null && data.modeId !== null) return;
+    const controls = safeReadControls(sink, agentId);
+    if (!controls) return;
+    if (controls.model === null && controls.currentModeId === null) return;
+
+    const refined = await this.build(staged, controls, sink);
+    if (!refined) return;
+    if (refined.model === data.model && refined.modeId === data.modeId) return;
+
+    // Same row id, so this replaces the row rather than adding a second one.
+    await this.appendWithRetry(agentId, refined, sink);
+  }
+
+  private async build(
+    staged: StagedChip,
+    controls: SnapshotControls | null,
+    sink: ChipSink,
+  ): Promise<CtxInjectChipData | null> {
+    try {
+      return await sink.buildData(staged, controls);
+    } catch (error) {
+      sink.onError(staged.agentId, "build", error);
+      return null;
+    }
+  }
+
+  /** Returns true when a write landed; false when the budget was exhausted. */
+  private async appendWithRetry(
+    agentId: string,
+    data: CtxInjectChipData,
+    sink: ChipSink,
+  ): Promise<boolean> {
     for (let attempt = 0; attempt < this.retry.attempts; attempt += 1) {
       const isLast = attempt === this.retry.attempts - 1;
       try {
-        const probe = await sink.probe(staged);
-        if (!probe.live) {
-          if (isLast) {
-            sink.onError(
-              agentId,
-              "not-live",
-              new Error("agent never became available for the ctx-inject chip"),
-            );
-            return;
-          }
-          await this.sleep(this.backoffFor(attempt));
-          continue;
-        }
-
-        let data: CtxInjectChipData;
-        try {
-          data = await sink.buildData(staged, probe.controls);
-        } catch (error) {
-          sink.onError(agentId, "build", error);
-          return;
-        }
         await sink.append(agentId, data);
-        return;
+        return true;
       } catch (error) {
-        // A rejection because the agent is not live yet is recoverable; anything
-        // else is a real fault and retrying would only delay the report.
+        // Only "not committed yet" is worth another attempt. Anything else is a
+        // real fault, and retrying it would only delay the report.
         if (isLast || !isNotAvailable(error)) {
           sink.onError(agentId, "append", error);
-          return;
+          return false;
         }
         await this.sleep(this.backoffFor(attempt));
       }
     }
+    return false;
   }
 
   private backoffFor(attempt: number): number {
@@ -230,6 +261,15 @@ export class ChipQueue {
   /** Test/diagnostic surface; never used to drive behaviour. */
   get stagedCount(): number {
     return this.staged.size;
+  }
+}
+
+/** A controls read is best effort: a failure is just "unknown", never an error. */
+function safeReadControls(sink: ChipSink, agentId: string): SnapshotControls | null {
+  try {
+    return sink.readControls(agentId);
+  } catch {
+    return null;
   }
 }
 
