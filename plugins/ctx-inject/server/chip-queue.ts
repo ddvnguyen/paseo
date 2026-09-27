@@ -1,22 +1,26 @@
+import type { AgentSessionConfig } from "@getpaseo/protocol/agent-types";
 import type { CtxInjectChipData } from "../shared/ctx-schema.js";
 import { configFacts, type ConfigFacts, type SnapshotControls } from "./ctx-capture.js";
-import type { AgentSessionConfig } from "@getpaseo/protocol/agent-types";
 
 /**
  * Decides WHEN the chip row may be written.
  *
- * The `agent.session_open` hook runs before the daemon commits the agent to
- * agent-manager — measured at ~770ms before "Created agent" in the QC round-8
- * daemon log — so `timeline.append` there fails with "Unknown agent" and the row
- * is lost. `agent.created` is the post-commit signal, so a `create` stages its
- * row and flushes it from that event.
+ * The daemon commits an agent to agent-manager some time after the hooks run, and
+ * the plugin API exposes no event for "the agent is now live". Both observed
+ * races come from that gap:
  *
- * The `reason` field makes the decision deterministic rather than a guess:
- * `create` is the only pre-commit case, and every other reason (resume, refresh,
- * import) means the agent already exists and can be written immediately. That is
- * why this is not a retry loop: a retry budget would spend its attempts on the
- * cases that already succeed, and the ones it saves are bounded only by how long
- * the daemon happens to take to commit.
+ * - QC round 8, a fresh create: `agent.session_open` is pre-commit, and the
+ *   append failed with "Unknown agent" ~770ms before "Created agent". A create
+ *   therefore parks its row until `agent.created` (the post-commit signal).
+ * - QC round 9, a resume: the agent is in the store but not yet live when
+ *   `agent.session_open` runs, so the inline write was rejected the same way.
+ *   There is no deterministic signal for this one — `agent.created` explicitly
+ *   excludes resume — so a bounded retry is the only option.
+ *
+ * Retrying is scoped to the "agent not available yet" condition, which is
+ * detected two ways: an explicit `probe` that reports the agent as not live, and
+ * an "Unknown agent" rejection. Any other error fails fast, because retrying a
+ * schema violation or a closed session just delays the report.
  */
 
 export interface StagedChip {
@@ -27,17 +31,23 @@ export interface StagedChip {
   purpose: string;
 }
 
+/** Whether the agent is available, and its controls if so. */
+export interface ProbeResult {
+  live: boolean;
+  controls: SnapshotControls | null;
+}
+
 /** Host operations the queue needs, injected so the ordering is testable. */
 export interface ChipSink {
   /**
-   * Read the agent's model/mode and Paseo's tool flag, then assemble the row.
-   * Called at flush time, never at session-open time, so the snapshot read sees a
-   * committed agent.
+   * Is the agent live in agent-manager yet? Read at flush time, never at
+   * session-open time, where a create is not yet committed.
    */
-  buildData(staged: StagedChip): Promise<CtxInjectChipData>;
+  probe(staged: StagedChip): Promise<ProbeResult>;
+  buildData(staged: StagedChip, controls: SnapshotControls | null): Promise<CtxInjectChipData>;
   append(agentId: string, data: CtxInjectChipData): Promise<void>;
   /** Failures are always reported; a dropped chip row must never be silent. */
-  onError(agentId: string, stage: "append" | "build", error: unknown): void;
+  onError(agentId: string, stage: "append" | "build" | "not-live", error: unknown): void;
 }
 
 /** Unbound create facts older than this are dropped rather than misattributed. */
@@ -46,6 +56,28 @@ const PENDING_TTL_MS = 60_000;
 const STAGED_TTL_MS = 120_000;
 /** Backstop against an unbounded map if many creations fail to commit. */
 const STAGED_MAX = 256;
+
+export interface RetryPolicy {
+  /** Total attempts, including the first. */
+  attempts: number;
+  /** Delay before attempt n+1, indexed from 0. */
+  backoffMs: number[];
+}
+
+export const DEFAULT_RETRY: RetryPolicy = {
+  attempts: 4,
+  // ~1.7s total, inside the window a manager load is expected to take.
+  backoffMs: [200, 500, 1000],
+};
+
+/**
+ * The rejection the daemon returns while an agent is in the store but not yet
+ * live: "Request failed: Unknown agent '<id>' ... code=handler_error".
+ */
+function isNotAvailable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /unknown agent/i.test(message);
+}
 
 interface Timed<T> {
   at: number;
@@ -68,6 +100,12 @@ function pendingKey(provider: string, cwd: string): string {
 export class ChipQueue {
   private readonly pendingCreates = new Map<string, Timed<ConfigFacts>[]>();
   private readonly staged = new Map<string, Timed<StagedChip>>();
+
+  constructor(
+    private readonly retry: RetryPolicy = DEFAULT_RETRY,
+    private readonly sleep: (ms: number) => Promise<void> = (ms) =>
+      new Promise((resolve) => setTimeout(resolve, ms)),
+  ) {}
 
   /** Stage 1: reduce the spawn config while we are the only ones who can see it. */
   captureCreate(provider: string, cwd: string, config: AgentSessionConfig): void {
@@ -100,8 +138,9 @@ export class ChipQueue {
   }
 
   /**
-   * Stage 2. For a `create` the row is parked until `agent.created`; otherwise
-   * the agent is already committed and the row is written straight away.
+   * Stage 2. A `create` is parked until `agent.created`; every other reason runs
+   * inline and relies on the retry, because the agent already exists in the store
+   * and only needs to become live.
    */
   async handleSessionOpen(request: SessionOpenInput, sink: ChipSink): Promise<void> {
     const staged: StagedChip = {
@@ -135,20 +174,52 @@ export class ChipQueue {
     await this.flush(agentId, entry.value, sink);
   }
 
-  /** Builds and writes the row. A refresh may reuse the last facts we observed. */
+  /**
+   * Write the row, retrying only while the agent is unavailable. The controls
+   * come from the probe that preceded a successful attempt, so a resume reads
+   * model/mode only once the agent is actually live.
+   */
   private async flush(agentId: string, staged: StagedChip, sink: ChipSink): Promise<void> {
-    let data: CtxInjectChipData;
-    try {
-      data = await sink.buildData(staged);
-    } catch (error) {
-      sink.onError(agentId, "build", error);
-      return;
+    for (let attempt = 0; attempt < this.retry.attempts; attempt += 1) {
+      const isLast = attempt === this.retry.attempts - 1;
+      try {
+        const probe = await sink.probe(staged);
+        if (!probe.live) {
+          if (isLast) {
+            sink.onError(
+              agentId,
+              "not-live",
+              new Error("agent never became available for the ctx-inject chip"),
+            );
+            return;
+          }
+          await this.sleep(this.backoffFor(attempt));
+          continue;
+        }
+
+        let data: CtxInjectChipData;
+        try {
+          data = await sink.buildData(staged, probe.controls);
+        } catch (error) {
+          sink.onError(agentId, "build", error);
+          return;
+        }
+        await sink.append(agentId, data);
+        return;
+      } catch (error) {
+        // A rejection because the agent is not live yet is recoverable; anything
+        // else is a real fault and retrying would only delay the report.
+        if (isLast || !isNotAvailable(error)) {
+          sink.onError(agentId, "append", error);
+          return;
+        }
+        await this.sleep(this.backoffFor(attempt));
+      }
     }
-    try {
-      await sink.append(agentId, data);
-    } catch (error) {
-      sink.onError(agentId, "append", error);
-    }
+  }
+
+  private backoffFor(attempt: number): number {
+    return this.retry.backoffMs[attempt] ?? this.retry.backoffMs.at(-1) ?? 0;
   }
 
   clear(): void {

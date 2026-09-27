@@ -32,6 +32,15 @@ export interface ConfigFacts {
   systemPromptLength: number;
   systemPromptHash: string | null;
   mcpServers: string[];
+  /**
+   * Model and mode AS CONFIGURED at creation. They attach to the agent record
+   * after `agent.created` fires, so reading them from a snapshot there yields
+   * em dashes; the create config already carries them, with no timing
+   * dependency. A later model change on the agent will not be reflected, which
+   * is correct for a row that documents what the session was created with.
+   */
+  model: string | null;
+  modeId: string | null;
 }
 
 /**
@@ -50,6 +59,8 @@ export function configFacts(config: AgentSessionConfig | null | undefined): Conf
     systemPromptLength: prompt === null ? 0 : prompt.length,
     systemPromptHash: prompt === null ? null : systemPromptHash(prompt),
     mcpServers: names.slice(0, MCP_NAMES_MAX),
+    model: config?.model ?? null,
+    modeId: config?.modeId ?? null,
   };
 }
 
@@ -61,6 +72,12 @@ export interface SnapshotControls {
 
 /**
  * Merge create-hook facts + the agent snapshot into the chip payload.
+ *
+ * Model and mode prefer the CONFIGURED value from the create hook: it is known
+ * before the agent is committed, and the row documents what the session was
+ * created with. The live snapshot is the fallback for a session that never ran
+ * the create hook (resume/refresh/import), read at append time when the agent
+ * is actually available.
  *
  * `facts === null` means the create hook was never correlated — a resumed,
  * refreshed or imported agent. That is genuinely unknown, so every prompt field
@@ -80,8 +97,8 @@ export function buildChipData(input: {
     systemPromptHash: input.facts ? input.facts.systemPromptHash : null,
     mcpServers: input.facts ? input.facts.mcpServers : [],
     paseoToolsInjected: input.paseoToolsInjected,
-    model: input.snapshot?.model ?? null,
-    modeId: input.snapshot?.currentModeId ?? null,
+    model: input.facts?.model ?? input.snapshot?.model ?? null,
+    modeId: input.facts?.modeId ?? input.snapshot?.currentModeId ?? null,
     reason: input.reason,
     capturedAt: input.capturedAt,
   };
