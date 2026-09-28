@@ -20,7 +20,16 @@ export interface ListByAgentOptions {
 export interface TrajectoryStore {
   /** Insert one row; returns the stored event including its assigned `seq`. */
   append(input: TrajectoryEventInput): TrajectoryEvent;
-  /** Ascending-`seq` page of one agent's events; `data` is parsed JSON. */
+  /**
+   * Ascending-`seq` page of one agent's events; `data` is parsed JSON.
+   *
+   * Tail-first: the page is the NEWEST `limit` rows matching the bounds, then
+   * returned ascending. A live ledger is watched at its head, so a full page
+   * must not spend its budget on the oldest events. The order matters as much
+   * as the selection — `client/events-to-rows.ts` folds in arrival order and
+   * never sorts, and a newest-first page would mis-pair `tool/call` with
+   * `tool/result`.
+   */
   listByAgent(agentId: string, opts: ListByAgentOptions): TrajectoryEvent[];
   /** Newest seq for an agent, or 0 when it has no rows (pagination cursor). */
   headSeq(agentId: string): number;

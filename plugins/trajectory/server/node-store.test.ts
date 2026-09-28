@@ -73,6 +73,39 @@ describe("node store (db-assigned seq)", () => {
     }
   });
 
+  /**
+   * Pinned at the store level because the property is the SQL's, not the
+   * client's: the page must be the NEWEST `limit` rows AND come back
+   * ascending. Either half alone is wrong — an inner-only `ORDER BY seq DESC`
+   * selects the right rows and hands the fold a newest-first page, and an
+   * outer-only `ORDER BY seq ASC` re-sorts the oldest rows the inner query
+   * already limited away.
+   */
+  test("limit takes the NEWEST rows, returned ascending", () => {
+    const store = createNodeStore(":memory:");
+    try {
+      for (let i = 0; i < 10; i++) store.append(input());
+      const page = store.listByAgent("agent-1", { limit: 4 });
+      // Newest four of ten, ascending: 7,8,9,10 — never 1,2,3,4.
+      expect(page.map((row) => row.seq)).toEqual([7, 8, 9, 10]);
+      expect(page[page.length - 1].seq).toBe(store.headSeq("agent-1"));
+    } finally {
+      store.close();
+    }
+  });
+
+  test("a limit larger than the backlog returns everything, ascending", () => {
+    const store = createNodeStore(":memory:");
+    try {
+      for (let i = 0; i < 3; i++) store.append(input());
+      expect(store.listByAgent("agent-1", { limit: 1000 }).map((row) => row.seq)).toEqual([
+        1, 2, 3,
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
   test("events of another agent are excluded", () => {
     const store = createNodeStore(":memory:");
     try {

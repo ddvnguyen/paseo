@@ -96,18 +96,26 @@ export function createNodeStore(path: string): TrajectoryStore {
 
     listByAgent(agentId: string, opts: ListByAgentOptions): TrajectoryEvent[] {
       const params: unknown[] = [agentId];
-      let where = "agent_id = ?";
+      const bounds: string[] = ["agent_id = ?"];
       if (opts.afterSeq !== undefined) {
-        where += " AND seq > ?";
+        bounds.push("seq > ?");
         params.push(opts.afterSeq);
       }
       params.push(opts.limit);
+      // Tail-first: the inner query takes the NEWEST `limit` matching rows, and
+      // the outer query re-sorts them ascending. Both halves are load-bearing.
+      // The inner ORDER BY decides WHICH rows come back; the outer one decides
+      // the order the client folds them in. Returning the inner order verbatim
+      // would hand the fold a newest-first page and mis-pair tool/call with
+      // tool/result, because events-to-rows.ts never sorts.
       const stmt = db.prepare(
-        `SELECT seq, time, type, turn, step, agent_id AS agentId, data
-         FROM trajectory_events
-         WHERE ${where}
-         ORDER BY seq ASC
-         LIMIT ?`,
+        `SELECT seq, time, type, turn, step, agent_id AS agentId, data FROM (
+           SELECT seq, time, type, turn, step, agent_id, data
+           FROM trajectory_events
+           WHERE ${bounds.join(" AND ")}
+           ORDER BY seq DESC
+           LIMIT ?
+         ) ORDER BY seq ASC`,
       );
       const rows = stmt.all(...(params as never[])) as unknown as RawRow[];
       return rows.map(toEvent);

@@ -7,6 +7,9 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createNodeStore } from "../server/node-store.js";
+import { handleChanges, handleList } from "../server/rpc.js";
+import type { TrajectoryStore } from "../server/store.js";
 import type { TrajectoryEvent } from "../shared/trajectory.js";
 import { useTrajectoryDelta } from "./use-trajectory-delta.js";
 
@@ -229,9 +232,14 @@ describe("useTrajectoryDelta", () => {
           headSeq: base + 2,
         };
       }) as RpcHandler,
-      "trajectory.changes": (async () => {
+      "trajectory.changes": (async (input: unknown) => {
         if (failChanges) throw new Error("daemon hiccup");
-        return { events: [], headSeq: 99 };
+        // An empty page reports the cursor the caller sent (see the page
+        // contract in shared/trajectory.ts). A headSeq ahead of the cursor on
+        // an empty page is the shape the torn-ledger fix removes, so it must
+        // not be what these mocks teach.
+        const { afterSeq } = input as { afterSeq: number };
+        return { events: [], headSeq: afterSeq };
       }) as RpcHandler,
     };
 
@@ -247,5 +255,139 @@ describe("useTrajectoryDelta", () => {
     await renderProbe("a2");
     await settleUntil((current) => current.status === "error" && current.headSeq === 12);
     expect(view()).toMatchObject({ status: "error", rows: 2, headSeq: 12 });
+  });
+});
+
+/**
+ * Backlog paging. These drive the hook against the REAL store and the REAL rpc
+ * handlers (only `useRpc` is mocked), so the server's paging and its `headSeq`
+ * are what the assertions actually measure. A hand-written fake would only
+ * prove the fake is self-consistent.
+ *
+ * The mocks above cannot catch the backlog defect: every page they return
+ * happens to be the whole table, so `headSeq` is both the page tail and the
+ * global max at once, and the two readings are indistinguishable. That
+ * coincidence is why the torn-ledger defect survived QC.
+ */
+describe("useTrajectoryDelta against the real store (backlog paging)", () => {
+  const TOTAL = 1200;
+  const PAGE = 500;
+
+  const iso = (seq: number) => new Date(BASE + seq * 1_000).toISOString();
+
+  /** One turn per 4 events so tool/call and tool/result stay paired. */
+  function seed(store: TrajectoryStore, total: number, agentId: string): void {
+    for (let i = 1; i <= total; i++) {
+      const cycle = Math.ceil(i / 4);
+      const kind = i % 4;
+      const turn = `t${cycle}`;
+      const callId = `c${cycle}`;
+      if (kind === 1)
+        store.append({
+          time: iso(i),
+          type: "user/message",
+          turn,
+          step: null,
+          agentId,
+          data: { textLength: 10 },
+        });
+      else if (kind === 2)
+        store.append({
+          time: iso(i),
+          type: "assistant/message",
+          turn,
+          step: 1,
+          agentId,
+          data: { textLength: 20 },
+        });
+      else if (kind === 3)
+        store.append({
+          time: iso(i),
+          type: "tool/call",
+          turn,
+          step: 1,
+          agentId,
+          data: { callId, name: "shell" },
+        });
+      else
+        store.append({
+          time: iso(i),
+          type: "tool/result",
+          turn,
+          step: 1,
+          agentId,
+          data: { callId, name: "shell", durationMs: 400, outputChars: 12 },
+        });
+    }
+  }
+
+  /**
+   * Wire the real handlers, teeing every seq the hook is handed. The hook folds
+   * into rows that drop structure-only events and merge tool pairs, so the
+   * buffered *event* seqs are the only faithful record of what was delivered.
+   */
+  function wireRealStore(store: TrajectoryStore): { received: number[] } {
+    const received: number[] = [];
+    const tee = <T extends { events: TrajectoryEvent[] }>(handler: (input: never) => Promise<T>) =>
+      (async (input: never) => {
+        const page = await handler(input);
+        received.push(...page.events.map((event) => event.seq));
+        return page;
+      }) as RpcHandler;
+    rpcHandlers.current = {
+      "trajectory.list": tee(
+        handleList(store) as (input: never) => Promise<{ events: TrajectoryEvent[] }>,
+      ),
+      "trajectory.changes": tee(
+        handleChanges(store) as (input: never) => Promise<{ events: TrajectoryEvent[] }>,
+      ),
+    };
+    return { received };
+  }
+
+  /** The seq values missing from [min, max] of `seqs`. */
+  function holesIn(seqs: readonly number[]): number[] {
+    if (seqs.length === 0) return [];
+    const sorted = [...new Set(seqs)].sort((a, b) => a - b);
+    const missing: number[] = [];
+    for (let i = sorted[0]; i <= sorted[sorted.length - 1]; i++) {
+      if (!sorted.includes(i)) missing.push(i);
+    }
+    return missing;
+  }
+
+  const range = (seqs: readonly number[]) =>
+    seqs.length === 0 ? "(empty)" : `${Math.min(...seqs)}..${Math.max(...seqs)}`;
+
+  it("drains the newest window and parks at the true head, with no hole inside it", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      seed(store, TOTAL, "a1");
+      const { received } = wireRealStore(store);
+
+      await renderProbe("a1");
+      const done = await settleUntil(settledLive);
+
+      // The defect in one assertion: the client must end up holding the newest
+      // events and parked on the newest seq. Returning the oldest page leaves
+      // max(received) at the page tail while headSeq claims the real head.
+      expect({
+        delivered: range(received),
+        deliveredMax: Math.max(...received),
+        hookHeadSeq: done.headSeq,
+        trueHead: store.headSeq("a1"),
+      }).toEqual({
+        delivered: "701..1200",
+        deliveredMax: TOTAL,
+        hookHeadSeq: TOTAL,
+        trueHead: TOTAL,
+      });
+
+      // Contiguous: the window is a gap-free suffix, never a torn ledger.
+      expect(holesIn(received)).toEqual([]);
+      expect(received.length).toBeLessThanOrEqual(PAGE);
+    } finally {
+      store.close();
+    }
   });
 });

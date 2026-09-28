@@ -33,9 +33,24 @@ export const TrajectoryEventSchema = z.object({
 
 export type TrajectoryEvent = z.infer<typeof TrajectoryEventSchema>;
 
-/** Paged read. `afterSeq` is the cursor; rows return ascending by seq. */
 /** Page size applied when a caller omits `limit`; mirrors the zod default. */
 export const TRAJECTORY_PAGE_LIMIT_DEFAULT = 500;
+
+/**
+ * Page contract, shared by every read below.
+ *
+ * A page is TAIL-FIRST: the newest rows matching the cursor bounds, returned
+ * ascending by `seq`. A live ledger is watched at its head, so a page that
+ * spends its whole budget on the oldest events strands everything after it.
+ * Ascending return order is part of the contract, not an implementation
+ * detail — the client fold walks events in arrival order and never sorts.
+ *
+ * `headSeq` is the page's own last `seq`: the cursor to send as `afterSeq` to
+ * continue forward. It is deliberately NOT the agent's global `MAX(seq)`,
+ * which can name rows that were never sent (anything written between the page
+ * query and a separate max query) and would put them out of reach of every
+ * later `seq > afterSeq` poll.
+ */
 
 export const trajectoryList = defineTrajectoryRpc({
   name: "trajectory.list",
@@ -46,7 +61,7 @@ export const trajectoryList = defineTrajectoryRpc({
   }),
   output: z.object({
     events: z.array(TrajectoryEventSchema),
-    /** Seq of the newest row for this agent; use as the next afterSeq cursor. */
+    /** Seq of the newest row IN THIS PAGE; use as the next afterSeq cursor. */
     headSeq: z.number().int().nonnegative(),
   }),
 });
