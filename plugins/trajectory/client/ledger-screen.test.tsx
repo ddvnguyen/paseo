@@ -1,7 +1,8 @@
 /** Component tests for the ledger screen (wide + compact) over static fixtures. */
 
 // @vitest-environment jsdom
-// @ts-expect-error repo pattern: expose act() support flag before react loads
+// Expose the act() support flag before react loads; no suppression is needed now
+// that the plugin tsconfig resolves real react types.
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -37,6 +38,26 @@ vi.mock("react-native", () => ({
     ),
   View: ({ children, testID }: React.PropsWithChildren<{ testID?: string }>) =>
     React.createElement("div", { "data-testid": testID }, children),
+  TextInput: ({
+    value,
+    onChangeText,
+    placeholder,
+    testID,
+    accessibilityLabel,
+  }: {
+    value?: string;
+    onChangeText?: (value: string) => void;
+    placeholder?: string;
+    testID?: string;
+    accessibilityLabel?: string;
+  }) =>
+    React.createElement("input", {
+      "data-testid": testID,
+      "data-value": value,
+      "aria-label": accessibilityLabel,
+      placeholder,
+      onChange: (event: { target: { value: string } }) => onChangeText?.(event.target.value),
+    }),
   Text: ({ children, testID }: React.PropsWithChildren<{ testID?: string }>) =>
     React.createElement("span", { "data-testid": testID }, children),
   Pressable: ({
@@ -122,9 +143,11 @@ describe("ledger screen", () => {
     expect(document.querySelector('[data-testid="chars-text"]')).toBeNull();
   });
 
-  it("unfold-all exposes tool rows with characters and durations, fold-all collapses", () => {
+  it("the Turns toggle exposes tool rows with characters and durations, then collapses", () => {
     render();
-    act(() => (document.querySelector('[data-testid="unfold-all"]') as HTMLButtonElement).click());
+    act(() =>
+      (document.querySelector('[data-testid="toggle-turns"]') as HTMLButtonElement).click(),
+    );
     // In-flight tool (c3) shows the em dash; settled one shows 2,400 ms.
     const durations = [...document.querySelectorAll('[data-testid="duration-text"]')].map(
       (node) => node.textContent,
@@ -135,21 +158,130 @@ describe("ledger screen", () => {
       (node) => node.textContent,
     );
     expect(chars).toContain("characters: 1,520");
-    act(() => (document.querySelector('[data-testid="fold-all"]') as HTMLButtonElement).click());
+    // Everything is open now, so the same toggle closes it again.
+    act(() =>
+      (document.querySelector('[data-testid="toggle-turns"]') as HTMLButtonElement).click(),
+    );
     expect(document.querySelector('[data-testid="ledger-list"] [data-testid^="cell-"]')).toBeNull();
   });
 
   it("wide layout renders wordy kind tags; compact renders icons and skips turn usage", () => {
     // Turns fold by default (first test), so unfold before asserting cell tags.
     render({ compact: false });
-    act(() => (document.querySelector('[data-testid="unfold-all"]') as HTMLButtonElement).click());
+    act(() =>
+      (document.querySelector('[data-testid="toggle-turns"]') as HTMLButtonElement).click(),
+    );
     expect(document.querySelector('[data-testid="kind-tag-user"]')?.textContent).toBe("user");
     const wideRules = document.querySelectorAll('[data-testid="turn-rule"]').length;
     // Re-render the same root with compact=true: fold state persists, so the
     // rule count is directly comparable and no unmount/remount is needed.
     render({ compact: true });
-    act(() => (document.querySelector('[data-testid="unfold-all"]') as HTMLButtonElement).click());
     expect(document.querySelector('[data-testid="kind-tag-user"]')?.textContent).toBe("U");
     expect(document.querySelectorAll('[data-testid="turn-rule"]').length).toBe(wideRules);
+  });
+  // --- dsh toolbar parity (C4) -------------------------------------------
+
+  function press(testID: string): void {
+    act(() => (container.querySelector(`[data-testid="${testID}"]`) as HTMLButtonElement).click());
+  }
+
+  function cells(): Element[] {
+    return [...container.querySelectorAll('[data-testid^="cell-"]')];
+  }
+
+  /** React tracks the input value on the node, so set it natively then fire. */
+  function search(term: string): void {
+    const input = container.querySelector('[data-testid="ledger-search"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setter?.call(input, term);
+    act(() => {
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  it("renders the dsh toolbar: Duration, Turns, Calls and a search box", () => {
+    render();
+    for (const id of ["toggle-duration", "toggle-turns", "toggle-calls", "ledger-search"]) {
+      expect(container.querySelector(`[data-testid="${id}"]`)).not.toBeNull();
+    }
+  });
+
+  it("the Turns toggle opens every turn and closes them again", () => {
+    render();
+    expect(cells()).toHaveLength(0);
+
+    press("toggle-turns");
+    const open = cells().length;
+    expect(open).toBeGreaterThan(0);
+
+    press("toggle-turns");
+    expect(cells()).toHaveLength(0);
+  });
+
+  it("the Calls toggle folds tool groups while leaving Message rows visible", () => {
+    function toolRows(): Element[] {
+      return [...container.querySelectorAll('[data-testid="chars-text"]')];
+    }
+    render();
+    press("toggle-turns");
+    expect(toolRows().length).toBeGreaterThan(0);
+
+    press("toggle-calls");
+    // Tool rows live in Step groups, so they fold; Message-group rows do not.
+    expect(toolRows()).toHaveLength(0);
+    expect(cells().length).toBeGreaterThan(0);
+
+    press("toggle-calls");
+    expect(toolRows().length).toBeGreaterThan(0);
+  });
+
+  it("search filters rows to the matching record", () => {
+    render();
+    press("toggle-turns");
+    const all = cells().length;
+
+    // "npm" appears only in the shell tool label.
+    search("npm");
+    const matched = cells();
+    expect(matched.length).toBeGreaterThan(0);
+    expect(matched.length).toBeLessThan(all);
+    expect(matched.some((node) => node.textContent?.includes("npm"))).toBe(true);
+  });
+
+  it("search reveals a match that sits inside a folded turn", () => {
+    render();
+    expect(cells()).toHaveLength(0);
+
+    // Turns start folded; a match must still be reachable without pressing Turns.
+    search("npm");
+    expect(cells().length).toBeGreaterThan(0);
+  });
+
+  it("search matches the user prompt label of a later turn", () => {
+    render();
+    press("toggle-turns");
+    search("failing assertion");
+    const matched = cells();
+    expect(matched.length).toBeGreaterThan(0);
+    expect(matched.every((node) => node.textContent?.includes("failing assertion"))).toBe(true);
+  });
+
+  it("clearing the search restores every row", () => {
+    render();
+    press("toggle-turns");
+    const all = cells().length;
+
+    search("npm");
+    expect(cells().length).toBeLessThan(all);
+
+    search("");
+    expect(cells().length).toBe(all);
+  });
+
+  it("a search with no match shows no rows rather than everything", () => {
+    render();
+    press("toggle-turns");
+    search("zzzz-no-such-term");
+    expect(cells()).toHaveLength(0);
   });
 });
