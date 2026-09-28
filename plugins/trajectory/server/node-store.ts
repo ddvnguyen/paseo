@@ -79,7 +79,10 @@ export function createNodeStore(path: string): TrajectoryStore {
         input.agentId,
         JSON.stringify(input.data),
       );
-      const seq = Number(result.lastInsertRowid);
+      // `run()` returns the driver's info object; the shim types it as unknown,
+      // so read the one field this store needs through a narrow local shape.
+      const info = result as { lastInsertRowid?: number | bigint } | undefined;
+      const seq = Number(info?.lastInsertRowid ?? 0);
       return {
         seq,
         time: input.time,

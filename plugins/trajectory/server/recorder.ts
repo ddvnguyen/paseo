@@ -116,7 +116,9 @@ function argSummary(detail: ToolCallDetail | undefined): string | null {
 /** Character count of the tool output as delivered to the agent, if present. */
 function toolOutputChars(detail: ToolCallDetail | undefined): number | null {
   if (!detail) return null;
-  const candidates: Array<string | undefined> = [];
+  // `in` narrows the KEY but not the VALUE across this union — one variant types
+  // `output` as unknown — so each candidate is read defensively.
+  const candidates: Array<unknown> = [];
   if ("output" in detail) candidates.push(detail.output);
   if ("content" in detail) candidates.push(detail.content);
   if ("result" in detail) candidates.push(detail.result);

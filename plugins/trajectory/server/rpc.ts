@@ -1,6 +1,11 @@
 import type { PluginRpcContract } from "@getpaseo/plugin";
 import type { z } from "zod";
-import { trajectoryChanges, trajectoryList, trajectorySubscribe } from "../shared/trajectory.js";
+import {
+  TRAJECTORY_PAGE_LIMIT_DEFAULT,
+  trajectoryChanges,
+  trajectoryList,
+  trajectorySubscribe,
+} from "../shared/trajectory.js";
 import type { TrajectoryStore } from "./store.js";
 
 /**
@@ -19,12 +24,15 @@ type SubscribeContract = typeof trajectorySubscribe;
 
 function readPage(
   store: TrajectoryStore,
-  input: { agentId: string; afterSeq?: number; limit: number },
+  // `z.input` types `limit` as optional because the schema carries a default;
+  // readPage is the hand-off point, so the same default is applied here rather
+  // than trusting a value the caller never sent.
+  input: { agentId: string; afterSeq?: number; limit?: number },
 ): { events: ReturnType<TrajectoryStore["listByAgent"]>; headSeq: number } {
   return {
     events: store.listByAgent(input.agentId, {
       afterSeq: input.afterSeq,
-      limit: input.limit,
+      limit: input.limit ?? TRAJECTORY_PAGE_LIMIT_DEFAULT,
     }),
     headSeq: store.headSeq(input.agentId),
   };

@@ -23,7 +23,9 @@
     },
     "strict": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+    // The ported dsh modules import siblings as ./layout.ts (see PORT_NOTES).
+    "allowImportingTsExtensions": true
   },
   "include": ["index.server.ts", "index.client.tsx", "server", "client", "shared", "types"]
 }

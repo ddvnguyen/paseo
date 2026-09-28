@@ -45,7 +45,7 @@ function userRow(event: TrajectoryEvent): TrajectoryFoldRow {
     kind: "user",
     label: lengthLabel("user message", event.data.textLength),
     durationMs: null,
-    ...(event.turn === null ? {} : { turnId: event.turn }),
+    turnId: event.turn,
     step: null,
   };
 }
@@ -57,8 +57,8 @@ function messageRow(event: TrajectoryEvent): TrajectoryFoldRow {
     kind: "message",
     label: lengthLabel("assistant message", event.data.textLength),
     durationMs: null,
-    ...(event.turn === null ? {} : { turnId: event.turn }),
-    ...(event.step === null ? {} : { step: event.step }),
+    turnId: event.turn,
+    step: event.step,
   };
 }
 
@@ -87,7 +87,7 @@ function toolRow(event: TrajectoryEvent, call: OpenToolCall | null): TrajectoryF
     callId,
     ...(event.data.isError === true ? { isError: true } : {}),
     ...(typeof event.data.outputChars === "number" ? { outputChars: event.data.outputChars } : {}),
-    ...(event.turn === null ? {} : { turnId: event.turn }),
+    turnId: event.turn,
     step: null,
   };
 }
@@ -100,7 +100,7 @@ function inFlightRow(call: OpenToolCall): TrajectoryFoldRow {
     label: toolLabel(call.name, call.argSummary),
     durationMs: null,
     callId: "",
-    ...(call.turnId === null ? {} : { turnId: call.turnId }),
+    turnId: call.turnId,
     step: null,
   };
 }
