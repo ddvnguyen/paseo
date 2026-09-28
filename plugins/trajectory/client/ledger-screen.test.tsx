@@ -678,7 +678,7 @@ describe("ledger screen search index cadence", () => {
 
   it("does not re-index once per append while no query is active", () => {
     let seq = 100;
-    let rows = turn("a", seq);
+    const rows = turn("a", seq);
     renderRows(rows, { turnNumbers: null });
     const afterOpen = updates.mock.calls.length;
     expect(afterOpen).toBe(1);
@@ -686,7 +686,7 @@ describe("ledger screen search index cadence", () => {
     // Ten appends with nothing typed. The list must not pay for indexing.
     for (let i = 0; i < 10; i++) {
       seq += 10;
-      rows = [...rows, ...turn(`t${i}`, seq)];
+      rows.push(...turn(`t${i}`, seq));
       renderRows(rows, { turnNumbers: null });
     }
     expect({ commits: updates.mock.calls.length }).toEqual({ commits: afterOpen });
