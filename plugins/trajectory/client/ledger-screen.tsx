@@ -12,6 +12,7 @@ import { groupTrajectoryVirtualRows } from "../shared/dsh/virtual-rows.js";
 import { TrajectorySearchIndex } from "../shared/dsh/search-index.js";
 import { trajectoryRecordId, type TrajectoryCellProps } from "../shared/dsh/record.js";
 import { TrajectoryCellRow } from "./ledger-cells.js";
+import { TrajectoryTimelineStrip } from "./trajectory-timeline.js";
 
 /**
  * Trajectory ledger screen (T2.2): FlatList over the ported virtual-row
@@ -252,6 +253,12 @@ export function LedgerScreen(props: {
         onToggleTurns={toggleAllTurns}
         onToggleCalls={toggleAllSteps}
         onQueryChange={onQueryChange}
+      />
+      <TrajectoryTimelineStrip
+        turns={visibleTurns}
+        actualDuration={actualDuration}
+        compact={compact}
+        theme={theme}
       />
       <FlatList
         ref={listRef}
