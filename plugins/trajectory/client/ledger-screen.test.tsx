@@ -103,6 +103,7 @@ const listProbe = vi.hoisted(() => ({
 }));
 
 import { LedgerScreen } from "./ledger-screen.js";
+import { TrajectorySearchIndex } from "../shared/dsh/search-index.js";
 import type { TrajectoryFoldRow } from "../shared/dsh/layout.js";
 import { FIXTURE_OPEN_CALLS, FIXTURE_ROWS, FIXTURE_TURN_NUMBERS } from "./fixtures.js";
 
@@ -636,5 +637,76 @@ describe("ledger screen load-older", () => {
     expect({ scrollToOffset: [...listProbe.scrollToOffsetCalls] }).toEqual({
       scrollToOffset: [500 + shift],
     });
+  });
+});
+
+/**
+ * The search index is the largest single cost on the data plane. A query makes
+ * the LIST depend on the index, so that commit is exact. With no query the
+ * index can only serve a future search, so it is throttled — otherwise every
+ * append pays a full re-index for an answer nobody has asked for yet.
+ */
+describe("ledger screen search index cadence", () => {
+  const turn = (turnId: string, base: number): TrajectoryFoldRow[] => [
+    {
+      seq: base,
+      timeMs: BASE_MS + base * 1_000,
+      kind: "user",
+      label: `${turnId} prompt`,
+      durationMs: null,
+      turnId,
+      step: null,
+    },
+    {
+      seq: base + 1,
+      timeMs: BASE_MS + (base + 1) * 1_000,
+      kind: "message",
+      label: `${turnId} answer`,
+      durationMs: 5,
+      turnId,
+      step: 1,
+    },
+  ];
+
+  let updates: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    updates = vi.spyOn(TrajectorySearchIndex.prototype, "update");
+  });
+  afterEach(() => {
+    updates.mockRestore();
+  });
+
+  it("does not re-index once per append while no query is active", () => {
+    let seq = 100;
+    let rows = turn("a", seq);
+    renderRows(rows, { turnNumbers: null });
+    const afterOpen = updates.mock.calls.length;
+    expect(afterOpen).toBe(1);
+
+    // Ten appends with nothing typed. The list must not pay for indexing.
+    for (let i = 0; i < 10; i++) {
+      seq += 10;
+      rows = [...rows, ...turn(`t${i}`, seq)];
+      renderRows(rows, { turnNumbers: null });
+    }
+    expect({ commits: updates.mock.calls.length }).toEqual({ commits: afterOpen });
+  });
+
+  it("commits immediately once a query is active, because the list depends on it", () => {
+    const rows = turn("a", 100);
+    renderRows(rows, { turnNumbers: null });
+    const before = updates.mock.calls.length;
+
+    act(() => {
+      const input = document.querySelector('[data-testid="ledger-search"]') as HTMLInputElement;
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(input, "answer");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // The filtered list cannot lag behind the query that produced it.
+    expect(updates.mock.calls.length).toBeGreaterThan(before);
   });
 });
