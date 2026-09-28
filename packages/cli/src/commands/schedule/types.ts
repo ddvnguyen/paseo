@@ -139,6 +139,8 @@ export interface UpdateScheduleNewAgentConfig {
   model?: string | null;
   modeId?: string | null;
   cwd?: string;
+  /** Reuse this existing workspace for every run instead of provisioning one. */
+  workspaceId?: string;
 }
 
 export interface UpdateScheduleInput {

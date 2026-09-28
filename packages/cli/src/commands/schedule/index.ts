@@ -36,6 +36,10 @@ export function createScheduleCommand(): Command {
       .option("--cwd <path>", "Working directory (default: current; required with --host)")
       .option("--run-now", "Fire one immediate run on creation")
       .option("--max-runs <n>", "Maximum number of runs")
+      .option(
+        "--workspace-id <id>",
+        "Reuse this existing workspace for every run instead of provisioning one (implies archiveOnFinish: false)",
+      )
       .option("--expires-in <duration>", "Time to live for the schedule"),
   ).action(withOutput(runCreateCommand));
 
@@ -94,6 +98,10 @@ export function createScheduleCommand(): Command {
       .option("--mode <mode>", "New agent provider mode (only for new-agent target)")
       .option("--cwd <path>", "New working directory (only for new-agent target)")
       .option("--max-runs <n>", "Set or change maximum number of runs")
+      .option(
+        "--workspace-id <id>",
+        "Reuse this existing workspace for every run (requires archiveOnFinish false)",
+      )
       .option("--no-max-runs", "Clear the max-runs limit")
       .option("--expires-in <duration>", "Set or change time to live for the schedule")
       .option("--no-expires-in", "Clear the expiration"),
