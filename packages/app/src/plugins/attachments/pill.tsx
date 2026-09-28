@@ -20,6 +20,8 @@ function ResourceIcon({
 
 const ThemedResourceIcon = withUnistyles(ResourceIcon);
 
+import { useRetainedPanelActive } from "@/components/retained-panel";
+
 interface PluginResourceAttachmentPillProps {
   attachment: PluginResourceComposerAttachment;
   index: number;
@@ -46,6 +48,14 @@ export function PluginResourceAttachmentPill({
     () => <ThemedResourceIcon Icon={Icon} uniProps={iconColorMapping} />,
     [Icon],
   );
+  // The composer lives inside the workspace deck, which keeps inactive
+  // workspaces mounted and hides them with `display: "none"`. Without this an
+  // attached plugin resource rendered a pill in the hidden screen too, and a
+  // first-match query for the pill testID found that invisible one. Gated like
+  // PluginHeaderButtons and PluginComposerPills. After the last hook, so hook
+  // order holds.
+  const active = useRetainedPanelActive();
+  if (!active) return null;
   return (
     <AttachmentPill
       testID="composer-plugin-resource-attachment-pill"

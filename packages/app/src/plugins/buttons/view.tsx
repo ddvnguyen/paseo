@@ -540,14 +540,35 @@ function useButtons(serverId: string, workspaceId: string, agentId: string | nul
   );
 }
 
+/**
+ * Whether this screen's composer shows a pill row.
+ *
+ * Reports false while the screen is retained-and-hidden, so the row the caller
+ * reserves matches what PluginComposerPills actually renders. The two used to
+ * disagree: the hook said yes and reserved the row while the pills themselves
+ * were gated off.
+ */
 export function useHasPluginComposerPills(
   serverId: string,
   workspaceId: string,
   agentId: string,
 ): boolean {
-  return useButtons(serverId, workspaceId, agentId).length > 0;
+  const active = useRetainedPanelActive();
+  const entries = useButtons(serverId, workspaceId, agentId);
+  return active && entries.length > 0;
 }
 
+/**
+ * Plugin pills in an agent's composer.
+ *
+ * Gated on the retained-panel context for the same reason PluginHeaderButtons is:
+ * the workspace deck keeps inactive workspaces mounted and only hides them with
+ * `display: "none"`, so an ungated pill renders once per mounted screen. Measured
+ * after a client-side workspace switch, the deck held two composers -- the live
+ * one and a 0x0 ghost inside the hidden screen -- so every pill in here would
+ * have had a twin. A retained screen must contribute nothing to the document it
+ * is not showing.
+ */
 export function PluginComposerPills({
   serverId,
   workspaceId,
@@ -559,9 +580,11 @@ export function PluginComposerPills({
   agentId: string;
   compact: boolean;
 }) {
+  const active = useRetainedPanelActive();
   const entries = useButtons(serverId, workspaceId, agentId);
   const hosts = useHosts();
   const hostLabel = hosts.find((host) => host.serverId === serverId)?.label ?? serverId;
+  if (!active) return null;
   return entries.map((entry) => (
     <ThemedPluginButton
       key={entry.key}
