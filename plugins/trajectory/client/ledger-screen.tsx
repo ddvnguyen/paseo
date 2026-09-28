@@ -507,18 +507,24 @@ function turnHeaderStyles(theme: PluginTheme) {
 function StepHeaderRow(props: {
   turn: number;
   title: string;
+  description?: string;
   open: boolean;
   compact: boolean;
   theme: PluginTheme;
   onToggle: () => void;
 }) {
-  const { title, open, theme, onToggle } = props;
+  const { title, description, open, theme, onToggle } = props;
   const styles = useMemo(() => stepHeaderStyles(theme), [theme]);
   return (
     <Pressable accessibilityRole="button" onPress={onToggle} testID={`step-header-${title}`}>
       <View style={styles.header}>
         <Text style={styles.chevron}>{open ? "▾" : "▸"}</Text>
         <Text style={styles.title}>{title}</Text>
+        {description === undefined ? null : (
+          <Text style={styles.description} numberOfLines={1} testID="group-description">
+            {description}
+          </Text>
+        )}
       </View>
     </Pressable>
   );
@@ -539,6 +545,15 @@ function stepHeaderStyles(theme: PluginTheme) {
       fontSize: 11,
       fontWeight: "600",
     },
+    description: {
+      // The fold's wall span + tool histogram: supporting detail, so it is
+      // muted and clipped rather than styled as a second title. C2b pairing —
+      // flexShrink alone would not truncate this on web.
+      flexShrink: 1,
+      minWidth: 0,
+      color: theme.colors.foregroundMuted,
+      fontSize: 10,
+    } satisfies TextStyle,
   });
 }
 
@@ -596,6 +611,7 @@ const VirtualLedgerRow = memo(function VirtualLedgerRow(props: {
         <StepHeaderRow
           turn={record.turn}
           title={record.title}
+          description={record.description}
           open={record.open}
           compact={compact}
           theme={theme}
@@ -630,7 +646,7 @@ type LeadRecord =
       open: boolean;
       hasSteps: boolean;
     }
-  | { __kind: "step-header"; turn: number; title: string; open: boolean }
+  | { __kind: "step-header"; turn: number; title: string; description?: string; open: boolean }
   | { __kind: "turn-rule"; turn: number }
   | { __kind: "cell"; cell: TrajectoryCellProps };
 
@@ -711,7 +727,15 @@ function appendGroup(
   }
   const key = `step-${turn}-${group.title}`;
   const open = fold.openSteps.has(key);
-  records.push({ __kind: "step-header", turn, title: group.title, open });
+  // The fold already computed the wall span + tool histogram for this group;
+  // it was simply never rendered.
+  records.push({
+    __kind: "step-header",
+    turn,
+    title: group.title,
+    ...(group.description === undefined ? {} : { description: group.description }),
+    open,
+  });
   if (open) {
     for (const cell of group.cells) records.push(cellRecord(cell));
   }

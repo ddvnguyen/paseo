@@ -12,6 +12,25 @@ import type { TrajectoryCellProps } from "../shared/dsh/record.js";
  * collapses to a single-character icon variant when `compact`.
  */
 
+/**
+ * Per-kind rail colour, mapped onto the existing theme tokens. No new colors:
+ * input-ish kinds read as muted, the assistant's own output as accent, tool work
+ * as warning, and a failure always wins over its kind.
+ */
+export function kindRailColor(
+  theme: PluginTheme,
+  kind: TrajectoryCellProps["kind"],
+  isError: boolean,
+): string {
+  if (isError) return theme.colors.statusDanger;
+  if (kind === "tool" || kind === "subtool") return theme.colors.statusWarning;
+  if (kind === "message" || kind === "compacted") return theme.colors.accent;
+  if (kind === "user") return theme.colors.accent;
+  if (kind === "context") return theme.colors.statusSuccess;
+  // system and anything unknown: the muted/surface pair.
+  return theme.colors.surface2;
+}
+
 /** One-character stand-in per kind for compact layouts (no icon set import). */
 const KIND_ICON: Record<TrajectoryCellProps["kind"], string> = {
   system: "S",
@@ -154,9 +173,24 @@ export function TrajectoryCellRow(props: {
   const handlePress = useCallback(() => {
     onPress?.(cell);
   }, [onPress, cell]);
+  const isTool = cell.kind === "tool" || cell.kind === "subtool";
+  const isError = cell.isError === true;
+  // A settled tool result reads as done; in-flight and failed rows do not.
+  const showSuccess = isTool && !isError && cell.result !== undefined;
+  // Memoised so the rail is never handed a fresh array in render.
+  const railStyle = useMemo(
+    () => [styles.rail, { backgroundColor: kindRailColor(theme, cell.kind, isError) }],
+    [styles.rail, theme, cell.kind, isError],
+  );
   const body = (
     <View style={styles.row} testID={testID}>
-      <KindTag kind={cell.kind} compact={compact} theme={theme} error={cell.isError === true} />
+      <View style={railStyle} testID={`kind-rail-${cell.kind}`} />
+      <KindTag kind={cell.kind} compact={compact} theme={theme} error={isError} />
+      {showSuccess ? (
+        <Text style={styles.success} testID="tool-success">
+          ✓
+        </Text>
+      ) : null}
       <View style={styles.body}>
         <Text numberOfLines={1} style={styles.text}>
           {cell.previewMarkdown === undefined
@@ -201,9 +235,21 @@ function cellStyles(theme: PluginTheme, error: boolean) {
       alignItems: "flex-start",
       gap: 8,
       minHeight: 30,
-      paddingHorizontal: 8,
+      // Asymmetric: the kind rail hugs the left edge, the metrics keep the old
+      // right inset so the trailing column does not jump.
+      paddingLeft: 4,
+      paddingRight: 8,
       paddingVertical: 2,
       backgroundColor: error ? theme.colors.surface1 : "transparent",
+    },
+    rail: {
+      width: 3,
+      borderRadius: 1,
+      alignSelf: "stretch",
+    },
+    success: {
+      color: theme.colors.statusSuccess,
+      fontSize: 11,
     },
     body: {
       flex: 1,
