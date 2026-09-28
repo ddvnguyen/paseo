@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import type { TextStyle, ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -113,6 +113,12 @@ export function LedgerScreen(props: {
   textFor?: (cell: TrajectoryCellProps) => string | undefined;
   /** Reports the cells actually on screen so only those are resolved. */
   onVisibleCells?: (cells: readonly TrajectoryCellProps[]) => void;
+  /** False once the ledger's older history is exhausted; hides the control. */
+  hasOlderHistory?: boolean;
+  /** A load-older read is in flight; the control disables and says so. */
+  loadingOlder?: boolean;
+  /** Request the next older page. */
+  onLoadOlder?: () => void;
   testID?: string;
 }) {
   const {
@@ -124,10 +130,20 @@ export function LedgerScreen(props: {
     onCellPress,
     textFor,
     onVisibleCells,
+    hasOlderHistory = false,
+    loadingOlder = false,
+    onLoadOlder,
     testID,
   } = props;
   const [fold, setFold] = useState<FoldState>(INITIAL_FOLD);
   const followRef = useRef(true);
+  /** Latest scroll offset, so the anchor can be captured before a prepend. */
+  const scrollOffsetRef = useRef(0);
+  /**
+   * The row to hold still across a prepend, and the offset it was at. Set when
+   * load-older is requested, consumed once the projection has moved.
+   */
+  const anchorRef = useRef<{ key: string; offset: number } | null>(null);
   const [query, setQuery] = useState("");
   const [actualDuration, setActualDuration] = useState(false);
   const listRef = useRef<FlatList<ListRow> | null>(null);
@@ -393,6 +409,7 @@ export function LedgerScreen(props: {
       };
     }) => {
       const { y } = event.nativeEvent.contentOffset;
+      scrollOffsetRef.current = y;
       const contentHeight = event.nativeEvent.contentSize?.height;
       // An event with no content measurement cannot say where the list is.
       // Reading it as "at the bottom" would re-arm follow on any partial
@@ -409,6 +426,38 @@ export function LedgerScreen(props: {
     },
     [],
   );
+
+  /**
+   * Hold the viewport still across a prepend. getItemLayout is prefix-summed,
+   * so every row below the new page shifts down by the height of what was
+   * inserted; without this the content the user was reading jumps by exactly
+   * that much. The anchor is a row KEY (stable since the turn-identity work),
+   * not an index, so it survives the renumbering.
+   *
+   * Runtime note: maintainVisibleContentPosition does this natively on RN but
+   * is absent from react-native-web's VirtualizedList, so it is done here
+   * imperatively, which works on both.
+   */
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    if (anchor === null) return;
+    const index = virtualRows.findIndex((row) => row.key === anchor.key);
+    if (index < 0) return;
+    const shift = rowOffsets[index] ?? 0;
+    // Nothing shifted yet (the projection has not actually moved), so leave
+    // the anchor armed rather than scrolling by zero and giving up.
+    if (shift === 0) return;
+    anchorRef.current = null;
+    listRef.current?.scrollToOffset({ offset: anchor.offset + shift, animated: false });
+  }, [virtualRows, rowOffsets]);
+
+  const loadOlder = useCallback(() => {
+    if (loadingOlder || onLoadOlder === undefined) return;
+    const first = virtualRows[0];
+    if (first === undefined) return;
+    anchorRef.current = { key: first.key, offset: scrollOffsetRef.current };
+    onLoadOlder();
+  }, [loadingOlder, onLoadOlder, virtualRows]);
 
   return (
     <View style={screenStyles(theme)} testID={testID ?? "ledger-screen"}>
@@ -430,6 +479,19 @@ export function LedgerScreen(props: {
         compact={compact}
         theme={theme}
       />
+      {hasOlderHistory && onLoadOlder !== undefined ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={loadOlder}
+          disabled={loadingOlder}
+          testID="load-older"
+          style={loadOlderStyles(theme, loadingOlder)}
+        >
+          <Text style={loadOlderTextStyles(theme)} testID="load-older-label">
+            {loadingOlder ? "Loading older events…" : "Load older events"}
+          </Text>
+        </Pressable>
+      ) : null}
       <FlatList
         ref={listRef}
         data={virtualRows}
@@ -958,6 +1020,31 @@ function chromeKey(record: LeadRecord): string {
   // built — but the function stays total rather than reading `.turn` off a
   // variant that has none.
   return "cell";
+}
+
+/** The load-older control: a real control, not a scroll threshold. dsh shipped a
+ *  48px threshold first and only added an interactive row 9 days later, because
+ *  a threshold is not discoverable and fails silently. It sits above the list
+ *  rather than inside it, so it needs no row height (and no getItemLayout
+ *  entry) and stays reachable while the user watches the tail. */
+function loadOlderStyles(theme: PluginTheme, loading: boolean): ViewStyle {
+  return {
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    alignItems: "center",
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+    backgroundColor: theme.colors.surface1,
+    opacity: loading ? 0.6 : 1,
+  };
+}
+
+function loadOlderTextStyles(theme: PluginTheme): TextStyle {
+  return {
+    fontSize: 12,
+    color: theme.colors.accent,
+    fontWeight: "600",
+  };
 }
 
 function screenStyles(theme: PluginTheme): ViewStyle {

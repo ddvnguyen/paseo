@@ -38,6 +38,9 @@ vi.mock("react-native", () => ({
       scrollToEnd: () => {
         listProbe.scrollToEndCalls += 1;
       },
+      scrollToOffset: (options: { offset: number }) => {
+        listProbe.scrollToOffsetCalls.push(options.offset);
+      },
     }));
     return React.createElement(
       "div",
@@ -96,6 +99,7 @@ const listProbe = vi.hoisted(() => ({
   props: null as Record<string, unknown> | null,
   renders: 0,
   scrollToEndCalls: 0,
+  scrollToOffsetCalls: [] as number[],
 }));
 
 import { LedgerScreen } from "./ledger-screen.js";
@@ -125,6 +129,7 @@ beforeEach(() => {
   listProbe.props = null;
   listProbe.renders = 0;
   listProbe.scrollToEndCalls = 0;
+  listProbe.scrollToOffsetCalls.length = 0;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -147,7 +152,13 @@ function render(overrides: { compact?: boolean } = {}): void {
  */
 function renderRows(
   rows: readonly TrajectoryFoldRow[],
-  overrides: { compact?: boolean; turnNumbers?: ReadonlyMap<string, number> | null } = {},
+  overrides: {
+    compact?: boolean;
+    turnNumbers?: ReadonlyMap<string, number> | null;
+    hasOlderHistory?: boolean;
+    loadingOlder?: boolean;
+    onLoadOlder?: () => void;
+  } = {},
 ): void {
   const turnNumbers =
     overrides.turnNumbers === null ? undefined : (overrides.turnNumbers ?? FIXTURE_TURN_NUMBERS);
@@ -159,6 +170,9 @@ function renderRows(
         openCallIds={FIXTURE_OPEN_CALLS}
         compact={overrides.compact === true}
         theme={THEME}
+        hasOlderHistory={overrides.hasOlderHistory}
+        loadingOlder={overrides.loadingOlder}
+        onLoadOlder={overrides.onLoadOlder}
       />,
     );
   });
@@ -515,5 +529,112 @@ describe("ledger screen virtual row stability", () => {
 
     renderRows([...FIXTURE_ROWS, foldRow(900, { kind: "user", turnId: "t2", label: "appended" })]);
     expect({ sameArray: data() === first }).toEqual({ sameArray: false });
+  });
+});
+
+/**
+ * Load older. A threshold is not a discoverable affordance (dsh shipped a 48px
+ * one and only added a real control 9 days later), so the trigger is a
+ * control. The hard part is the other half: getItemLayout is prefix-summed, so
+ * prepending shifts every row below the new page.
+ */
+describe("ledger screen load-older", () => {
+  const loadOlderBase = Date.parse("2026-09-26T00:00:00Z");
+  const fold = (seq: number, turnId: string): TrajectoryFoldRow => ({
+    seq,
+    timeMs: loadOlderBase + seq * 1_000,
+    kind: "user",
+    label: `${turnId} prompt`,
+    durationMs: null,
+    turnId,
+    step: null,
+  });
+  /** A lone user row folds to nothing, so a turn needs a message to exist. */
+  const answer = (seq: number, turnId: string): TrajectoryFoldRow => ({
+    seq,
+    timeMs: loadOlderBase + seq * 1_000,
+    kind: "message",
+    label: `${turnId} answer`,
+    durationMs: 5,
+    turnId,
+    step: 1,
+  });
+  const turn = (turnId: string, base: number): TrajectoryFoldRow[] => [
+    fold(base, turnId),
+    answer(base + 1, turnId),
+  ];
+
+  const control = (): HTMLButtonElement | null =>
+    document.querySelector('[data-testid="load-older"]') as HTMLButtonElement | null;
+
+  it("offers the control only while older history might exist", () => {
+    renderRows(turn("a", 1), { hasOlderHistory: true, onLoadOlder: () => {}, turnNumbers: null });
+    expect({ present: control() !== null }).toEqual({ present: true });
+
+    // Exhausted: the affordance must disappear rather than sit there inert.
+    renderRows(turn("a", 1), { hasOlderHistory: false, onLoadOlder: () => {}, turnNumbers: null });
+    expect({ present: control() !== null }).toEqual({ present: false });
+  });
+
+  it("requests older history on press and does not re-request while loading", () => {
+    let presses = 0;
+    renderRows(turn("a", 1), {
+      hasOlderHistory: true,
+      onLoadOlder: () => (presses += 1),
+      turnNumbers: null,
+    });
+
+    act(() => control()?.click());
+    expect({ presses }).toEqual({ presses: 1 });
+
+    // The disabled state is the control's half of the in-flight guard; the
+    // hook's own lock is the other half, for a second surface.
+    renderRows(turn("a", 1), {
+      hasOlderHistory: true,
+      loadingOlder: true,
+      onLoadOlder: () => (presses += 1),
+      turnNumbers: null,
+    });
+    act(() => control()?.click());
+    expect({ presses }).toEqual({ presses: 1 });
+  });
+
+  it("holds the viewport still across a prepend", () => {
+    const older = turn("older", 10);
+    const current = turn("a", 1);
+    renderRows(current, { hasOlderHistory: true, onLoadOlder: () => {}, turnNumbers: null });
+    // Turns are folded by default, so a turn is one header row.
+    expect({ rows: (listProbe.props as { data: unknown[] }).data.length }).toEqual({ rows: 1 });
+
+    // The user is scrolled down, then asks for older history. The press captures
+    // the anchor; the read resolves and one older turn arrives above.
+    act(() => {
+      (listProbe.props as { onScroll: (e: unknown) => void }).onScroll({
+        nativeEvent: {
+          contentOffset: { y: 500 },
+          contentSize: { height: 900 },
+          layoutMeasurement: { height: 800 },
+        },
+      });
+    });
+    listProbe.scrollToOffsetCalls.length = 0;
+    act(() => control()?.click());
+    // Nothing has been prepended yet, so the viewport must not have moved.
+    expect({ beforeFetch: [...listProbe.scrollToOffsetCalls] }).toEqual({ beforeFetch: [] });
+
+    // The prepend lands: an older turn above, so the anchored row now sits
+    // below that turn's header (22) and the inter-turn rule (10).
+    renderRows([...older, ...current], {
+      hasOlderHistory: true,
+      onLoadOlder: () => {},
+      turnNumbers: null,
+    });
+
+    // 500 captured, shifted by the height inserted above the anchor. Without
+    // this the content the user was reading jumps down by exactly that much.
+    const shift = 22 + 10;
+    expect({ scrollToOffset: [...listProbe.scrollToOffsetCalls] }).toEqual({
+      scrollToOffset: [500 + shift],
+    });
   });
 });

@@ -70,6 +70,8 @@ interface ProbeView {
   status: string;
   rows: number;
   headSeq: number;
+  hasOlderHistory: boolean;
+  loadOlder: () => void;
   error?: string;
 }
 
@@ -83,6 +85,8 @@ function Probe({ agentId }: { agentId: string }) {
     status: delta.status,
     rows: delta.rows.length,
     headSeq: delta.headSeq,
+    hasOlderHistory: delta.hasOlderHistory,
+    loadOlder: delta.loadOlder,
     ...(delta.status === "error" ? { error: delta.error } : {}),
   };
   refreshRef.current = delta.refresh;
@@ -167,6 +171,99 @@ afterEach(async () => {
   root = null;
   vi.restoreAllMocks();
 });
+
+/** Shared by both suites that drive the real store and handlers. */
+/** One turn per 4 events so tool/call and tool/result stay paired. */
+function seed(store: TrajectoryStore, total: number, agentId: string): void {
+  for (let i = 1; i <= total; i++) {
+    const cycle = Math.ceil(i / 4);
+    const kind = i % 4;
+    const turn = `t${cycle}`;
+    const callId = `c${cycle}`;
+    if (kind === 1)
+      store.append({
+        time: iso(i),
+        type: "user/message",
+        turn,
+        step: null,
+        agentId,
+        data: { textLength: 10 },
+      });
+    else if (kind === 2)
+      store.append({
+        time: iso(i),
+        type: "assistant/message",
+        turn,
+        step: 1,
+        agentId,
+        data: { textLength: 20 },
+      });
+    else if (kind === 3)
+      store.append({
+        time: iso(i),
+        type: "tool/call",
+        turn,
+        step: 1,
+        agentId,
+        data: { callId, name: "shell" },
+      });
+    else
+      store.append({
+        time: iso(i),
+        type: "tool/result",
+        turn,
+        step: 1,
+        agentId,
+        data: { callId, name: "shell", durationMs: 400, outputChars: 12 },
+      });
+  }
+}
+
+const iso = (seq: number) => new Date(BASE + seq * 1_000).toISOString();
+
+/**
+ * Wire the real handlers, teeing every seq the hook is handed. The hook folds
+ * into rows that drop structure-only events and merge tool pairs, so the
+ * buffered *event* seqs are the only faithful record of what was delivered.
+ */
+function wireRealStore(store: TrajectoryStore): {
+  received: number[];
+  listInputs: { agentId: string; afterSeq?: number; beforeSeq?: number; limit?: number }[];
+} {
+  const received: number[] = [];
+  const listInputs: { agentId: string; afterSeq?: number; beforeSeq?: number; limit?: number }[] =
+    [];
+  const teeChanges = async (input: never) => {
+    const page = await handleChanges(store)(input);
+    received.push(...page.events.map((event) => event.seq));
+    return page;
+  };
+  const teeList = async (input: never) => {
+    listInputs.push(input as { agentId: string; beforeSeq?: number });
+    const page = await handleList(store)(input);
+    received.push(...page.events.map((event) => event.seq));
+    return page;
+  };
+  rpcHandlers.current = {
+    "trajectory.list": teeList as RpcHandler,
+    "trajectory.changes": teeChanges as RpcHandler,
+  };
+  return { received, listInputs };
+}
+
+/** The seq values missing from [min, max] of `seqs`. */
+function holesIn(seqs: readonly number[]): number[] {
+  if (seqs.length === 0) return [];
+  const sorted = [...new Set(seqs)].sort((a, b) => a - b);
+  const missing: number[] = [];
+  for (let i = sorted[0]; i <= sorted[sorted.length - 1]; i++) {
+    if (!sorted.includes(i)) missing.push(i);
+  }
+  return missing;
+}
+
+const range = (seqs: readonly number[]) =>
+  seqs.length === 0 ? "(empty)" : `${Math.min(...seqs)}..${Math.max(...seqs)}`;
 
 describe("useTrajectoryDelta", () => {
   it("lists once, drains changes while events flow, parks on empty (no hot loop)", async () => {
@@ -277,92 +374,6 @@ describe("useTrajectoryDelta against the real store (backlog paging)", () => {
   const TOTAL = 1200;
   const PAGE = 500;
 
-  const iso = (seq: number) => new Date(BASE + seq * 1_000).toISOString();
-
-  /** One turn per 4 events so tool/call and tool/result stay paired. */
-  function seed(store: TrajectoryStore, total: number, agentId: string): void {
-    for (let i = 1; i <= total; i++) {
-      const cycle = Math.ceil(i / 4);
-      const kind = i % 4;
-      const turn = `t${cycle}`;
-      const callId = `c${cycle}`;
-      if (kind === 1)
-        store.append({
-          time: iso(i),
-          type: "user/message",
-          turn,
-          step: null,
-          agentId,
-          data: { textLength: 10 },
-        });
-      else if (kind === 2)
-        store.append({
-          time: iso(i),
-          type: "assistant/message",
-          turn,
-          step: 1,
-          agentId,
-          data: { textLength: 20 },
-        });
-      else if (kind === 3)
-        store.append({
-          time: iso(i),
-          type: "tool/call",
-          turn,
-          step: 1,
-          agentId,
-          data: { callId, name: "shell" },
-        });
-      else
-        store.append({
-          time: iso(i),
-          type: "tool/result",
-          turn,
-          step: 1,
-          agentId,
-          data: { callId, name: "shell", durationMs: 400, outputChars: 12 },
-        });
-    }
-  }
-
-  /**
-   * Wire the real handlers, teeing every seq the hook is handed. The hook folds
-   * into rows that drop structure-only events and merge tool pairs, so the
-   * buffered *event* seqs are the only faithful record of what was delivered.
-   */
-  function wireRealStore(store: TrajectoryStore): { received: number[] } {
-    const received: number[] = [];
-    const tee = <T extends { events: TrajectoryEvent[] }>(handler: (input: never) => Promise<T>) =>
-      (async (input: never) => {
-        const page = await handler(input);
-        received.push(...page.events.map((event) => event.seq));
-        return page;
-      }) as RpcHandler;
-    rpcHandlers.current = {
-      "trajectory.list": tee(
-        handleList(store) as (input: never) => Promise<{ events: TrajectoryEvent[] }>,
-      ),
-      "trajectory.changes": tee(
-        handleChanges(store) as (input: never) => Promise<{ events: TrajectoryEvent[] }>,
-      ),
-    };
-    return { received };
-  }
-
-  /** The seq values missing from [min, max] of `seqs`. */
-  function holesIn(seqs: readonly number[]): number[] {
-    if (seqs.length === 0) return [];
-    const sorted = [...new Set(seqs)].sort((a, b) => a - b);
-    const missing: number[] = [];
-    for (let i = sorted[0]; i <= sorted[sorted.length - 1]; i++) {
-      if (!sorted.includes(i)) missing.push(i);
-    }
-    return missing;
-  }
-
-  const range = (seqs: readonly number[]) =>
-    seqs.length === 0 ? "(empty)" : `${Math.min(...seqs)}..${Math.max(...seqs)}`;
-
   it("drains the newest window and parks at the true head, with no hole inside it", async () => {
     const store = createNodeStore(":memory:");
     try {
@@ -450,6 +461,133 @@ describe("useTrajectoryDelta against the real store (backlog paging)", () => {
         headSeq: trueHead,
         trueHead,
       });
+    } finally {
+      store.close();
+    }
+  });
+});
+
+/**
+ * Load older. The reverse read exists server-side since S1 (beforeSeq on
+ * trajectory.list) but nothing in the client has ever sent it, so the page, its
+ * loading state, and the exhausted flag are all built here.
+ */
+describe("useTrajectoryDelta load-older", () => {
+  const TOTAL = 1200;
+
+  /** A ledger of `total` events, seq 1..total, all on agent a1. */
+  function seedLoadOlder(store: TrajectoryStore, total: number, agentId: string): void {
+    for (let i = 1; i <= total; i++) {
+      store.append({
+        time: iso(i),
+        type: i % 2 === 1 ? "user" : "assistant",
+        turn: `t${Math.ceil(i / 2)}`,
+        step: null,
+        agentId,
+        data: {},
+      });
+    }
+  }
+
+  /** Lets pending promise chains settle, without polling for a condition only
+   *  the new code could produce (that reads as a timeout, not an assertion). */
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
+
+  const beforeSeqReads = (inputs: readonly { beforeSeq?: number }[]): number[] =>
+    inputs.flatMap((input) => (input.beforeSeq === undefined ? [] : [input.beforeSeq]));
+
+  it("reads the page below the oldest buffered seq and prepends it", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      seedLoadOlder(store, TOTAL, "a1");
+      const { listInputs, received } = wireRealStore(store);
+      await renderProbe("a1");
+      await settleUntil(settledLive);
+      // The open page is the newest 500, so the oldest buffered seq is 701.
+      expect({ opened: range(received), headSeq: view().headSeq }).toEqual({
+        opened: "701..1200",
+        headSeq: TOTAL,
+      });
+
+      await act(async () => {
+        view().loadOlder();
+      });
+      await settle();
+
+      // One press is one page, and the cursor it read with is the oldest
+      // buffered seq, not the head.
+      expect({ beforeSeq: beforeSeqReads(listInputs) }).toEqual({ beforeSeq: [701] });
+      // Prepended, still contiguous, and 500 rows not 1000: the page is the
+      // newest 500 below the cursor, so 201..700.
+      expect({ union: range(received), holes: holesIn(received).length }).toEqual({
+        union: "201..1200",
+        holes: 0,
+      });
+
+      // The next press pages from the NEW oldest seq, so walking to exhaustion
+      // reaches the start with no hole at any step.
+      await act(async () => {
+        view().loadOlder();
+      });
+      await settle();
+      expect({ beforeSeq: beforeSeqReads(listInputs) }).toEqual({ beforeSeq: [701, 201] });
+      expect({ union: range(received), holes: holesIn(received).length }).toEqual({
+        union: "1..1200",
+        holes: 0,
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("two rapid calls fetch once — the in-flight lock is the whole point", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      seedLoadOlder(store, TOTAL, "a1");
+      const { listInputs } = wireRealStore(store);
+      await renderProbe("a1");
+      await settleUntil(settledLive);
+
+      // Three presses in one tick, before the first read resolves. A sequential
+      // test can never see this: the lock exists to stop concurrent re-entry,
+      // and pressing twice in a row after a resolve would be two legitimate
+      // pages, not a double-fetch.
+      await act(async () => {
+        view().loadOlder();
+        view().loadOlder();
+        view().loadOlder();
+      });
+      await settle();
+
+      expect({ beforeSeqReads: beforeSeqReads(listInputs).length }).toEqual({ beforeSeqReads: 1 });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("the affordance disappears once older history is exhausted", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      // Fewer events than one page: the open already returned everything, so
+      // there is nothing below it.
+      seedLoadOlder(store, 10, "a1");
+      const { listInputs } = wireRealStore(store);
+      await renderProbe("a1");
+      await settleUntil(settledLive);
+
+      await act(async () => {
+        view().loadOlder();
+      });
+      await settle();
+
+      // An exhausted ledger answers with an empty page, which is how we know —
+      // and per the S1 empty-page contract that page echoes the cursor, so it
+      // cannot rewind the head.
+      expect({
+        hasOlderHistory: view().hasOlderHistory,
+        beforeSeqReads: beforeSeqReads(listInputs),
+        headSeq: view().headSeq,
+      }).toEqual({ hasOlderHistory: false, beforeSeqReads: [1], headSeq: 10 });
     } finally {
       store.close();
     }
