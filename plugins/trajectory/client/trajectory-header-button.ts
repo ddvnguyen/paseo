@@ -16,8 +16,43 @@ import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/pl
 
 export const TRAJECTORY_HEADER_BUTTON_ID = "trajectory-open";
 
+/**
+ * How long a press may wait for the agent list before giving up.
+ *
+ * This is not defensive padding, it is the difference between a visible error
+ * and a permanently dead button. The host's button store marks a button
+ * `pending` for the duration of the action and only clears it once the action's
+ * promise SETTLES (buttons/model.ts:134-146), and a button left `pending`
+ * returns immediately on every later press (line 135) with no toast and no
+ * error. `paseo.agents.list()` has no timeout of its own, so without this race
+ * a list that never settles — observed after client-side tab navigation — wedges
+ * the button for the rest of the session and reports nothing. Racing it means
+ * the action always settles: the store recovers, and a timeout REJECTS so the
+ * host surfaces a message instead of silence.
+ */
+const AGENT_LIST_TIMEOUT_MS = 4_000;
+
 /** Ranking preference: whatever the user is looking at beats whatever is idle. */
 const STATUS_RANK: Record<string, number> = { running: 0, initializing: 1, idle: 2, error: 3 };
+
+/** Reject rather than hang, so the caller (and the host's toast) always hears back. */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    void promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+        return undefined;
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+        return undefined;
+      },
+    );
+  });
+}
 
 /**
  * Pick the workspace's agent to show: most recently active first, with a running
@@ -28,7 +63,11 @@ export async function pickAgentForWorkspace(
   client: PluginClientContext,
   workspaceId: string,
 ): Promise<string> {
-  const { entries } = await client.paseo.agents.list();
+  const { entries } = await withTimeout(
+    client.paseo.agents.list(),
+    AGENT_LIST_TIMEOUT_MS,
+    `Timed out after ${AGENT_LIST_TIMEOUT_MS}ms resolving an agent in workspace ${workspaceId}`,
+  );
   const candidates = entries
     .map((entry) => entry.agent)
     .filter((agent) => agent.workspaceId === workspaceId);
