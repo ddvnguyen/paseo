@@ -13,6 +13,10 @@ export default function contribute(client: PluginClientContext) {
     icon: "PanelTop",
     locations: ["dialog"],
     context: "agent",
+    // The ledger is a dense table with a gantt strip and a toolbar; a
+    // content-sized modal gives it no room. Declared on the contribution so the
+    // header button and the Command Center item both get the same presentation.
+    fullScreen: true,
     Component: TrajectoryPanel,
   });
   const removeCommand = client.addCommandCenterItem({

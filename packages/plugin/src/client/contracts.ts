@@ -71,6 +71,16 @@ interface PluginWorkspacePanelBase {
   title: string;
   icon: string;
   locations?: readonly PluginPanelLocation[];
+  /**
+   * `dialog` panels only: make the modal fill the viewport instead of
+   * content-sizing. Declared on the contribution, not on `openPanel`, so every
+   * entry point — header button, Command Center, a plugin's own call — gets the
+   * same presentation without having to remember to ask for it.
+   *
+   * Optional and defaults to false: an old plugin that omits it keeps the
+   * content-sized dialog it always had.
+   */
+  fullScreen?: boolean;
 }
 
 export interface PluginWorkspacePanelProps extends PluginNavigableHostProps {

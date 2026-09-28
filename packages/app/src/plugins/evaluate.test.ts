@@ -273,6 +273,60 @@ describe("evaluatePluginClientBundle", () => {
     ).toEqual([{ id: "open-review", title: "Open review", icon: "Scan", context: "agent" }]);
   });
 
+  it("normalizes and validates the fullScreen dialog flag", () => {
+    const optIn = evaluatePluginClientBundle(
+      "ledger",
+      bundle(`
+        function LedgerPanel() { return null; }
+        plugin.addWorkspacePanel({
+          id: "ledger",
+          title: "Ledger",
+          icon: "Scan",
+          context: "agent",
+          locations: ["dialog"],
+          fullScreen: true,
+          Component: LedgerPanel,
+        });
+      `),
+    );
+    expect(optIn.workspacePanels[0]?.fullScreen).toBe(true);
+
+    // A panel that omits it keeps the content-sized dialog it always had, so
+    // existing plugins are unaffected.
+    const legacy = evaluatePluginClientBundle(
+      "review",
+      bundle(`
+        function ReviewPanel() { return null; }
+        plugin.addWorkspacePanel({
+          id: "review",
+          title: "Review",
+          icon: "Scan",
+          context: "agent",
+          locations: ["dialog"],
+          Component: ReviewPanel,
+        });
+      `),
+    );
+    expect(legacy.workspacePanels[0]?.fullScreen).toBe(false);
+
+    const invalid = evaluatePluginClientBundle(
+      "bad",
+      bundle(`
+        function BadPanel() { return null; }
+        plugin.addWorkspacePanel({
+          id: "bad",
+          title: "Bad",
+          icon: "Scan",
+          context: "agent",
+          locations: ["dialog"],
+          fullScreen: "yes",
+          Component: BadPanel,
+        });
+      `),
+    );
+    expect(invalid).toBeNull();
+  });
+
   it("normalizes and validates workspace panel locations", () => {
     const plugin = evaluatePluginClientBundle(
       "review",

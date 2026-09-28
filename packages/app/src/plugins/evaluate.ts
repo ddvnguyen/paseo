@@ -45,6 +45,17 @@ const TIMELINE_ITEM_TYPES = new Set([
   "compaction",
 ]);
 
+function normalizeFullScreen(
+  panelId: string,
+  fullScreen: PluginWorkspacePanelContribution["fullScreen"],
+): boolean {
+  if (fullScreen === undefined) return false;
+  if (typeof fullScreen !== "boolean") {
+    throw new Error(`Workspace panel ${panelId} has an invalid fullScreen: ${String(fullScreen)}`);
+  }
+  return fullScreen;
+}
+
 function normalizePanelLocations(
   panelId: string,
   locations: PluginWorkspacePanelContribution["locations"],
@@ -207,6 +218,7 @@ export function runPluginClientBundle(
       }
       resolvePluginIcon(icon);
       const locations = normalizePanelLocations(normalizedId, contribution.locations);
+      const fullScreen = normalizeFullScreen(normalizedId, contribution.fullScreen);
       workspacePanelIds.add(normalizedId);
       return register(
         collector.workspacePanels,
@@ -216,6 +228,7 @@ export function runPluginClientBundle(
           title,
           icon,
           locations,
+          fullScreen,
         },
         () => workspacePanelIds.delete(normalizedId),
       );
