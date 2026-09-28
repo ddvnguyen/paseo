@@ -10,7 +10,7 @@ import {
 interface FakeButton {
   workspaceId: string;
   removed: boolean;
-  onPress: () => void;
+  onPress: () => void | Promise<void>;
 }
 
 interface Harness {
@@ -23,7 +23,19 @@ interface Harness {
   failList: (error: unknown) => void;
 }
 
-function harness(options: { listRejects?: boolean } = {}): Harness {
+function agent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "a1",
+    workspaceId: "w1",
+    status: "idle",
+    updatedAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function harness(
+  options: { listRejects?: boolean; agents?: Array<Record<string, unknown>> } = {},
+): Harness {
   const buttons: FakeButton[] = [];
   const opened: Harness["opened"] = [];
   let observer: {
@@ -54,6 +66,15 @@ function harness(options: { listRejects?: boolean } = {}): Harness {
       opened.push({ id, options: openOptions });
     }),
     paseo: {
+      agents: {
+        // Real entries are `{ agent, project }`; the harness passes bare agents.
+        list: async () => ({
+          entries: (options.agents ?? []).map((snapshot) => ({
+            agent: snapshot,
+            project: null,
+          })),
+        }),
+      },
       workspaces: {
         list: () =>
           options.listRejects
@@ -125,17 +146,46 @@ describe("registerTrajectoryHeaderButton", () => {
     expect(call.button.icon).toBe("ListTree");
   });
 
-  it("opens the dialog for its own workspace", async () => {
-    const h = harness();
+  it("opens the dialog for its own workspace WITH an agent id", async () => {
+    // QC r12 A1: opening without an agentId took the workspace-context path,
+    // which only resolves `context: "workspace"` panels, so it threw and the
+    // button did nothing.
+    const h = harness({ agents: [agent({ id: "a9", workspaceId: "w2" })] });
     registerTrajectoryHeaderButton(h.client);
     await settle();
     h.emitSnapshot(["w1", "w2"]);
 
-    h.buttons[1].onPress();
+    await h.buttons[1].onPress();
 
     expect(h.opened).toEqual([
-      { id: "trajectory", options: { workspaceId: "w2", location: "dialog" } },
+      { id: "trajectory", options: { workspaceId: "w2", agentId: "a9", location: "dialog" } },
     ]);
+  });
+
+  it("picks a running agent over a more recently updated idle one", async () => {
+    const h = harness({
+      agents: [
+        agent({ id: "idle-one", status: "idle", updatedAt: "2026-01-02T00:00:00Z" }),
+        agent({ id: "running-one", status: "running", updatedAt: "2026-01-01T00:00:00Z" }),
+      ],
+    });
+    registerTrajectoryHeaderButton(h.client);
+    await settle();
+    h.emitSnapshot(["w1"]);
+
+    await h.buttons[0].onPress();
+
+    expect(h.opened[0].options).toMatchObject({ agentId: "running-one" });
+  });
+
+  it("ignores agents belonging to another workspace", async () => {
+    const h = harness({ agents: [agent({ id: "other", workspaceId: "w-other" })] });
+    registerTrajectoryHeaderButton(h.client);
+    await settle();
+    h.emitSnapshot(["w1"]);
+
+    await expect(h.buttons[0].onPress()).rejects.toThrow(/No agent in workspace/);
+    expect(h.opened).toHaveLength(0);
   });
 
   it("does not register a second button when a workspace is re-upserted", async () => {
