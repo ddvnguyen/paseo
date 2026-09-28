@@ -12,6 +12,25 @@ import type { TrajectoryCellProps } from "../shared/dsh/record.js";
  * collapses to a single-character icon variant when `compact`.
  */
 
+/**
+ * Per-kind rail colour, mapped onto the existing theme tokens. No new colors:
+ * input-ish kinds read as muted, the assistant's own output as accent, tool work
+ * as warning, and a failure always wins over its kind.
+ */
+export function kindRailColor(
+  theme: PluginTheme,
+  kind: TrajectoryCellProps["kind"],
+  isError: boolean,
+): string {
+  if (isError) return theme.colors.statusDanger;
+  if (kind === "tool" || kind === "subtool") return theme.colors.statusWarning;
+  if (kind === "message" || kind === "compacted") return theme.colors.accent;
+  if (kind === "user") return theme.colors.accent;
+  if (kind === "context") return theme.colors.statusSuccess;
+  // system and anything unknown: the muted/surface pair.
+  return theme.colors.surface2;
+}
+
 /** One-character stand-in per kind for compact layouts (no icon set import). */
 const KIND_ICON: Record<TrajectoryCellProps["kind"], string> = {
   system: "S",
@@ -140,28 +159,62 @@ function charsStyles(theme: PluginTheme): TextStyle {
 }
 
 /** One ledger cell row: kind tag + text + trailing metrics. */
+/**
+ * Resolved text wins when the resolver has it; otherwise the row's own label,
+ * which is a length summary for a recorded row. An absent or empty resolution
+ * is a normal state, not an error.
+ */
+function cellText(
+  cell: TrajectoryCellProps,
+  compact: boolean,
+  resolvedText: string | undefined,
+): string {
+  if (resolvedText !== undefined && resolvedText.length > 0) return resolvedText;
+  if (cell.previewMarkdown === undefined) return cell.text;
+  return `${cell.text} · ${compact ? "" : cell.previewMarkdown}`;
+}
+
 export function TrajectoryCellRow(props: {
   cell: TrajectoryCellProps;
   compact: boolean;
   theme: PluginTheme;
+  /**
+   * Text fetched on demand for this row, when the resolver has it. Absent means
+   * "not resolved yet" or "no key" — the row then keeps its `(N chars)` label,
+   * which is a normal state and not an error.
+   */
+  resolvedText?: string | undefined;
   onPress?: (cell: TrajectoryCellProps) => void;
   testID?: string;
 }) {
-  const { cell, compact, theme, onPress, testID } = props;
+  const { cell, compact, theme, resolvedText, onPress, testID } = props;
   const styles = useMemo(() => cellStyles(theme, cell.isError === true), [theme, cell.isError]);
   // Bound here (not inline in JSX): Pressable passes the press event as the
   // first argument, so an unbound handler would receive the event, not the cell.
   const handlePress = useCallback(() => {
     onPress?.(cell);
   }, [onPress, cell]);
+  const isTool = cell.kind === "tool" || cell.kind === "subtool";
+  const isError = cell.isError === true;
+  // A settled tool result reads as done; in-flight and failed rows do not.
+  const showSuccess = isTool && !isError && cell.result !== undefined;
+  // Memoised so the rail is never handed a fresh array in render.
+  const railStyle = useMemo(
+    () => [styles.rail, { backgroundColor: kindRailColor(theme, cell.kind, isError) }],
+    [styles.rail, theme, cell.kind, isError],
+  );
   const body = (
     <View style={styles.row} testID={testID}>
-      <KindTag kind={cell.kind} compact={compact} theme={theme} error={cell.isError === true} />
+      <View style={railStyle} testID={`kind-rail-${cell.kind}`} />
+      <KindTag kind={cell.kind} compact={compact} theme={theme} error={isError} />
+      {showSuccess ? (
+        <Text style={styles.success} testID="tool-success">
+          ✓
+        </Text>
+      ) : null}
       <View style={styles.body}>
-        <Text numberOfLines={1} style={styles.text}>
-          {cell.previewMarkdown === undefined
-            ? cell.text
-            : `${cell.text} · ${compact ? "" : cell.previewMarkdown}`}
+        <Text numberOfLines={1} style={styles.text} testID="cell-text">
+          {cellText(cell, compact, resolvedText)}
         </Text>
         <View style={styles.metrics}>
           {cell.kind === "message" ? (
@@ -201,9 +254,21 @@ function cellStyles(theme: PluginTheme, error: boolean) {
       alignItems: "flex-start",
       gap: 8,
       minHeight: 30,
-      paddingHorizontal: 8,
+      // Asymmetric: the kind rail hugs the left edge, the metrics keep the old
+      // right inset so the trailing column does not jump.
+      paddingLeft: 4,
+      paddingRight: 8,
       paddingVertical: 2,
       backgroundColor: error ? theme.colors.surface1 : "transparent",
+    },
+    rail: {
+      width: 3,
+      borderRadius: 1,
+      alignSelf: "stretch",
+    },
+    success: {
+      color: theme.colors.statusSuccess,
+      fontSize: 11,
     },
     body: {
       flex: 1,

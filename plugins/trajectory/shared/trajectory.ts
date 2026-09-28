@@ -34,12 +34,15 @@ export const TrajectoryEventSchema = z.object({
 export type TrajectoryEvent = z.infer<typeof TrajectoryEventSchema>;
 
 /** Paged read. `afterSeq` is the cursor; rows return ascending by seq. */
+/** Page size applied when a caller omits `limit`; mirrors the zod default. */
+export const TRAJECTORY_PAGE_LIMIT_DEFAULT = 500;
+
 export const trajectoryList = defineTrajectoryRpc({
   name: "trajectory.list",
   input: z.object({
     agentId: z.string().min(1),
     afterSeq: z.number().int().nonnegative().optional(),
-    limit: z.number().int().positive().max(1000).default(500),
+    limit: z.number().int().positive().max(1000).default(TRAJECTORY_PAGE_LIMIT_DEFAULT),
   }),
   output: z.object({
     events: z.array(TrajectoryEventSchema),

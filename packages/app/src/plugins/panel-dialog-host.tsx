@@ -166,6 +166,7 @@ function PluginPanelDialogBody({ theme }: { theme: PluginTheme }) {
       title={contribution.title}
       subtitle={dialog.pluginId}
       onClose={closePluginPanelDialog}
+      fullScreen={contribution.fullScreen === true}
     >
       <SurfaceErrorBoundary
         installation={plugin}
@@ -180,15 +181,27 @@ function PluginPanelDialogBody({ theme }: { theme: PluginTheme }) {
   );
 }
 
+/**
+ * Width ceiling for a full-screen dialog. The desktop card is `width: 100%` and
+ * the overlay already pads it, so this only has to be wider than any viewport we
+ * target — the padding is then the only thing constraining the card. A panel that
+ * does not opt in keeps AdaptiveModalSheet's own 520pt ceiling.
+ */
+const FULL_SCREEN_MAX_WIDTH = 2400;
+
 /** Sheet wrapper owning the memoized header object (react-perf: no new props). */
 function PluginPanelSheet(props: {
   title: string;
   subtitle: string;
   onClose: () => void;
+  fullScreen: boolean;
   children: React.ReactNode;
 }) {
-  const { title, subtitle, onClose, children } = props;
+  const { title, subtitle, onClose, fullScreen, children } = props;
   const header = useMemo(() => ({ title, subtitle }), [title, subtitle]);
+  // Static per mode, so the arrays/values are module constants rather than fresh
+  // objects on every render.
+  const fullScreenSnapPoints = useMemo(() => ["100%"], []);
   return (
     <AdaptiveModalSheet
       header={header}
@@ -197,6 +210,11 @@ function PluginPanelSheet(props: {
       // Caller-owned FlatList body (ledger): the host must not own scrolling.
       scrollable={false}
       bodyStyle={styles.body}
+      // Full-screen keeps the sheet's own header/close bar: it is the only way out
+      // of a viewport-filling overlay.
+      desktopHeight={fullScreen ? "100%" : undefined}
+      desktopMaxWidth={fullScreen ? FULL_SCREEN_MAX_WIDTH : undefined}
+      snapPoints={fullScreen ? fullScreenSnapPoints : undefined}
       testID="plugin-panel-dialog"
     >
       {children}

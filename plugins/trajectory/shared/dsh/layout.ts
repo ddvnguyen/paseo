@@ -66,6 +66,12 @@ export interface TrajectoryFoldRow {
   isError?: boolean;
   /** Tool rows only: result character count. */
   outputChars?: number | null;
+  /**
+   * Identity of the daemon timeline item this row came from. A foreign key the
+   * recorder persists so the client can fetch this row's text on demand; absent
+   * on rows recorded before it existed, and when the producer sent no id.
+   */
+  sourceMessageId?: string | null;
   /** Message rows only: token buckets from the provider. */
   usage?: {
     input: number | null;
@@ -98,6 +104,16 @@ export function durationSeconds(later: number | null, earlier: number | null): n
 }
 
 /** Epoch-ms usable as an absolute time, else null. */
+/**
+ * Propagate a row's source identity to its cell. A row recorded before the
+ * identity existed, or from a producer that sent none, simply has no key — and a
+ * single helper keeps that rule in one place for both cell kinds.
+ */
+function sourceIdentity(row: TrajectoryFoldRow): { sourceMessageId?: string } {
+  if (row.sourceMessageId === undefined || row.sourceMessageId === null) return {};
+  return { sourceMessageId: row.sourceMessageId };
+}
+
 export function finiteTime(time: number | null | undefined): number | null {
   return typeof time === "number" && Number.isFinite(time) ? time : null;
 } /** Wall-span duration + tool histogram, e.g. `1.5 s bash×6`. */
@@ -316,6 +332,7 @@ export function deriveTrajectoryLayout(
           kind: "user",
           text: row.label,
           sourceSeq: row.seq,
+          ...sourceIdentity(row),
           opensTurn: true,
           timeSeconds: 0,
           startedAt: absTime,
@@ -328,6 +345,7 @@ export function deriveTrajectoryLayout(
         index,
         kind: "message",
         sourceSeq: row.seq,
+        ...sourceIdentity(row),
         text: row.label,
         recordId: `assistant\u0000${row.turnId ?? ""}\u0000${row.step ?? 0}`,
         timeSeconds: rowEndSeconds(row, absTime),

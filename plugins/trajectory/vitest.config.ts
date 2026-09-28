@@ -50,6 +50,13 @@ export default defineConfig({
     environment: "node",
     // Component tests opt into jsdom per file (`@vitest-environment jsdom`
     // pragma, the repo-wide pattern); jsdom resolves from packages/app.
-    include: ["server/**/*.test.ts", "shared/**/*.test.ts", "client/**/*.test.tsx"],
+    // `.test.ts` is matched alongside `.test.tsx` so non-JSX client modules
+    // (e.g. the header-button registration) cannot silently never run.
+    include: [
+      "server/**/*.test.ts",
+      "shared/**/*.test.ts",
+      "client/**/*.test.ts",
+      "client/**/*.test.tsx",
+    ],
   },
 });

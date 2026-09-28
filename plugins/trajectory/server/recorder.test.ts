@@ -30,7 +30,7 @@ describe("recorder", () => {
       agentId: "agent-1",
       turnId: "t1",
       item: {
-        type: "tool_call",
+        type: "tool_call" as const,
         callId: "c1",
         name: "shell",
         status: "running",
@@ -42,7 +42,7 @@ describe("recorder", () => {
       agentId: "agent-1",
       turnId: "t1",
       item: {
-        type: "tool_call",
+        type: "tool_call" as const,
         callId: "c1",
         name: "shell",
         status: "completed",
@@ -54,7 +54,7 @@ describe("recorder", () => {
       agentId: "agent-1",
       turnId: "t1",
       item: {
-        type: "tool_call",
+        type: "tool_call" as const,
         callId: "c2",
         name: "read",
         status: "running",
@@ -66,7 +66,7 @@ describe("recorder", () => {
       agentId: "agent-1",
       turnId: "t1",
       item: {
-        type: "tool_call",
+        type: "tool_call" as const,
         callId: "c2",
         name: "read",
         status: "failed",
@@ -102,7 +102,7 @@ describe("recorder", () => {
     const { store, recorder } = harness();
     recorder.turnStarted({ agentId: "agent-1", turnId: "t1" });
     const runningItem = {
-      type: "tool_call",
+      type: "tool_call" as const,
       callId: "c1",
       name: "shell",
       status: "running" as const,
@@ -110,7 +110,7 @@ describe("recorder", () => {
       detail: { type: "shell" as const, command: "ls" },
     };
     const doneItem = {
-      type: "tool_call",
+      type: "tool_call" as const,
       callId: "c1",
       name: "shell",
       status: "completed" as const,
@@ -131,7 +131,7 @@ describe("recorder", () => {
     recorder.timelineItem({
       agentId: "agent-1",
       item: {
-        type: "tool_call",
+        type: "tool_call" as const,
         callId: "c9",
         name: "read",
         status: "completed",

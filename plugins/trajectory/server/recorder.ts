@@ -116,7 +116,9 @@ function argSummary(detail: ToolCallDetail | undefined): string | null {
 /** Character count of the tool output as delivered to the agent, if present. */
 function toolOutputChars(detail: ToolCallDetail | undefined): number | null {
   if (!detail) return null;
-  const candidates: Array<string | undefined> = [];
+  // `in` narrows the KEY but not the VALUE across this union — one variant types
+  // `output` as unknown — so each candidate is read defensively.
+  const candidates: Array<unknown> = [];
   if ("output" in detail) candidates.push(detail.output);
   if ("content" in detail) candidates.push(detail.content);
   if ("result" in detail) candidates.push(detail.result);
@@ -301,6 +303,11 @@ export function createRecorder(options: {
             usage,
             // Length only — never the prompt or secret text itself.
             textLength: typeof item.text === "string" ? item.text.length : null,
+            // The source timeline item's identity, so the client can fetch this
+            // one record's text on demand. A foreign key, not content, so the
+            // length-only rule above is untouched. The SDK's timeline.item event
+            // carries no seq, so messageId is the only stable key available.
+            sourceMessageId: item.messageId ?? null,
           },
         });
         append({
@@ -320,7 +327,11 @@ export function createRecorder(options: {
           turn: resolveTurnForTool(agentId, input.turnId),
           step: null,
           agentId,
-          data: { textLength: typeof item.text === "string" ? item.text.length : null },
+          data: {
+            textLength: typeof item.text === "string" ? item.text.length : null,
+            // Foreign key, not content — see the assistant/message note.
+            sourceMessageId: item.messageId ?? item.clientMessageId ?? null,
+          },
         });
         return;
       }

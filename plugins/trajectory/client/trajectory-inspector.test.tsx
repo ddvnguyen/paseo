@@ -1,7 +1,8 @@
 /** Component tests for the row inspector (wide + compact) over static fixtures. */
 
 // @vitest-environment jsdom
-// @ts-expect-error repo pattern: expose act() support flag before react loads
+// Expose the act() support flag before react loads; no suppression is needed now
+// that the plugin tsconfig resolves real react types.
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";

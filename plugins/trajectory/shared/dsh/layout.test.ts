@@ -18,7 +18,6 @@ function row(
   return {
     seq,
     timeMs: Date.parse("2026-09-26T00:00:00Z") + seq * 1_000,
-    kind: overrides.kind,
     label: "unknown",
     durationMs: null,
     turnId: "t1",

@@ -87,8 +87,53 @@ describe("eventsToFoldRows", () => {
       }),
     ]);
     expect(rows[0]).toMatchObject({ kind: "user", label: "user message (5 chars)" });
-    expect(rows[0]).not.toHaveProperty("turnId");
+    // A row with no turn is null, not absent: TrajectoryFoldRow.turnId is a
+    // required nullable field, and layout.ts folds null-turn rows into the
+    // enclosing turn. The old conditional spread emitted `undefined` here, which
+    // is what failed the plugin typecheck.
+    expect(rows[0].turnId).toBeNull();
     expect(rows[1]).toMatchObject({ kind: "tool", isError: true });
-    expect(rows[1]).not.toHaveProperty("turnId");
+    expect(rows[1].turnId).toBeNull();
+  });
+  it("carries the source message id through to the fold row", () => {
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "user/message",
+        turn: "t1",
+        data: { textLength: 18, sourceMessageId: "m-1" },
+      }),
+    ]);
+    expect(rows[0].sourceMessageId).toBe("m-1");
+  });
+
+  it("leaves the identity absent for a row recorded without one", () => {
+    // Old rows have no id in their data blob; they must keep the length label.
+    const rows = eventsToFoldRows([
+      event({ seq: 1, type: "user/message", turn: "t1", data: { textLength: 18 } }),
+    ]);
+    expect(rows[0].sourceMessageId).toBeUndefined();
+  });
+
+  it("ignores a non-string or empty identity in the data blob", () => {
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "user/message",
+        turn: "t1",
+        data: { textLength: 1, sourceMessageId: 42 },
+      }),
+    ]);
+    expect(rows[0].sourceMessageId).toBeUndefined();
+
+    const empty = eventsToFoldRows([
+      event({
+        seq: 2,
+        type: "user/message",
+        turn: "t1",
+        data: { textLength: 1, sourceMessageId: "" },
+      }),
+    ]);
+    expect(empty[0].sourceMessageId).toBeUndefined();
   });
 });
