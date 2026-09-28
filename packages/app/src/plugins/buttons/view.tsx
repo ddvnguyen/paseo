@@ -1,3 +1,4 @@
+import { useRetainedPanelActive } from "@/components/retained-panel";
 import { PluginClientStateProvider } from "@getpaseo/plugin/client/host";
 import type {
   PluginButtonBehavior,
@@ -572,6 +573,19 @@ export function PluginComposerPills({
   ));
 }
 
+/**
+ * Workspace top-bar plugin buttons.
+ *
+ * The active check is the same one PluginPanelDialogHost uses, and for the same
+ * reason. The workspace deck keeps inactive workspaces MOUNTED (RetainedPanel)
+ * and only hides them with `display: "none"`, so without this gate every retained
+ * screen still rendered its own copy of these buttons. After a client-side
+ * workspace switch the DOM then held two matching buttons — one 0x0 inside the
+ * hidden panel — and anything that took the first match (a scripted click, a
+ * querySelectorAll scan, an assistive tool) hit the invisible one and did nothing,
+ * with no error to show for it. A retained screen must contribute nothing to the
+ * document it is not showing.
+ */
 export function PluginHeaderButtons({
   serverId,
   workspaceId,
@@ -579,6 +593,7 @@ export function PluginHeaderButtons({
   serverId: string;
   workspaceId: string;
 }) {
+  const active = useRetainedPanelActive();
   const entries = useButtons(serverId, workspaceId, null);
   const compact = useIsCompactFormFactor();
   const { width } = useWindowDimensions();
@@ -592,7 +607,7 @@ export function PluginHeaderButtons({
     (state: IconButtonChromeState) => headerButtonStyle(compact, state),
     [compact],
   );
-  if (entries.length === 0) return null;
+  if (entries.length === 0 || !active) return null;
   return (
     <View
       accessibilityRole="toolbar"
