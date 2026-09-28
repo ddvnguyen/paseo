@@ -222,4 +222,58 @@ describe("ledger cells", () => {
     );
     expect(document.querySelector('[data-testid="tool-success"]')).toBeNull();
   });
+  it("shows resolved text in place of the length label", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({ kind: "user", text: "user message (18 chars)" })}
+        compact={false}
+        theme={THEME}
+        resolvedText="run the test suite"
+      />,
+    );
+    expect(document.querySelector('[data-testid="cell-text"]')?.textContent).toBe(
+      "run the test suite",
+    );
+  });
+
+  it("keeps the length label when the text is not resolved", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({ kind: "user", text: "user message (18 chars)" })}
+        compact={false}
+        theme={THEME}
+      />,
+    );
+    expect(document.querySelector('[data-testid="cell-text"]')?.textContent).toBe(
+      "user message (18 chars)",
+    );
+  });
+
+  it("keeps the length label when the resolved text is empty", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({ kind: "user", text: "user message (18 chars)" })}
+        compact={false}
+        theme={THEME}
+        resolvedText=""
+      />,
+    );
+    expect(document.querySelector('[data-testid="cell-text"]')?.textContent).toBe(
+      "user message (18 chars)",
+    );
+  });
+
+  it("clips the resolved text to a single line", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({ kind: "user", text: "user message (18 chars)" })}
+        compact={false}
+        theme={THEME}
+        resolvedText="a very long prompt that will certainly overflow one line"
+      />,
+    );
+    expect(document.querySelector('[data-testid="cell-text"]')?.getAttribute("data-lines")).toBe(
+      "1",
+    );
+  });
 });

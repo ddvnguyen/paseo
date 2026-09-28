@@ -18,10 +18,16 @@ export function TrajectoryInspector(props: {
   row: TrajectoryFoldRow | null;
   compact: boolean;
   theme: PluginTheme;
+  /**
+   * Full text for this row when the on-demand resolver has it. Absent keeps the
+   * section out entirely rather than showing an empty panel, so a row with no
+   * fetchable text looks exactly as it did before the resolver existed.
+   */
+  resolvedText?: string | undefined;
   onClose: () => void;
   testID?: string;
 }) {
-  const { row, compact, theme, onClose, testID } = props;
+  const { row, compact, theme, resolvedText, onClose, testID } = props;
   if (row === null) return null;
   return (
     <View
@@ -51,6 +57,12 @@ export function TrajectoryInspector(props: {
       <Field label="duration" theme={theme} testID="inspector-duration">
         <Text style={valueStyles(theme)}>{formatDurationMillis(row.durationMs)}</Text>
       </Field>
+      {resolvedText !== undefined && resolvedText.length > 0 ? (
+        <Field label="text" theme={theme} testID="inspector-text">
+          {/* Not numberOfLines: the inspector is where the full payload is read. */}
+          <Text style={valueStyles(theme)}>{resolvedText}</Text>
+        </Field>
+      ) : null}
       {row.kind === "tool" ? (
         <>
           <Field label="output" theme={theme} testID="inspector-output">

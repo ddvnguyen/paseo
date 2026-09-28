@@ -159,14 +159,35 @@ function charsStyles(theme: PluginTheme): TextStyle {
 }
 
 /** One ledger cell row: kind tag + text + trailing metrics. */
+/**
+ * Resolved text wins when the resolver has it; otherwise the row's own label,
+ * which is a length summary for a recorded row. An absent or empty resolution
+ * is a normal state, not an error.
+ */
+function cellText(
+  cell: TrajectoryCellProps,
+  compact: boolean,
+  resolvedText: string | undefined,
+): string {
+  if (resolvedText !== undefined && resolvedText.length > 0) return resolvedText;
+  if (cell.previewMarkdown === undefined) return cell.text;
+  return `${cell.text} · ${compact ? "" : cell.previewMarkdown}`;
+}
+
 export function TrajectoryCellRow(props: {
   cell: TrajectoryCellProps;
   compact: boolean;
   theme: PluginTheme;
+  /**
+   * Text fetched on demand for this row, when the resolver has it. Absent means
+   * "not resolved yet" or "no key" — the row then keeps its `(N chars)` label,
+   * which is a normal state and not an error.
+   */
+  resolvedText?: string | undefined;
   onPress?: (cell: TrajectoryCellProps) => void;
   testID?: string;
 }) {
-  const { cell, compact, theme, onPress, testID } = props;
+  const { cell, compact, theme, resolvedText, onPress, testID } = props;
   const styles = useMemo(() => cellStyles(theme, cell.isError === true), [theme, cell.isError]);
   // Bound here (not inline in JSX): Pressable passes the press event as the
   // first argument, so an unbound handler would receive the event, not the cell.
@@ -192,10 +213,8 @@ export function TrajectoryCellRow(props: {
         </Text>
       ) : null}
       <View style={styles.body}>
-        <Text numberOfLines={1} style={styles.text}>
-          {cell.previewMarkdown === undefined
-            ? cell.text
-            : `${cell.text} · ${compact ? "" : cell.previewMarkdown}`}
+        <Text numberOfLines={1} style={styles.text} testID="cell-text">
+          {cellText(cell, compact, resolvedText)}
         </Text>
         <View style={styles.metrics}>
           {cell.kind === "message" ? (

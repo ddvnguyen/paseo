@@ -34,6 +34,17 @@ function lengthLabel(prefix: string, textLength: unknown): string {
   return typeof textLength === "number" ? `${prefix} (${textLength} chars)` : prefix;
 }
 
+/**
+ * The producer's timeline item seq, when it recorded one. It is an integer
+ * foreign key in a loosely-typed data blob, so it is read defensively: a row
+ * recorded before this existed, or a producer that never sent one, simply has
+ * no key and the client keeps showing the length.
+ */
+function timelineSeqOf(event: TrajectoryEvent): { sourceMessageId?: string } {
+  const value = (event.data as { sourceMessageId?: unknown }).sourceMessageId;
+  return typeof value === "string" && value.length > 0 ? { sourceMessageId: value } : {};
+}
+
 function toolLabel(name: string, argSummary: string | null): string {
   return argSummary === null ? name : `${name} · ${argSummary}`;
 }
@@ -47,6 +58,7 @@ function userRow(event: TrajectoryEvent): TrajectoryFoldRow {
     durationMs: null,
     turnId: event.turn,
     step: null,
+    ...timelineSeqOf(event),
   };
 }
 
@@ -59,6 +71,7 @@ function messageRow(event: TrajectoryEvent): TrajectoryFoldRow {
     durationMs: null,
     turnId: event.turn,
     step: event.step,
+    ...timelineSeqOf(event),
   };
 }
 

@@ -61,6 +61,14 @@ export interface TrajectoryCellProps {
   opensTurn?: boolean;
   /** Source session-event seq for cross-record navigation. */
   sourceSeq?: number;
+  /**
+   * Identity of the daemon timeline item this record came from, when the
+   * producer reported one. A foreign key, never content: the recorder stores it
+   * so the client can fetch this record's text on demand without the ledger ever
+   * holding the text. Absent on rows recorded before this existed, and absent
+   * when the producer sent no id — such rows keep their length label.
+   */
+  sourceMessageId?: string | null;
   /** Producer role and name from a user-role message or context injection. */
   messageSource?: unknown;
   /** A separator-only anchor for an auxiliary request with no visible record. */

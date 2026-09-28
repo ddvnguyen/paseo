@@ -303,6 +303,11 @@ export function createRecorder(options: {
             usage,
             // Length only — never the prompt or secret text itself.
             textLength: typeof item.text === "string" ? item.text.length : null,
+            // The source timeline item's identity, so the client can fetch this
+            // one record's text on demand. A foreign key, not content, so the
+            // length-only rule above is untouched. The SDK's timeline.item event
+            // carries no seq, so messageId is the only stable key available.
+            sourceMessageId: item.messageId ?? null,
           },
         });
         append({
@@ -322,7 +327,11 @@ export function createRecorder(options: {
           turn: resolveTurnForTool(agentId, input.turnId),
           step: null,
           agentId,
-          data: { textLength: typeof item.text === "string" ? item.text.length : null },
+          data: {
+            textLength: typeof item.text === "string" ? item.text.length : null,
+            // Foreign key, not content — see the assistant/message note.
+            sourceMessageId: item.messageId ?? item.clientMessageId ?? null,
+          },
         });
         return;
       }
