@@ -6,6 +6,12 @@ export type TrajectoryEventInput = Omit<TrajectoryEvent, "seq">;
 export interface ListByAgentOptions {
   /** Return events with `seq` strictly greater than this (paging cursor). */
   afterSeq?: number;
+  /**
+   * Return events with `seq` strictly less than this (reverse paging cursor).
+   * Combined with the tail-first page below, this is what makes history older
+   * than one page reachable at all.
+   */
+  beforeSeq?: number;
   /** Maximum number of rows to return. */
   limit: number;
 }
@@ -31,7 +37,7 @@ export interface TrajectoryStore {
    * `tool/result`.
    */
   listByAgent(agentId: string, opts: ListByAgentOptions): TrajectoryEvent[];
-  /** Newest seq for an agent, or 0 when it has no rows (pagination cursor). */
+  /** Newest seq for an agent, or 0 when it has no rows. */
   headSeq(agentId: string): number;
   close(): void;
 }

@@ -27,10 +27,11 @@ function readPage(
   // `z.input` types `limit` as optional because the schema carries a default;
   // readPage is the hand-off point, so the same default is applied here rather
   // than trusting a value the caller never sent.
-  input: { agentId: string; afterSeq?: number; limit?: number },
+  input: { agentId: string; afterSeq?: number; beforeSeq?: number; limit?: number },
 ): { events: ReturnType<TrajectoryStore["listByAgent"]>; headSeq: number } {
   const events = store.listByAgent(input.agentId, {
     afterSeq: input.afterSeq,
+    beforeSeq: input.beforeSeq,
     limit: input.limit ?? TRAJECTORY_PAGE_LIMIT_DEFAULT,
   });
   // `headSeq` describes the page that was just returned, so it is the page's

@@ -101,9 +101,13 @@ export function createNodeStore(path: string): TrajectoryStore {
         bounds.push("seq > ?");
         params.push(opts.afterSeq);
       }
+      if (opts.beforeSeq !== undefined) {
+        bounds.push("seq < ?");
+        params.push(opts.beforeSeq);
+      }
       params.push(opts.limit);
       // Tail-first: the inner query takes the NEWEST `limit` matching rows, and
-      // the outer query re-sorts them ascending. Both halves are load-bearing.
+      // the outer query returns them ascending. Both halves are load-bearing.
       // The inner ORDER BY decides WHICH rows come back; the outer one decides
       // the order the client folds them in. Returning the inner order verbatim
       // would hand the fold a newest-first page and mis-pair tool/call with

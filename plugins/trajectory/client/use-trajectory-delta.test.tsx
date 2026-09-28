@@ -74,6 +74,8 @@ interface ProbeView {
 }
 
 const probeRef: { current: ProbeView | null } = { current: null };
+/** The hook's `refresh()`, i.e. the kick that re-enters the drain loop. */
+const refreshRef: { current: (() => void) | null } = { current: null };
 
 function Probe({ agentId }: { agentId: string }) {
   const delta = useTrajectoryDelta(agentId);
@@ -83,6 +85,7 @@ function Probe({ agentId }: { agentId: string }) {
     headSeq: delta.headSeq,
     ...(delta.status === "error" ? { error: delta.error } : {}),
   };
+  refreshRef.current = delta.refresh;
   return React.createElement("span", { "data-testid": "probe" });
 }
 
@@ -152,6 +155,7 @@ beforeEach(() => {
   rpcHandlers.current = {};
   rpcFns.current = {};
   probeRef.current = null;
+  refreshRef.current = null;
 });
 
 afterEach(async () => {

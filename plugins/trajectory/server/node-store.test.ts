@@ -106,6 +106,46 @@ describe("node store (db-assigned seq)", () => {
     }
   });
 
+  test("beforeSeq pages backwards without overlapping the forward page", () => {
+    const store = createNodeStore(":memory:");
+    try {
+      for (let i = 0; i < 10; i++) store.append(input());
+      const newest = store.listByAgent("agent-1", { limit: 4 });
+      expect(newest.map((row) => row.seq)).toEqual([7, 8, 9, 10]);
+
+      const older = store.listByAgent("agent-1", {
+        beforeSeq: newest[0].seq,
+        limit: 4,
+      });
+      expect(older.map((row) => row.seq)).toEqual([3, 4, 5, 6]);
+      // Strictly older, no overlap at the boundary.
+      expect(older.every((row) => row.seq < newest[0].seq)).toBe(true);
+
+      const olderStill = store.listByAgent("agent-1", {
+        beforeSeq: older[0].seq,
+        limit: 4,
+      });
+      expect(olderStill.map((row) => row.seq)).toEqual([1, 2]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("afterSeq and beforeSeq compose into one bounded window", () => {
+    const store = createNodeStore(":memory:");
+    try {
+      for (let i = 0; i < 10; i++) store.append(input());
+      const page = store.listByAgent("agent-1", {
+        afterSeq: 3,
+        beforeSeq: 8,
+        limit: 100,
+      });
+      expect(page.map((row) => row.seq)).toEqual([4, 5, 6, 7]);
+    } finally {
+      store.close();
+    }
+  });
+
   test("events of another agent are excluded", () => {
     const store = createNodeStore(":memory:");
     try {

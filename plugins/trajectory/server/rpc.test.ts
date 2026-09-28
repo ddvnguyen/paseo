@@ -170,6 +170,31 @@ describe("trajectory read handlers", () => {
     expect(next.events.map((event) => event.seq)).toEqual([4, 5]);
   });
 
+  test("beforeSeq reaches history older than one page", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      for (let i = 0; i < 10; i++) {
+        store.append({
+          time: "2026-09-26T00:00:00.000Z",
+          type: "assistant/message",
+          turn: "t1",
+          step: null,
+          agentId: "agent-1",
+          data: {},
+        });
+      }
+      const newest = await handleList(store)({ agentId: "agent-1", limit: 4 });
+      const older = await handleList(store)({
+        agentId: "agent-1",
+        beforeSeq: newest.events[0].seq,
+        limit: 100,
+      });
+      expect(older.events.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5, 6]);
+    } finally {
+      store.close();
+    }
+  });
+
   test("subscribe serves the same paged read as changes (push-reserved name)", async () => {
     const store = createNodeStore(":memory:");
     const base = Date.parse("2026-09-26T00:00:00Z");
