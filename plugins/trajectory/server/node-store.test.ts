@@ -237,3 +237,64 @@ describe("node store (db-assigned seq)", () => {
 });
 
 const fileDir = mkdtempSync(join(tmpdir(), "trajectory-store-test-"));
+
+/**
+ * The per-agent cursor invariant, as behaviour.
+ *
+ * S1's read path is `WHERE agent_id = ? AND seq > cursor`, drained until an
+ * empty page. It only walks every row exactly once if `seq` is monotonic AND
+ * unique WITHIN an agent, and only stays inside one agent's ledger if the
+ * agent_id predicate is in the query. Neither is asserted anywhere else in this
+ * file, and a schema refactor — a composite `PRIMARY KEY (agent_id, seq)` or a
+ * per-agent counter — is the more natural shape for a per-agent log, so it is
+ * not a hypothetical change.
+ *
+ * Expressed as behaviour on purpose: the DDL below is a tripwire, but this is
+ * the half that would actually catch a cursor regression. Both agents write
+ * throughout the drain, so a global cursor or a per-agent seq cannot pass.
+ */
+describe("per-agent cursor invariant", () => {
+  const A = "agent-a";
+  const B = "agent-b";
+
+  test("draining one agent is complete, duplicate-free, and never leaks the other", () => {
+    const store = createNodeStore(":memory:");
+    try {
+      // Interleaved from the start: the global seq space is shared, so each
+      // agent occupies a sparse block of it rather than a contiguous one.
+      const writtenA: number[] = [];
+      for (let i = 0; i < 20; i++) {
+        writtenA.push(store.append(input({ agentId: A })).seq);
+        store.append(input({ agentId: B }));
+      }
+
+      // Drain A with the cursor, three rows at a time, while B keeps writing
+      // between every page. A global cursor would be dragged forward by B's
+      // writes and skip A's rows; a per-agent seq would restart under A.
+      const drained: { seq: number; agentId: string | null }[] = [];
+      let cursor = 0;
+      for (let page = 0; page < 200; page++) {
+        const rows = store.listByAgent(A, { afterSeq: cursor, limit: 3, direction: "oldest" });
+        if (rows.length === 0) break;
+        drained.push(...rows.map((row) => ({ seq: row.seq, agentId: row.agentId })));
+        cursor = rows[rows.length - 1].seq;
+        store.append(input({ agentId: B }));
+      }
+
+      const drainedSeqs = drained.map((row) => row.seq);
+      expect({
+        // Every row A ever wrote, each exactly once, in order.
+        coveredExactlyOnce:
+          JSON.stringify([...drainedSeqs].sort((x, y) => x - y)) ===
+          JSON.stringify([...writtenA].sort((x, y) => x - y)),
+        duplicates: drainedSeqs.length - new Set(drainedSeqs).size,
+        // The agent predicate is in the query: no foreign row, ever.
+        foreignRows: drained.filter((row) => row.agentId !== A).length,
+        // Ascending, so the cursor cannot revisit or skip.
+        ascending: drainedSeqs.every((seq, index) => index === 0 || drainedSeqs[index - 1] < seq),
+      }).toEqual({ coveredExactlyOnce: true, duplicates: 0, foreignRows: 0, ascending: true });
+    } finally {
+      store.close();
+    }
+  });
+});
