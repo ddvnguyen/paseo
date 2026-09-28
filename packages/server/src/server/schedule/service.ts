@@ -133,7 +133,15 @@ function countCompletedRuns(schedule: StoredSchedule): number {
 function shouldArchiveScheduleRunWorkspace(input: {
   agentId: string | null;
   archiveOnFinish?: boolean;
+  /**
+   * This run REUSED a workspace named by the target rather than provisioning one.
+   * Never archive a shared workspace: whichever run finishes first would delete it
+   * out from under every other run. Checked here, not only at the reuse site, so
+   * the crash-recovery path (which also archives) cannot take it out either.
+   */
+  reusedWorkspace?: boolean;
 }): boolean {
+  if (input.reusedWorkspace) return false;
   return input.agentId === null || (input.archiveOnFinish ?? true);
 }
 
@@ -238,6 +246,12 @@ export interface ScheduleServiceOptions {
     input: ScheduleWorkspaceCreateInput,
   ) => Promise<CreatePaseoWorktreeWorkflowResult>;
   archiveWorkspace: (workspaceId: string) => Promise<void>;
+  /**
+   * Resolve an existing workspace for target reuse. Returns null when the id is
+   * unknown or the workspace is gone, so a stale `workspaceId` degrades to the
+   * current provision-a-new-workspace behaviour instead of failing every run.
+   */
+  getWorkspace?: (workspaceId: string) => Promise<PersistedWorkspaceRecord | null>;
   now?: () => Date;
   runner?: (schedule: StoredSchedule, runId: string) => Promise<ScheduleExecutionResult>;
 }
@@ -255,6 +269,7 @@ export class ScheduleService {
     input: ScheduleWorkspaceCreateInput,
   ) => Promise<CreatePaseoWorktreeWorkflowResult>;
   private readonly archiveWorkspace: (workspaceId: string) => Promise<void>;
+  private readonly getWorkspace?: (workspaceId: string) => Promise<PersistedWorkspaceRecord | null>;
   private readonly now: () => Date;
   private readonly runner: (
     schedule: StoredSchedule,
@@ -272,6 +287,7 @@ export class ScheduleService {
     this.createDirectoryWorkspace = options.createDirectoryWorkspace;
     this.createPaseoWorktreeWorkspace = options.createPaseoWorktreeWorkspace;
     this.archiveWorkspace = options.archiveWorkspace;
+    this.getWorkspace = options.getWorkspace;
     this.now = options.now ?? (() => new Date());
     this.runner = options.runner ?? ((schedule, runId) => this.executeSchedule(schedule, runId));
   }
@@ -609,6 +625,9 @@ export class ScheduleService {
           shouldArchiveScheduleRunWorkspace({
             agentId: runningRun.agentId,
             archiveOnFinish: updated.target.config.archiveOnFinish,
+            reusedWorkspace:
+              updated.target.config.workspaceId != null &&
+              runningRun.workspaceId === updated.target.config.workspaceId,
           })
         ) {
           interruptedWorkspaces.push({
@@ -949,7 +968,12 @@ export class ScheduleService {
     } finally {
       if (
         workspace &&
-        shouldArchiveScheduleRunWorkspace({ agentId, archiveOnFinish: config.archiveOnFinish })
+        shouldArchiveScheduleRunWorkspace({
+          agentId,
+          archiveOnFinish: config.archiveOnFinish,
+          reusedWorkspace:
+            config.workspaceId != null && workspace.workspaceId === config.workspaceId,
+        })
       ) {
         try {
           await this.archiveWorkspace(workspace.workspaceId);
@@ -973,6 +997,43 @@ export class ScheduleService {
     config: Extract<ScheduleTarget, { type: "new-agent" }>["config"],
     prompt: string,
   ): Promise<PersistedWorkspaceRecord> {
+    // Explicit reuse: name an existing workspace instead of provisioning one. Every
+    // run of a schedule otherwise got its own workspace, so a 288-run schedule left
+    // 288 directories and no single place to see the schedule's history.
+    //
+    // SAFETY: only valid when the schedule does NOT archive on finish. A shared
+    // workspace archived by whichever run finishes first would vanish out from
+    // under every other run, so the unsafe combination is refused rather than
+    // trusted — config is not a safety mechanism.
+    if (config.workspaceId) {
+      if (config.archiveOnFinish !== false) {
+        throw new ScheduleTargetGoneError(
+          `workspaceId reuse requires archiveOnFinish: false — a shared workspace would be ` +
+            `archived by the first run that finishes (schedule target ${config.workspaceId})`,
+        );
+      }
+      const existing = this.getWorkspace
+        ? await this.getWorkspace(config.workspaceId)
+        : null;
+      if (existing) {
+        // Cwd must match: the agent inherits workspace.cwd, and a reused workspace
+        // whose cwd drifted would silently run the schedule in the wrong directory.
+        const configuredCwd = config.cwd?.replace(/\/+$/, "");
+        const workspaceCwd = existing.cwd?.replace(/\/+$/, "");
+        if (configuredCwd && workspaceCwd && configuredCwd !== workspaceCwd) {
+          throw new ScheduleTargetGoneError(
+            `workspaceId ${config.workspaceId} has cwd ${existing.cwd}, which does not match the ` +
+              `target's ${config.cwd}`,
+          );
+        }
+        return existing;
+      }
+      this.logger.warn(
+        { workspaceId: config.workspaceId },
+        "schedule workspace reuse: id not found, provisioning a new workspace instead",
+      );
+    }
+
     const firstAgentContext = { prompt };
     switch (config.isolation ?? "local") {
       case "local":
