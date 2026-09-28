@@ -557,7 +557,11 @@ export function AdaptiveModalSheet({
   const desktopCardStyle = useMemo(
     () => [
       styles.desktopCard,
-      desktopHeight != null && { height: desktopHeight },
+      // An explicit height also governs the ceiling, otherwise the card's own
+      // maxHeight: "85%" silently clamps a caller asking for more and the sheet
+      // never fills the viewport. A caller that passes no height — or the same
+      // "85%" the default already was — is byte-identical to before.
+      desktopHeight != null && { height: desktopHeight, maxHeight: desktopHeight },
       desktopMaxWidth != null && { maxWidth: desktopMaxWidth },
     ],
     [desktopMaxWidth, desktopHeight],
