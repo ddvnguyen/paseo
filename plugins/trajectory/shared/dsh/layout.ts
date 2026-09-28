@@ -347,7 +347,11 @@ export function deriveTrajectoryLayout(
         sourceSeq: row.seq,
         ...sourceIdentity(row),
         text: row.label,
-        recordId: `assistant\u0000${row.turnId ?? ""}\u0000${row.step ?? 0}`,
+        // The ledger seq disambiguates. recorder.ts yields step=null when no
+        // step is open, so two assistant messages in one turn would otherwise
+        // share the same recordId — and the virtual-row projection drops a
+        // duplicate key, silently losing a message.
+        recordId: `assistant\u0000${row.turnId ?? ""}\u0000${row.step ?? 0}\u0000${row.seq}`,
         timeSeconds: rowEndSeconds(row, absTime),
         startedAt: absTime,
       };

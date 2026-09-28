@@ -99,6 +99,7 @@ const listProbe = vi.hoisted(() => ({
 }));
 
 import { LedgerScreen } from "./ledger-screen.js";
+import type { TrajectoryFoldRow } from "../shared/dsh/layout.js";
 import { FIXTURE_OPEN_CALLS, FIXTURE_ROWS, FIXTURE_TURN_NUMBERS } from "./fixtures.js";
 
 const THEME = {
@@ -135,17 +136,50 @@ afterEach(() => {
 });
 
 function render(overrides: { compact?: boolean } = {}): void {
+  renderRows(FIXTURE_ROWS, overrides);
+}
+
+/**
+ * Re-render with an explicit row set, so a test can prepend history.
+ * `turnNumbers` defaults to the fixture map; pass `null` to let numbering be
+ * derived from row order, which is the real live-data case (turnNumbersFor
+ * returns only explicit entries, so a map that omits a turnId drops it).
+ */
+function renderRows(
+  rows: readonly TrajectoryFoldRow[],
+  overrides: { compact?: boolean; turnNumbers?: ReadonlyMap<string, number> | null } = {},
+): void {
+  const turnNumbers =
+    overrides.turnNumbers === null ? undefined : (overrides.turnNumbers ?? FIXTURE_TURN_NUMBERS);
   act(() => {
     root.render(
       <LedgerScreen
-        rows={FIXTURE_ROWS}
-        turnNumbers={FIXTURE_TURN_NUMBERS}
+        rows={rows}
+        turnNumbers={turnNumbers}
         openCallIds={FIXTURE_OPEN_CALLS}
         compact={overrides.compact === true}
         theme={THEME}
       />,
     );
   });
+}
+
+const BASE_MS = Date.parse("2026-09-26T00:00:00Z");
+
+/** A minimal row, so a test can build a turn set with distinct identities. */
+function foldRow(
+  seq: number,
+  overrides: Partial<TrajectoryFoldRow> & Pick<TrajectoryFoldRow, "kind">,
+): TrajectoryFoldRow {
+  return {
+    seq,
+    timeMs: BASE_MS + seq * 1_000,
+    label: "unknown",
+    durationMs: null,
+    turnId: "t1",
+    step: null,
+    ...overrides,
+  };
 }
 
 describe("ledger screen", () => {
@@ -382,5 +416,58 @@ describe("ledger screen tail-follow", () => {
     const beforeTicks = listProbe.renders;
     for (let i = 0; i < 5; i++) driveScroll(AT_BOTTOM);
     expect({ reRenders: listProbe.renders - beforeTicks }).toEqual({ reRenders: 0 });
+  });
+});
+
+/**
+ * Turn identity must be content-derived. A windowed list keys rows by
+ * identity, so a positional key ("turn-2") that means a different turn after
+ * older history is prepended remounts every chrome row and re-points the fold
+ * state at the wrong turn. S4 prepends history, so this is its prerequisite.
+ */
+describe("ledger screen turn identity", () => {
+  const TURN_A: TrajectoryFoldRow[] = [
+    foldRow(0, { kind: "user", turnId: "a", label: "turn a prompt" }),
+    foldRow(1, { kind: "message", turnId: "a", step: 1, label: "turn a answer" }),
+  ];
+  const TURN_X: TrajectoryFoldRow[] = [
+    foldRow(3, { kind: "user", turnId: "x", label: "older turn x prompt" }),
+  ];
+
+  const cellLabels = (): string[] =>
+    [...document.querySelectorAll('[data-testid="cell-text"]')].map(
+      (node) => node.textContent ?? "",
+    );
+
+  it("an open turn stays open when older history is prepended", () => {
+    renderRows(TURN_A, { turnNumbers: null });
+    act(() =>
+      (document.querySelector('[data-testid="turn-header-1"]') as HTMLButtonElement).click(),
+    );
+    expect(cellLabels()).toContain("turn a prompt");
+
+    // Older history lands above. Turn A is now the second turn, but it is the
+    // same turn: its open state and its row identity have to follow it.
+    renderRows([...TURN_X, ...TURN_A], { turnNumbers: null });
+    expect(cellLabels()).toContain("turn a prompt");
+  });
+
+  it("two assistant messages with a null step in one turn do not collide", () => {
+    // recorder.ts yields step=null when no step is open, so both of these get
+    // the same recordId: `assistant\0<turn>\00`. The virtual-row projection
+    // keys on recordId and drops a duplicate key, so one message disappears.
+    const twoMessages: TrajectoryFoldRow[] = [
+      foldRow(0, { kind: "user", turnId: "t1", label: "prompt" }),
+      foldRow(1, { kind: "message", turnId: "t1", step: null, label: "first answer" }),
+      foldRow(2, { kind: "message", turnId: "t1", step: null, label: "second answer" }),
+    ];
+    renderRows(twoMessages, { turnNumbers: null });
+    act(() =>
+      (document.querySelector('[data-testid="toggle-turns"]') as HTMLButtonElement).click(),
+    );
+
+    const labels = cellLabels();
+    expect(labels).toContain("first answer");
+    expect(labels).toContain("second answer");
   });
 });
