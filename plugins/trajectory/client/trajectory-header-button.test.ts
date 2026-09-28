@@ -13,6 +13,9 @@ interface FakeButton {
   onPress: () => void | Promise<void>;
 }
 
+/** Mutable agent list so a press can observe a changed active agent. */
+const agentLists: { current: Array<Record<string, unknown>> } = { current: [] };
+
 interface Harness {
   client: PluginClientContext;
   buttons: FakeButton[];
@@ -68,12 +71,12 @@ function harness(
     paseo: {
       agents: {
         // Real entries are `{ agent, project }`; the harness passes bare agents.
-        list: async () => ({
-          entries: (options.agents ?? []).map((snapshot) => ({
-            agent: snapshot,
-            project: null,
-          })),
-        }),
+        list: async () => {
+          const agents = options.agents === undefined ? agentLists.current : options.agents;
+          return {
+            entries: agents.map((snapshot) => ({ agent: snapshot, project: null })),
+          };
+        },
       },
       workspaces: {
         list: () =>
@@ -268,5 +271,57 @@ describe("registerTrajectoryHeaderButton", () => {
     expect(h.buttons).toHaveLength(0);
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+  it("opens the NEW active agent after the active agent changes", async () => {
+    // A1 was unverified here: the agent is resolved at press time, so a switch of
+    // which agent is active must be reflected without re-registering the button.
+    const h = harness();
+    registerTrajectoryHeaderButton(h.client);
+    await settle();
+    h.emitSnapshot(["w1"]);
+
+    agentLists.current = [agent({ id: "first", status: "idle" })];
+    await h.buttons[0].onPress();
+    expect(h.opened[0].options).toMatchObject({ agentId: "first" });
+
+    // The user works in a different agent now; the same button must follow.
+    agentLists.current = [
+      agent({ id: "first", status: "idle", updatedAt: "2026-01-01T00:00:00Z" }),
+      agent({ id: "second", status: "running", updatedAt: "2026-01-02T00:00:00Z" }),
+    ];
+    await h.buttons[0].onPress();
+
+    expect(h.opened.at(-1)?.options).toMatchObject({ agentId: "second" });
+  });
+
+  it("surfaces a named error, not silence, when the workspace has no agent", async () => {
+    const h = harness();
+    registerTrajectoryHeaderButton(h.client);
+    await settle();
+    h.emitSnapshot(["w1"]);
+
+    agentLists.current = [];
+    // The host toasts a REJECTION, so the error must reject rather than hang.
+    await expect(h.buttons[0].onPress()).rejects.toThrow(
+      /No agent in workspace w1 to open a trajectory for/,
+    );
+    expect(h.opened).toHaveLength(0);
+  });
+
+  it("rejects rather than hanging when the agent list never settles", async () => {
+    // This is the r13 wedge: the host clears a button's `pending` flag only when
+    // the action settles, so a list that never resolves used to leave the button
+    // dead for the session with no toast. A timeout guarantees settlement.
+    const h = harness();
+    registerTrajectoryHeaderButton(h.client);
+    await settle();
+    h.emitSnapshot(["w1"]);
+    (h.client.paseo.agents as unknown as { list: () => Promise<never> }).list = () =>
+      new Promise<never>(() => undefined);
+
+    await expect(h.buttons[0].onPress()).rejects.toThrow(
+      /Timed out after \d+ms resolving an agent/,
+    );
+    expect(h.opened).toHaveLength(0);
   });
 });
