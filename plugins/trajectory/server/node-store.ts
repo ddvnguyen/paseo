@@ -106,18 +106,18 @@ export function createNodeStore(path: string): TrajectoryStore {
         params.push(opts.beforeSeq);
       }
       params.push(opts.limit);
-      // Tail-first: the inner query takes the NEWEST `limit` matching rows, and
-      // the outer query returns them ascending. Both halves are load-bearing.
-      // The inner ORDER BY decides WHICH rows come back; the outer one decides
-      // the order the client folds them in. Returning the inner order verbatim
-      // would hand the fold a newest-first page and mis-pair tool/call with
-      // tool/result, because events-to-rows.ts never sorts.
+      // The inner query picks WHICH end of the window comes back; the outer one
+      // fixes the order it arrives in. Both halves are load-bearing, and the
+      // order is always ascending regardless of direction: the client fold
+      // walks events in arrival order and never sorts, so a newest-first page
+      // would mis-pair tool/call with tool/result.
+      const pick = opts.direction === "oldest" ? "ASC" : "DESC";
       const stmt = db.prepare(
         `SELECT seq, time, type, turn, step, agent_id AS agentId, data FROM (
            SELECT seq, time, type, turn, step, agent_id, data
            FROM trajectory_events
            WHERE ${bounds.join(" AND ")}
-           ORDER BY seq DESC
+           ORDER BY seq ${pick}
            LIMIT ?
          ) ORDER BY seq ASC`,
       );

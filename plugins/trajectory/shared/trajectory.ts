@@ -44,9 +44,15 @@ export const TRAJECTORY_PAGE_LIMIT_DEFAULT = 500;
  * never sorts, and a newest-first page mis-pairs `tool/call` with
  * `tool/result`.
  *
- * WHICH rows come back: the NEWEST rows matching the bounds. A live ledger is
- * watched at its head, so a page that spends its whole budget on the oldest
- * events strands everything after it.
+ * WHICH rows come back is per-RPC, because the two directions want opposite
+ * ends of the window:
+ *
+ * - `list` takes the NEWEST rows matching the bounds. It is the initial open
+ *   (and load-older once that lands), and a live ledger is watched at its head.
+ * - `changes` takes the OLDEST rows above `afterSeq`, so the forward drain
+ *   steps from the cursor one page at a time. Taking the newest instead
+ *   consumes a backlog larger than a page from the end and strands its middle.
+ * - `subscribe` is payload-identical to `changes`, so it matches `changes`.
  *
  * `headSeq` is the page's own last `seq`: the cursor to send as `afterSeq` to
  * continue forward. It is deliberately NOT the agent's global `MAX(seq)`,

@@ -394,4 +394,64 @@ describe("useTrajectoryDelta against the real store (backlog paging)", () => {
       store.close();
     }
   });
+
+  /**
+   * A backlog that arrives AFTER the ledger has parked, which is the live case
+   * the drain loop exists for. The two tests above start from a fresh open,
+   * where `list` returns the tail and the next `changes` is empty, so the drain
+   * never has to walk. This one forces it to.
+   *
+   * A forward drain must step forward one page at a time. If `changes` selects
+   * the newest N above the cursor instead of the oldest N, a backlog larger
+   * than one page is consumed from the end: the client receives the last page,
+   * parks on it, and the middle of the backlog is unreachable by any
+   * `seq > afterSeq` poll. That is the same torn ledger, in a different place.
+   */
+  it("drains a backlog that arrives after parking, without skipping its middle", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      seed(store, TOTAL, "a1");
+      const { received } = wireRealStore(store);
+
+      await renderProbe("a1");
+      const opened = await settleUntil(settledLive);
+      expect({ openedRange: range(received), headSeq: opened.headSeq }).toEqual({
+        openedRange: "701..1200",
+        headSeq: TOTAL,
+      });
+
+      // The ledger goes quiet, then a backlog lands out of band.
+      await quietSettle(50);
+      const backlog = 1000;
+      seed(store, backlog, "a1");
+      const trueHead = store.headSeq("a1");
+      expect(trueHead).toBe(TOTAL + backlog);
+
+      // One kick, exactly as a manual refresh or an agent update would do it.
+      await act(async () => {
+        refreshRef.current?.();
+      });
+      const drained = await settleUntil((current) => current.headSeq === trueHead);
+
+      // Every row of the backlog arrived, and the window has no hole in it.
+      const backlogDelivered = received.filter((seq) => seq > TOTAL).length;
+      expect({
+        backlogDelivered,
+        expectedBacklog: backlog,
+        deliveredRange: range(received),
+        holes: holesIn(received).length,
+        headSeq: drained.headSeq,
+        trueHead,
+      }).toEqual({
+        backlogDelivered: backlog,
+        expectedBacklog: backlog,
+        deliveredRange: `701..${trueHead}`,
+        holes: 0,
+        headSeq: trueHead,
+        trueHead,
+      });
+    } finally {
+      store.close();
+    }
+  });
 });

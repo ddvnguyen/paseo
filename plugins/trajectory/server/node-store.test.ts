@@ -42,7 +42,7 @@ describe("node store (db-assigned seq)", () => {
       const appended = store.append(
         input({ data: { provider: "claude", usage: { inputTokens: 10 } } }),
       );
-      const rows = store.listByAgent("agent-1", { limit: 10 });
+      const rows = store.listByAgent("agent-1", { limit: 10, direction: "newest" });
       expect(rows).toHaveLength(1);
       const row = rows[0];
       // Fix-1 regression: snake_case columns must surface as camelCase.
@@ -63,7 +63,11 @@ describe("node store (db-assigned seq)", () => {
       const a = store.append(input());
       const b = store.append(input());
       const c = store.append(input());
-      const page = store.listByAgent("agent-1", { afterSeq: a.seq, limit: 10 });
+      const page = store.listByAgent("agent-1", {
+        afterSeq: a.seq,
+        limit: 10,
+        direction: "oldest",
+      });
       expect(page).toHaveLength(2);
       expect(page[0].seq).toBe(b.seq);
       expect(page[1].seq).toBe(c.seq);
@@ -85,7 +89,7 @@ describe("node store (db-assigned seq)", () => {
     const store = createNodeStore(":memory:");
     try {
       for (let i = 0; i < 10; i++) store.append(input());
-      const page = store.listByAgent("agent-1", { limit: 4 });
+      const page = store.listByAgent("agent-1", { limit: 4, direction: "newest" });
       // Newest four of ten, ascending: 7,8,9,10 — never 1,2,3,4.
       expect(page.map((row) => row.seq)).toEqual([7, 8, 9, 10]);
       expect(page[page.length - 1].seq).toBe(store.headSeq("agent-1"));
@@ -98,9 +102,61 @@ describe("node store (db-assigned seq)", () => {
     const store = createNodeStore(":memory:");
     try {
       for (let i = 0; i < 3; i++) store.append(input());
-      expect(store.listByAgent("agent-1", { limit: 1000 }).map((row) => row.seq)).toEqual([
-        1, 2, 3,
-      ]);
+      expect(
+        store.listByAgent("agent-1", { limit: 1000, direction: "newest" }).map((row) => row.seq),
+      ).toEqual([1, 2, 3]);
+    } finally {
+      store.close();
+    }
+  });
+
+  /**
+   * The one property the two callers disagree about, pinned at the store: the
+   * same bounds and limit return opposite ENDS depending on `direction`. Both
+   * return ascending, so the difference is which rows, never the order.
+   */
+  test("direction picks which end of the window comes back, order stays ascending", () => {
+    const store = createNodeStore(":memory:");
+    try {
+      for (let i = 0; i < 10; i++) store.append(input());
+
+      // Forward drain: step from the cursor, do not jump to the end.
+      expect(
+        store
+          .listByAgent("agent-1", { afterSeq: 4, limit: 3, direction: "oldest" })
+          .map((r) => r.seq),
+      ).toEqual([5, 6, 7]);
+      expect(
+        store
+          .listByAgent("agent-1", { afterSeq: 7, limit: 3, direction: "oldest" })
+          .map((r) => r.seq),
+      ).toEqual([8, 9, 10]);
+
+      // Initial open: show the head of the ledger.
+      expect(
+        store.listByAgent("agent-1", { limit: 3, direction: "newest" }).map((r) => r.seq),
+      ).toEqual([8, 9, 10]);
+      expect(
+        store
+          .listByAgent("agent-1", { afterSeq: 4, limit: 3, direction: "newest" })
+          .map((r) => r.seq),
+      ).toEqual([8, 9, 10]);
+
+      // Draining "oldest" until empty visits every row exactly once, which is
+      // what a tail-first page cannot do.
+      const seen: number[] = [];
+      let cursor = 0;
+      for (let guard = 0; guard < 20; guard++) {
+        const page = store.listByAgent("agent-1", {
+          afterSeq: cursor,
+          limit: 3,
+          direction: "oldest",
+        });
+        if (page.length === 0) break;
+        seen.push(...page.map((r) => r.seq));
+        cursor = page[page.length - 1].seq;
+      }
+      expect(seen).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     } finally {
       store.close();
     }
@@ -110,12 +166,13 @@ describe("node store (db-assigned seq)", () => {
     const store = createNodeStore(":memory:");
     try {
       for (let i = 0; i < 10; i++) store.append(input());
-      const newest = store.listByAgent("agent-1", { limit: 4 });
+      const newest = store.listByAgent("agent-1", { limit: 4, direction: "newest" });
       expect(newest.map((row) => row.seq)).toEqual([7, 8, 9, 10]);
 
       const older = store.listByAgent("agent-1", {
         beforeSeq: newest[0].seq,
         limit: 4,
+        direction: "newest",
       });
       expect(older.map((row) => row.seq)).toEqual([3, 4, 5, 6]);
       // Strictly older, no overlap at the boundary.
@@ -124,6 +181,7 @@ describe("node store (db-assigned seq)", () => {
       const olderStill = store.listByAgent("agent-1", {
         beforeSeq: older[0].seq,
         limit: 4,
+        direction: "newest",
       });
       expect(olderStill.map((row) => row.seq)).toEqual([1, 2]);
     } finally {
@@ -139,6 +197,7 @@ describe("node store (db-assigned seq)", () => {
         afterSeq: 3,
         beforeSeq: 8,
         limit: 100,
+        direction: "newest",
       });
       expect(page.map((row) => row.seq)).toEqual([4, 5, 6, 7]);
     } finally {
@@ -151,7 +210,7 @@ describe("node store (db-assigned seq)", () => {
     try {
       store.append(input());
       store.append(input({ agentId: "agent-2", turn: null }));
-      const rows = store.listByAgent("agent-1", { limit: 10 });
+      const rows = store.listByAgent("agent-1", { limit: 10, direction: "newest" });
       expect(rows).toHaveLength(1);
       expect(rows[0].agentId).toBe("agent-1");
     } finally {
@@ -169,7 +228,7 @@ describe("node store (db-assigned seq)", () => {
     try {
       const after = second.append(input()).seq;
       expect(after).toBeGreaterThan(lastBefore);
-      const all = second.listByAgent("agent-1", { limit: 100 });
+      const all = second.listByAgent("agent-1", { limit: 100, direction: "newest" });
       expect(all).toHaveLength(2);
     } finally {
       second.close();

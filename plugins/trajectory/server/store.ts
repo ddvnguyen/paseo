@@ -14,6 +14,20 @@ export interface ListByAgentOptions {
   beforeSeq?: number;
   /** Maximum number of rows to return. */
   limit: number;
+  /**
+   * Which end of the bounded window to take when it holds more than `limit`.
+   * Required, because the two callers want opposite ends and a shared default
+   * is how one caller's policy silently becomes the other's:
+   *
+   * - `"newest"` — the last `limit` rows in the window. For `trajectory.list`,
+   *   the initial open and load-older: a live ledger is watched at its head.
+   * - `"oldest"` — the first `limit` rows in the window. For
+   *   `trajectory.changes`, the forward drain: stepping forward from the
+   *   cursor one page at a time is what keeps a backlog larger than a page
+   *   hole-free. Taking the newest instead consumes the backlog from the end
+   *   and strands everything in between.
+   */
+  direction: "newest" | "oldest";
 }
 
 /**
@@ -29,12 +43,10 @@ export interface TrajectoryStore {
   /**
    * Ascending-`seq` page of one agent's events; `data` is parsed JSON.
    *
-   * Tail-first: the page is the NEWEST `limit` rows matching the bounds, then
-   * returned ascending. A live ledger is watched at its head, so a full page
-   * must not spend its budget on the oldest events. The order matters as much
-   * as the selection — `client/events-to-rows.ts` folds in arrival order and
-   * never sorts, and a newest-first page would mis-pair `tool/call` with
-   * `tool/result`.
+   * Which rows come back is `opts.direction`; the order they come back in is
+   * always ascending. The order matters as much as the selection —
+   * `client/events-to-rows.ts` folds in arrival order and never sorts, and a
+   * newest-first page would mis-pair `tool/call` with `tool/result`.
    */
   listByAgent(agentId: string, opts: ListByAgentOptions): TrajectoryEvent[];
   /** Newest seq for an agent, or 0 when it has no rows. */

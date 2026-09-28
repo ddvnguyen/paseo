@@ -170,6 +170,73 @@ describe("trajectory read handlers", () => {
     expect(next.events.map((event) => event.seq)).toEqual([4, 5]);
   });
 
+  /**
+   * `list` and `changes` read the same window from opposite ends. Pinned
+   * per-handler because the drain depends on it: a `changes` that returned the
+   * newest rows above the cursor consumes a multi-page backlog from the end
+   * and strands its middle.
+   */
+  test("list takes the newest window, changes walks forward from the cursor", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      for (let i = 0; i < 10; i++) {
+        store.append({
+          time: "2026-09-26T00:00:00.000Z",
+          type: "assistant/message",
+          turn: "t1",
+          step: null,
+          agentId: "agent-1",
+          data: {},
+        });
+      }
+
+      const opened = await handleList(store)({ agentId: "agent-1", limit: 4 });
+      expect(opened.events.map((e) => e.seq)).toEqual([7, 8, 9, 10]);
+
+      // From the open's oldest delivered row, the drain steps forward.
+      const drained: number[] = [];
+      let cursor = 6;
+      for (let guard = 0; guard < 20; guard++) {
+        const page = await handleChanges(store)({ agentId: "agent-1", afterSeq: cursor, limit: 4 });
+        if (page.events.length === 0) break;
+        drained.push(...page.events.map((e) => e.seq));
+        cursor = page.headSeq;
+      }
+      // No hole after the open's window, and it does not jump ahead either.
+      expect(drained).toEqual([7, 8, 9, 10]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("a multi-page backlog drains completely from the cursor", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      for (let i = 0; i < 25; i++) {
+        store.append({
+          time: "2026-09-26T00:00:00.000Z",
+          type: "assistant/message",
+          turn: "t1",
+          step: null,
+          agentId: "agent-1",
+          data: {},
+        });
+      }
+      const delivered: number[] = [];
+      let cursor = 0;
+      for (let guard = 0; guard < 50; guard++) {
+        const page = await handleChanges(store)({ agentId: "agent-1", afterSeq: cursor, limit: 4 });
+        if (page.events.length === 0) break;
+        delivered.push(...page.events.map((e) => e.seq));
+        cursor = page.headSeq;
+      }
+      // 25 rows at 4 per page: every one, in order, no gap and no repeat.
+      expect(delivered).toEqual(Array.from({ length: 25 }, (_, i) => i + 1));
+    } finally {
+      store.close();
+    }
+  });
+
   test("beforeSeq reaches history older than one page", async () => {
     const store = createNodeStore(":memory:");
     try {
