@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { TextStyle, ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -8,6 +8,12 @@ import type { TrajectoryCellProps } from "../shared/dsh/record.js";
 import { LedgerScreen } from "./ledger-screen.js";
 import { TrajectoryInspector } from "./trajectory-inspector.js";
 import { useTrajectoryDelta } from "./use-trajectory-delta.js";
+import {
+  foldRowTextKey,
+  textKey,
+  useTrajectoryText,
+  type TimelineRefetch,
+} from "./trajectory-text.js";
 
 export type TrajectoryPanelProps = PluginAgentPanelProps | PluginWorkspacePanelProps;
 
@@ -70,14 +76,46 @@ function LiveLedger(props: { agentId: string; compact: boolean; theme: PluginThe
     setSelectedSeq(null);
   }, []);
 
+  /**
+   * On-demand row text. Only the cells the ledger reports as on screen are
+   * resolved, and the cache lives for this session: nothing is written back to
+   * the recorder and nothing is logged. A row with no key, or a fetch that
+   * fails, simply keeps its `(N chars)` label.
+   */
+  const paseo = usePaseo();
+  const [visibleCells, setVisibleCells] = useState<readonly TrajectoryCellProps[]>([]);
+  const refetchTimeline = useCallback<TimelineRefetch>(
+    async () => paseo.agents.ref(agentId).timeline.refetch(),
+    [paseo, agentId],
+  );
+  const text = useTrajectoryText(agentId, visibleCells, refetchTimeline);
+  const textFor = text.textFor;
+  /**
+   * FlatList re-fires viewability on every scroll tick, and each call hands over
+   * a fresh array. Publishing that straight into state would loop — the state
+   * change re-renders, which re-fires viewability. So publish only when the SET
+   * of resolvable keys actually changes, which also stops redundant refetches.
+   */
+  const visibleSignature = useRef("");
+  const onVisibleCells = useCallback((cells: readonly TrajectoryCellProps[]) => {
+    const signature = cells
+      .map((cell) => textKey(cell))
+      .filter((key): key is string => key !== null)
+      .sort()
+      .join("|");
+    if (signature === visibleSignature.current) return;
+    visibleSignature.current = signature;
+    setVisibleCells(cells);
+  }, []);
+  const selectedRow =
+    selectedSeq === null ? null : (delta.rows.find((row) => row.seq === selectedSeq) ?? null);
+  const selectedKey = selectedSeq === null ? null : foldRowTextKey(selectedRow ?? {});
+
   if (delta.status === "loading") {
     return (
       <PanelNotice theme={theme} testID="trajectory-panel-loading" message="loading trajectory…" />
     );
   }
-
-  const selectedRow =
-    selectedSeq === null ? null : (delta.rows.find((row) => row.seq === selectedSeq) ?? null);
 
   return (
     <View style={panelStyles(theme)} testID="trajectory-panel">
@@ -102,6 +140,8 @@ function LiveLedger(props: { agentId: string; compact: boolean; theme: PluginThe
             compact={compact}
             theme={theme}
             onCellPress={onCellPress}
+            textFor={textFor}
+            onVisibleCells={onVisibleCells}
           />
         </View>
         {/* Wide dock takes layout space; compact overlays (absolute fill). */}
@@ -110,6 +150,7 @@ function LiveLedger(props: { agentId: string; compact: boolean; theme: PluginThe
           row={selectedRow}
           compact={compact}
           theme={theme}
+          resolvedText={selectedKey === null ? undefined : text.cache.get(selectedKey)}
           onClose={onCloseInspector}
         />
       </View>

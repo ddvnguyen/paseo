@@ -16,6 +16,38 @@ import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/pl
 
 export const TRAJECTORY_HEADER_BUTTON_ID = "trajectory-open";
 
+/** Ranking preference: whatever the user is looking at beats whatever is idle. */
+const STATUS_RANK: Record<string, number> = { running: 0, initializing: 1, idle: 2, error: 3 };
+
+/**
+ * Pick the workspace's agent to show: most recently active first, with a running
+ * agent preferred over an idle one. Resolved at press time rather than cached, so
+ * the button can never open a stale or archived agent.
+ */
+export async function pickAgentForWorkspace(
+  client: PluginClientContext,
+  workspaceId: string,
+): Promise<string> {
+  const { entries } = await client.paseo.agents.list();
+  const candidates = entries
+    .map((entry) => entry.agent)
+    .filter((agent) => agent.workspaceId === workspaceId);
+  const best = candidates.reduce<(typeof candidates)[number] | null>((winner, agent) => {
+    if (winner === null) return agent;
+    const byStatus = (STATUS_RANK[agent.status] ?? 9) - (STATUS_RANK[winner.status] ?? 9);
+    if (byStatus !== 0) return byStatus < 0 ? agent : winner;
+    return recency(agent) > recency(winner) ? agent : winner;
+  }, null);
+  if (best === null) {
+    throw new Error(`No agent in workspace ${workspaceId} to open a trajectory for`);
+  }
+  return best.id;
+}
+
+function recency(agent: { updatedAt: string; lastUserMessageAt?: string | null }): number {
+  return Date.parse(agent.lastUserMessageAt ?? agent.updatedAt) || 0;
+}
+
 export function registerTrajectoryHeaderButton(client: PluginClientContext): () => void {
   const buttons = new Map<string, PluginButtonRegistration>();
   let stopped = false;
@@ -32,8 +64,15 @@ export function registerTrajectoryHeaderButton(client: PluginClientContext): () 
           icon: "ListTree",
           behavior: {
             kind: "action",
-            onPress() {
-              client.openPanel("trajectory", { workspaceId, location: "dialog" });
+            async onPress() {
+              const agentId = await pickAgentForWorkspace(client, workspaceId);
+              // The panel is registered agent-context, and the host's
+              // workspace-context openPanel only resolves `context: "workspace"`
+              // panels — opening without an agentId throws and the button does
+              // nothing. So resolve the agent here and take the agent path, which
+              // is the same path the Command Center item uses and therefore
+              // shows the same trajectory.
+              client.openPanel("trajectory", { workspaceId, agentId, location: "dialog" });
             },
           },
         },

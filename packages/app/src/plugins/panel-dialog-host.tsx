@@ -16,6 +16,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { useWorkspaceExists } from "@/stores/session-store-hooks";
 import type { Theme } from "@/styles/theme";
 import { normalizeWorkspaceOpaqueId } from "@/utils/workspace-identity";
+import { useRetainedPanelActive } from "@/components/retained-panel";
 import { usePluginHostNavigation } from "./host-navigation";
 import { createPluginClientStateSource } from "./client-state/source";
 import { toPluginTheme } from "./theme";
@@ -224,8 +225,23 @@ function PluginPanelSheet(props: {
 
 const ThemedPluginPanelDialogBody = withUnistyles(PluginPanelDialogBody);
 
-/** Mount once per workspace screen; renders nothing while no dialog is open. */
+/**
+ * Mount once per workspace screen; renders nothing while no dialog is open.
+ *
+ * The active check is load-bearing, not a nicety. The workspace deck keeps
+ * inactive workspaces MOUNTED (RetainedPanel) and merely hides them with
+ * `display: "none"`. AdaptiveModalSheet portals its content to the global
+ * overlay root on web, which escapes that hidden wrapper — so an inactive
+ * screen's host still put a real, visible dialog on screen, and one open
+ * stacked two identical dialogs. Reading the retained-panel context means each
+ * host renders only while its own workspace is the active one.
+ *
+ * The context defaults to true, so a mount outside a RetainedPanel (and the
+ * app's own test hosts) behaves exactly as before.
+ */
 function PluginPanelDialogHost() {
+  const active = useRetainedPanelActive();
+  if (!active) return null;
   return <ThemedPluginPanelDialogBody uniProps={pluginThemeMapping} />;
 }
 

@@ -4,9 +4,9 @@ import { registerTrajectoryHeaderButton } from "./client/trajectory-header-butto
 
 export default function contribute(client: PluginClientContext) {
   // Agent trajectory ledger as a dialog overlay (location:"dialog" mounts in
-  // the workspace-screen PluginPanelDialogHost). Header buttons are
-  // workspace-scoped only, so the agent-context entry point is the Command
-  // Center item below; workspace/agent ids are implicit in that context.
+  // the workspace-screen PluginPanelDialogHost). Registered agent-context, so
+  // the Command Center item below is the direct entry point and the header
+  // button resolves an agent for its workspace before opening the same panel.
   const removePanel = client.addWorkspacePanel({
     id: "trajectory",
     title: "Trajectory",
@@ -29,8 +29,9 @@ export default function contribute(client: PluginClientContext) {
       openPanel("trajectory", { location: "dialog" });
     },
   });
-  // Workspace top-bar entry point. The panel auto-selects the workspace's first
-  // agent, so this opens without an agentId.
+  // Workspace top-bar entry point. It resolves the workspace's agent at press
+  // time and opens through the agent path, because the host's workspace-context
+  // openPanel only resolves `context: "workspace"` panels.
   const removeHeaderButton = registerTrajectoryHeaderButton(client);
   return () => {
     removeCommand();
