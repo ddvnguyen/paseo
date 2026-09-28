@@ -39,9 +39,26 @@ export function LedgerScreen(props: {
   compact: boolean;
   theme: PluginTheme;
   onCellPress?: (cell: TrajectoryCellProps) => void;
+  /**
+   * Text fetched on demand for a cell, or undefined when unresolved/unkeyable.
+   * The row then keeps its `(N chars)` label — a normal state, not an error.
+   */
+  textFor?: (cell: TrajectoryCellProps) => string | undefined;
+  /** Reports the cells actually on screen so only those are resolved. */
+  onVisibleCells?: (cells: readonly TrajectoryCellProps[]) => void;
   testID?: string;
 }) {
-  const { rows, turnNumbers, openCallIds, compact, theme, onCellPress, testID } = props;
+  const {
+    rows,
+    turnNumbers,
+    openCallIds,
+    compact,
+    theme,
+    onCellPress,
+    textFor,
+    onVisibleCells,
+    testID,
+  } = props;
   const [fold, setFold] = useState<FoldState>(INITIAL_FOLD);
   const [follow, setFollow] = useState(true);
   const [query, setQuery] = useState("");
@@ -209,9 +226,32 @@ export function LedgerScreen(props: {
 
   const renderItem = useCallback(
     ({ item }: { item: ListRow }) => (
-      <VirtualLedgerRow row={item} compact={compact} theme={theme} handlers={handlers} />
+      <VirtualLedgerRow
+        row={item}
+        compact={compact}
+        theme={theme}
+        handlers={handlers}
+        textFor={textFor}
+      />
     ),
-    [compact, theme, handlers],
+    [compact, theme, handlers, textFor],
+  );
+
+  /**
+   * Only the rows the list is actually showing are worth resolving, so the
+   * viewable window is reported upward. `viewabilityConfigCallback` pairs with
+   * it: FlatList requires both to be stable identities.
+   */
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 });
+  const onViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: Array<{ item?: ListRow }> }) => {
+      if (onVisibleCells === undefined) return;
+      const cells: TrajectoryCellProps[] = [];
+      for (const entry of viewableItems) {
+        if (entry.item?.kind === "cellrow") cells.push(...entry.item.cells);
+      }
+      onVisibleCells(cells);
+    },
   );
 
   const keyExtractor = useCallback((item: ListRow) => item.key, []);
@@ -267,6 +307,8 @@ export function LedgerScreen(props: {
         renderItem={renderItem}
         onScroll={onScroll}
         onContentSizeChange={onContentSizeChange}
+        onViewableItemsChanged={onViewableItemsChanged.current}
+        viewabilityConfig={viewabilityConfig.current}
         initialNumToRender={24}
         testID="ledger-list"
       />
@@ -578,8 +620,9 @@ const VirtualLedgerRow = memo(function VirtualLedgerRow(props: {
   compact: boolean;
   theme: PluginTheme;
   handlers: RowHandlers;
+  textFor?: (cell: TrajectoryCellProps) => string | undefined;
 }) {
-  const { row, compact, theme, handlers } = props;
+  const { row, compact, theme, handlers, textFor } = props;
   // Bound per-record callbacks: Pressable.onPress passes the press event as
   // the first argument, so the turn/step identity must be bound here rather
   // than in the JSX (and hooks must be unconditional across row kinds).
@@ -625,6 +668,7 @@ const VirtualLedgerRow = memo(function VirtualLedgerRow(props: {
     <View>
       {row.cells.map((cell) => (
         <TrajectoryCellRow
+          resolvedText={textFor?.(cell)}
           key={cell.index}
           cell={cell}
           compact={compact}

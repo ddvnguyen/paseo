@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TrajectoryCellProps } from "../shared/dsh/record.js";
 
 /**
@@ -27,6 +27,21 @@ export function textKey(cell: TrajectoryCellProps): string | null {
   return null;
 }
 
+/**
+ * Key for a fold row. The inspector is handed a row rather than a cell, and rows
+ * carry the same source identity, so both key the same way.
+ */
+export function foldRowTextKey(row: {
+  sourceMessageId?: string | null;
+  callId?: string | undefined;
+}): string | null {
+  if (typeof row.sourceMessageId === "string" && row.sourceMessageId.length > 0) {
+    return `m:${row.sourceMessageId}`;
+  }
+  if (typeof row.callId === "string" && row.callId.length > 0) return `c:${row.callId}`;
+  return null;
+}
+
 /** Timeline item -> the text a row would show, or null when it carries none. */
 function itemText(item: TimelineEntryLike["item"]): string | null {
   if (!item || (item.type !== "user_message" && item.type !== "assistant_message")) return null;
@@ -35,10 +50,20 @@ function itemText(item: TimelineEntryLike["item"]): string | null {
 
 export type TextCache = Map<string, string>;
 
-/** The slice of a timeline fetch entry the resolver reads. */
+/**
+ * The slice of a timeline fetch entry the resolver reads. `callId` is a field OF
+ * a tool_call item, not of the entry — the fetch envelope carries the entry, and
+ * the call identity lives inside its item.
+ */
 export interface TimelineEntryLike {
   item?:
-    | { type?: string; text?: unknown; messageId?: string; clientMessageId?: string }
+    | {
+        type?: string;
+        text?: unknown;
+        messageId?: string;
+        clientMessageId?: string;
+        callId?: string;
+      }
     | undefined;
   callId?: string | undefined;
 }
@@ -60,6 +85,28 @@ export interface ResolveOptions {
  * filling the cache. Returns the keys it could not resolve so the caller can
  * distinguish "not yet fetched" from "no key at all".
  */
+/**
+ * Index a fetched page by the two identities the recorder persists. A tool_call
+ * carries its callId on the item, not on the entry.
+ */
+function indexEntries(entries: { entries?: readonly TimelineEntryLike[] } | null): {
+  byMessageId: Map<string, string>;
+  byCallId: Map<string, string>;
+} {
+  const byMessageId = new Map<string, string>();
+  const byCallId = new Map<string, string>();
+  for (const entry of entries?.entries ?? []) {
+    const text = itemText(entry.item);
+    if (text === null) continue;
+    const item = entry.item;
+    const messageId = item?.messageId ?? item?.clientMessageId;
+    if (typeof messageId === "string") byMessageId.set(messageId, text);
+    const callId = entry.callId ?? item?.callId;
+    if (typeof callId === "string") byCallId.set(callId, text);
+  }
+  return { byMessageId, byCallId };
+}
+
 export async function resolveVisibleText(options: ResolveOptions): Promise<Set<string>> {
   const { cells, cache, refetch } = options;
   const wanted = new Map<string, TrajectoryCellProps>();
@@ -81,16 +128,7 @@ export async function resolveVisibleText(options: ResolveOptions): Promise<Set<s
     return unresolved;
   }
 
-  const byMessageId = new Map<string, string>();
-  const byCallId = new Map<string, string>();
-  for (const entry of entries?.entries ?? []) {
-    const text = itemText(entry.item);
-    if (text === null) continue;
-    const item = entry.item;
-    const messageId = item?.messageId ?? item?.clientMessageId;
-    if (typeof messageId === "string") byMessageId.set(messageId, text);
-    if (typeof entry.callId === "string") byCallId.set(entry.callId, text);
-  }
+  const { byMessageId, byCallId } = indexEntries(entries);
 
   for (const [key] of wanted) {
     const value = key.startsWith("m:") ? byMessageId.get(key.slice(2)) : byCallId.get(key.slice(2));
@@ -121,6 +159,11 @@ export function useTrajectoryText(
   const cacheRef = useRef<TextCache | null>(null);
   if (cacheRef.current === null) cacheRef.current = new Map();
   const cache = cacheRef.current;
+  // The cache is a plain Map, so filling it is invisible to React. Bump a version
+  // after each resolution so rows re-render with the text they just gained —
+  // without it a resolved cell would keep its length label until something else
+  // happened to re-render the list.
+  const [version, setVersion] = useState(0);
   const refetchRef = useRef(refetch);
   refetchRef.current = refetch;
 
@@ -142,7 +185,7 @@ export function useTrajectoryText(
       agentId,
       refetch: () => refetchRef.current(),
       cache,
-    });
+    }).then(() => setVersion((value) => value + 1));
   }, [visible, agentId, cache]);
 
   useEffect(() => {
@@ -153,17 +196,22 @@ export function useTrajectoryText(
       agentId,
       refetch: () => refetchRef.current(),
       cache,
-    });
+      // Bump after the cache settles, or a filled value is never rendered.
+    }).then(() => setVersion((value) => value + 1));
     // `keySignature` stands in for `keys`, which is a fresh array each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keySignature, agentId, cache]);
 
   const textFor = useCallback(
     (cell: TrajectoryCellProps) => {
+      // Read so `version` is a real dependency: the cache is a plain Map and
+      // invisible to React, so the bump is what changes this function's identity
+      // and re-renders rows with the text they just gained.
+      void version;
       const key = textKey(cell);
       return key === null ? undefined : cache.get(key);
     },
-    [cache],
+    [cache, version],
   );
 
   return { cache, textFor, refresh };
