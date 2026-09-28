@@ -164,8 +164,6 @@ function PluginPanelDialogBody({ theme }: { theme: PluginTheme }) {
 
   return (
     <PluginPanelSheet
-      title={contribution.title}
-      subtitle={dialog.pluginId}
       onClose={closePluginPanelDialog}
       fullScreen={contribution.fullScreen === true}
     >
@@ -190,22 +188,34 @@ function PluginPanelDialogBody({ theme }: { theme: PluginTheme }) {
  */
 const FULL_SCREEN_MAX_WIDTH = 2400;
 
-/** Sheet wrapper owning the memoized header object (react-perf: no new props). */
+/**
+ * Header for a plugin panel dialog: close control, no text.
+ *
+ * The bar stays and only the title block is gone, because for a full-screen
+ * dialog this bar is the only way out of a viewport-filling overlay. Removing
+ * the strings costs no layout: AdaptiveModalSheet's header row is
+ * [title group] [actions] [close] and the title group carries `flex: 1`, so an
+ * empty title still absorbs the free space and leaves the close button
+ * right-aligned at the same bar height. AdaptiveModalSheet renders the group
+ * unconditionally, so no shared-file change is needed to express this.
+ *
+ * Module constant, so the header object is never reallocated per render.
+ */
+const NO_TITLE_HEADER = { title: "" };
+
+/** Sheet wrapper owning the header object and the stable snap points. */
 function PluginPanelSheet(props: {
-  title: string;
-  subtitle: string;
   onClose: () => void;
   fullScreen: boolean;
   children: React.ReactNode;
 }) {
-  const { title, subtitle, onClose, fullScreen, children } = props;
-  const header = useMemo(() => ({ title, subtitle }), [title, subtitle]);
+  const { onClose, fullScreen, children } = props;
   // Static per mode, so the arrays/values are module constants rather than fresh
   // objects on every render.
   const fullScreenSnapPoints = useMemo(() => ["100%"], []);
   return (
     <AdaptiveModalSheet
-      header={header}
+      header={NO_TITLE_HEADER}
       visible
       onClose={onClose}
       // Caller-owned FlatList body (ledger): the host must not own scrolling.
