@@ -6,6 +6,18 @@
     "jsx": "react-jsx",
     "lib": ["ES2023"],
     "types": ["node"],
+    "typeRoots": ["../../packages/plugin/node_modules/@types"],
+    "baseUrl": ".",
+    // plugins/ is not a workspace member and its vendored node_modules copy of
+    // @getpaseo/plugin is STALE (its PluginPanelLocation predates "dialog"), which
+    // silently type-checks this plugin against a contract the host no longer has.
+    // Resolve to the workspace build instead so the plugin sees the real API.
+    "paths": {
+      "@getpaseo/plugin": ["../../packages/plugin/dist/index.d.ts"],
+      "@getpaseo/plugin/*": ["../../packages/plugin/dist/*"],
+      "@getpaseo/protocol": ["../../packages/protocol/dist/index.d.ts"],
+      "@getpaseo/protocol/*": ["../../packages/protocol/dist/*"]
+    },
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true

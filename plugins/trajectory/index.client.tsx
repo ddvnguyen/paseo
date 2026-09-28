@@ -1,5 +1,6 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { TrajectoryPanel } from "./client/trajectory-panel.js";
+import { registerTrajectoryHeaderButton } from "./client/trajectory-header-button.js";
 
 export default function contribute(client: PluginClientContext) {
   // Agent trajectory ledger as a dialog overlay (location:"dialog" mounts in
@@ -24,8 +25,12 @@ export default function contribute(client: PluginClientContext) {
       openPanel("trajectory", { location: "dialog" });
     },
   });
+  // Workspace top-bar entry point. The panel auto-selects the workspace's first
+  // agent, so this opens without an agentId.
+  const removeHeaderButton = registerTrajectoryHeaderButton(client);
   return () => {
     removeCommand();
+    removeHeaderButton();
     removePanel();
   };
 }
