@@ -80,6 +80,25 @@ const INITIAL_FOLD: FoldState = { openTurns: new Set(), openSteps: new Set() };
  */
 const BOTTOM_FOLLOW_THRESHOLD_PX = 24;
 
+/**
+ * Measured row heights, in CSS px, for the chrome rows this screen renders.
+ *
+ * These were guesses until they were measured. getItemLayout is only safe on
+ * numbers the rows actually occupy: a wrong constant does not read as a config
+ * mistake, it reads as a scroll bug, which is worse than having no
+ * getItemLayout at all.
+ *
+ * Measured in Chromium 149 against the real react-native-web tree, on the
+ * item wrappers VirtualizedList positions (not the inner elements), at 1280px
+ * and 390px, compact and not, with short and 190-character labels. Identical
+ * in all six configurations: the rows are fixed-height or single-line clamped,
+ * so width and compact do not move them. Reproduce with
+ * `node scripts/measure-row-heights.mjs` in this directory.
+ */
+const TURN_HEADER_HEIGHT = 22;
+const STEP_HEADER_HEIGHT = 17;
+const TURN_RULE_HEIGHT = 10;
+
 export function LedgerScreen(props: {
   rows: readonly TrajectoryFoldRow[];
   turnNumbers?: ReadonlyMap<string, number>;
@@ -193,9 +212,9 @@ export function LedgerScreen(props: {
     for (const record of records) {
       if (record.__kind !== "cell") {
         const key = chromeKey(record);
-        let height = 10;
-        if (record.__kind === "turn-header") height = 28;
-        else if (record.__kind === "step-header") height = 22;
+        let height = TURN_RULE_HEIGHT;
+        if (record.__kind === "turn-header") height = TURN_HEADER_HEIGHT;
+        else if (record.__kind === "step-header") height = STEP_HEADER_HEIGHT;
         out.push({ kind: "chrome", key, height, record });
         continue;
       }
@@ -326,6 +345,39 @@ export function LedgerScreen(props: {
 
   const keyExtractor = useCallback((item: ListRow) => item.key, []);
 
+  /**
+   * Prefix sums of the row heights, so getItemLayout is O(1) instead of
+   * re-walking the list for every item in the window. `offsets[n]` is the total
+   * content height, which is what a windowed list needs to size its scrollbar
+   * without laying every row out.
+   */
+  const rowOffsets = useMemo(() => {
+    const offsets: number[] = [];
+    let total = 0;
+    for (const [index, row] of virtualRows.entries()) {
+      offsets[index] = total;
+      total += row.height;
+    }
+    offsets[virtualRows.length] = total;
+    return offsets;
+  }, [virtualRows]);
+
+  /**
+   * Row geometry, on measured heights (see TURN_HEADER_HEIGHT). Without it a
+   * windowed list has to measure rows as it scrolls; with it, a wrong constant
+   * shows up immediately as a misaligned scroll, so the numbers above are the
+   * measured ones and the fallback is only reached if the index is out of
+   * range.
+   */
+  const getItemLayout = useCallback(
+    (_data: ArrayLike<ListRow> | null | undefined, index: number) => ({
+      length: virtualRows[index]?.height ?? TURN_RULE_HEIGHT,
+      offset: rowOffsets[index] ?? 0,
+      index,
+    }),
+    [rowOffsets, virtualRows],
+  );
+
   const onContentSizeChange = useCallback(() => {
     if (followRef.current && listRef.current !== null) {
       listRef.current.scrollToEnd({ animated: false });
@@ -382,6 +434,7 @@ export function LedgerScreen(props: {
         ref={listRef}
         data={virtualRows}
         keyExtractor={keyExtractor}
+        getItemLayout={getItemLayout}
         renderItem={renderItem}
         onScroll={onScroll}
         onContentSizeChange={onContentSizeChange}

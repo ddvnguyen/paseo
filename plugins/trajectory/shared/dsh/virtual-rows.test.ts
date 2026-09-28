@@ -42,7 +42,10 @@ describe("trajectory virtual rows", () => {
           { logicalIndex: 1, record: second },
           { logicalIndex: 2, record: content },
         ],
-        height: 30,
+        // Measured, not 30: see CONTENT_ROW_HEIGHT and
+        // scripts/measure-row-heights.mjs. getItemLayout is only safe on the
+        // height the row actually occupies.
+        height: 31,
         key: trajectoryVirtualRecordKey(content),
       },
     ]);

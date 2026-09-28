@@ -9,7 +9,20 @@
 import type { TrajectoryCellProps } from "./record.ts";
 import { trajectoryRecordId } from "./record.ts";
 
-const CONTENT_ROW_HEIGHT = 30;
+/**
+ * CONTENT_ROW_HEIGHT is measured: 31 CSS px, not 30. The cell is
+ * `minHeight: 30` with a 1px border, and it was measured on the item wrapper
+ * VirtualizedList positions, in Chromium 149 at 1280px and 390px, compact and
+ * not, with short and 190-character labels — identical in all six, because the
+ * cell text is single-line clamped. See scripts/measure-row-heights.mjs.
+ *
+ * The other two are UNREACHABLE in this plugin and therefore unmeasured: no
+ * producer anywhere sets `collapsedSummaryKind` or `requestOnly`, so
+ * `trajectory.list` never yields one of those rows and getItemLayout is never
+ * asked for them. They are left at the ported dsh values rather than replaced
+ * with a guess; if a producer ever sets those fields, measure them first.
+ */
+const CONTENT_ROW_HEIGHT = 31;
 const COLLAPSED_SUMMARY_HEIGHT = 20;
 const TERMINAL_BOUNDARY_HEIGHT = 9;
 
