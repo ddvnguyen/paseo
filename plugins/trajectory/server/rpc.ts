@@ -29,13 +29,22 @@ function readPage(
   // than trusting a value the caller never sent.
   input: { agentId: string; afterSeq?: number; limit?: number },
 ): { events: ReturnType<TrajectoryStore["listByAgent"]>; headSeq: number } {
-  return {
-    events: store.listByAgent(input.agentId, {
-      afterSeq: input.afterSeq,
-      limit: input.limit ?? TRAJECTORY_PAGE_LIMIT_DEFAULT,
-    }),
-    headSeq: store.headSeq(input.agentId),
-  };
+  const events = store.listByAgent(input.agentId, {
+    afterSeq: input.afterSeq,
+    limit: input.limit ?? TRAJECTORY_PAGE_LIMIT_DEFAULT,
+  });
+  // `headSeq` describes the page that was just returned, so it is the page's
+  // own last seq. Asking the store for MAX(seq) instead runs a second query
+  // that can disagree with the first: rows written between the page SELECT and
+  // the MAX(seq) read fall in that gap, the client adopts the newer cursor,
+  // and those rows are then unreachable by any `seq > afterSeq` poll. Derived
+  // from the page, the cursor can only ever name a row the client holds.
+  //
+  // An empty page reports the cursor the caller sent: no rows means no
+  // progress, so the cursor must not move (0 for a fresh read, which is the
+  // only way a first page is legitimately empty).
+  const headSeq = events.length > 0 ? events[events.length - 1].seq : (input.afterSeq ?? 0);
+  return { events, headSeq };
 }
 
 export function handleList(
