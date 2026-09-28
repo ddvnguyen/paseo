@@ -164,6 +164,15 @@ export function LedgerScreen(props: {
    * boundaries attach forward, keys stable); chrome records (headers, rules)
    * join the same FlatList data with their own keys and heights.
    */
+  /**
+   * The previous projection, reused when the rebuild changed no key and no
+   * height. A text-only delta (resolved cell text, a label edit) produces a
+   * new fold and new cell objects, so a plain useMemo hands the list a new
+   * array every time — which invalidates the identity getItemLayout and the
+   * measurement cache behind it depend on, for rows that are laid out exactly
+   * as before.
+   */
+  const virtualRowsRef = useRef<ListRow[] | null>(null);
   const virtualRows = useMemo(() => {
     // Cell position in the interleaved sequence -> its virtual row. Cells are
     // keyed by cell.index (dsh record identity), NOT by list position: chrome
@@ -200,6 +209,9 @@ export function LedgerScreen(props: {
         cells: cellRow.entries.map((entry) => entry.record.cell),
       });
     }
+    const previous = virtualRowsRef.current;
+    if (previous !== null && sameShape(previous, out)) return previous;
+    virtualRowsRef.current = out;
     return out;
   }, [records]);
 
@@ -767,6 +779,17 @@ type LeadRecord =
     }
   | { __kind: "turn-rule"; turn: number; turnKey: string }
   | { __kind: "cell"; cell: TrajectoryCellProps };
+
+/** True when two projections agree on every row's key and height. */
+function sameShape(a: readonly ListRow[], b: readonly ListRow[]): boolean {
+  if (a.length !== b.length) return false;
+  for (const [index, row] of b.entries()) {
+    const previous = a[index];
+    if (previous === undefined) return false;
+    if (previous.key !== row.key || previous.height !== row.height) return false;
+  }
+  return true;
+}
 
 /** Flatten folded turns into virtualizable records (headers + visible cells). */
 /** Turn numbers are positional (1..N) throughout the fold, as expandTurns uses. */

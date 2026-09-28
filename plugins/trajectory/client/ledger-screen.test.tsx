@@ -471,3 +471,49 @@ describe("ledger screen turn identity", () => {
     expect(labels).toContain("second answer");
   });
 });
+
+/**
+ * dsh's useStableVirtualRowStructure: the projection rebuilds on every append,
+ * but a text-only delta leaves every key and height identical. Returning a new
+ * array then invalidates getItemLayout/estimateItemLayout identity and the
+ * measurement cache behind them, for no reason.
+ */
+describe("ledger screen virtual row stability", () => {
+  const data = (): unknown => (listProbe.props as { data: unknown } | null)?.data;
+
+  it("keeps the row array identity for a text-only delta", () => {
+    render();
+    act(() =>
+      (document.querySelector('[data-testid="toggle-turns"]') as HTMLButtonElement).click(),
+    );
+    const first = data();
+    expect(Array.isArray(first)).toBe(true);
+    const firstKeys = (first as { key: string; height: number }[]).map(
+      (r) => `${r.key}:${r.height}`,
+    );
+
+    // A NEW rows array with the same seqs and turns but different text: the
+    // fold reruns and every cell object is new, so a plain useMemo rebuilds the
+    // projection. Every key and height is unchanged, so the array should not.
+    const relabelled = FIXTURE_ROWS.map((row) => ({ ...row, label: `${row.label} (edited)` }));
+    renderRows(relabelled);
+
+    const second = data() as { key: string; height: number }[];
+    expect({
+      sameKeysAndHeights:
+        second.map((r) => `${r.key}:${r.height}`).join("|") === firstKeys.join("|"),
+      sameArray: data() === first,
+    }).toEqual({ sameKeysAndHeights: true, sameArray: true });
+  });
+
+  it("still allocates a new array when a row is actually added", () => {
+    render();
+    act(() =>
+      (document.querySelector('[data-testid="toggle-turns"]') as HTMLButtonElement).click(),
+    );
+    const first = data();
+
+    renderRows([...FIXTURE_ROWS, foldRow(900, { kind: "user", turnId: "t2", label: "appended" })]);
+    expect({ sameArray: data() === first }).toEqual({ sameArray: false });
+  });
+});
