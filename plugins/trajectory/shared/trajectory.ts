@@ -33,20 +33,48 @@ export const TrajectoryEventSchema = z.object({
 
 export type TrajectoryEvent = z.infer<typeof TrajectoryEventSchema>;
 
-/** Paged read. `afterSeq` is the cursor; rows return ascending by seq. */
 /** Page size applied when a caller omits `limit`; mirrors the zod default. */
 export const TRAJECTORY_PAGE_LIMIT_DEFAULT = 500;
+
+/**
+ * Page contract, shared by every read below.
+ *
+ * Rows always come back ASCENDING by `seq`. That is part of the contract, not
+ * an implementation detail — the client fold walks events in arrival order and
+ * never sorts, and a newest-first page mis-pairs `tool/call` with
+ * `tool/result`.
+ *
+ * WHICH rows come back is per-RPC, because the two directions want opposite
+ * ends of the window:
+ *
+ * - `list` takes the NEWEST rows matching the bounds. It is the initial open
+ *   (and load-older once that lands), and a live ledger is watched at its head.
+ * - `changes` takes the OLDEST rows above `afterSeq`, so the forward drain
+ *   steps from the cursor one page at a time. Taking the newest instead
+ *   consumes a backlog larger than a page from the end and strands its middle.
+ * - `subscribe` is payload-identical to `changes`, so it matches `changes`.
+ *
+ * `headSeq` is the page's own last `seq`: the cursor to send as `afterSeq` to
+ * continue forward. It is deliberately NOT the agent's global `MAX(seq)`,
+ * which can name rows that were never sent (anything written between the page
+ * query and a separate max query) and would put them out of reach of every
+ * later `seq > afterSeq` poll.
+ */
 
 export const trajectoryList = defineTrajectoryRpc({
   name: "trajectory.list",
   input: z.object({
     agentId: z.string().min(1),
     afterSeq: z.number().int().nonnegative().optional(),
+    // COMPAT(trajectoryBeforeSeq): added in plugin 0.1.1, remove after 2027-03-28
+    // once no shipped client pages backwards. Optional, so a client that never
+    // sends it keeps working against a daemon that ignores it.
+    beforeSeq: z.number().int().nonnegative().optional(),
     limit: z.number().int().positive().max(1000).default(TRAJECTORY_PAGE_LIMIT_DEFAULT),
   }),
   output: z.object({
     events: z.array(TrajectoryEventSchema),
-    /** Seq of the newest row for this agent; use as the next afterSeq cursor. */
+    /** Seq of the newest row IN THIS PAGE; use as the next afterSeq cursor. */
     headSeq: z.number().int().nonnegative(),
   }),
 });
@@ -57,6 +85,10 @@ export const trajectoryChanges = defineTrajectoryRpc({
   input: z.object({
     agentId: z.string().min(1),
     afterSeq: z.number().int().nonnegative(),
+    // COMPAT(trajectoryBeforeSeq): added in plugin 0.1.1, remove after 2027-03-28
+    // once no shipped client pages backwards. Optional, so a client that never
+    // sends it keeps working against a daemon that ignores it.
+    beforeSeq: z.number().int().nonnegative().optional(),
     limit: z.number().int().positive().max(1000).default(200),
   }),
   output: z.object({
@@ -78,6 +110,10 @@ export const trajectorySubscribe = defineTrajectoryRpc({
   input: z.object({
     agentId: z.string().min(1),
     afterSeq: z.number().int().nonnegative(),
+    // COMPAT(trajectoryBeforeSeq): added in plugin 0.1.1, remove after 2027-03-28
+    // once no shipped client pages backwards. Optional, so a client that never
+    // sends it keeps working against a daemon that ignores it.
+    beforeSeq: z.number().int().nonnegative().optional(),
     limit: z.number().int().positive().max(1000).default(200),
   }),
   output: z.object({

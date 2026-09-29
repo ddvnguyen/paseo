@@ -7,6 +7,9 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createNodeStore } from "../server/node-store.js";
+import { handleChanges, handleList } from "../server/rpc.js";
+import type { TrajectoryStore } from "../server/store.js";
 import type { TrajectoryEvent } from "../shared/trajectory.js";
 import { useTrajectoryDelta } from "./use-trajectory-delta.js";
 
@@ -67,10 +70,14 @@ interface ProbeView {
   status: string;
   rows: number;
   headSeq: number;
+  hasOlderHistory: boolean;
+  loadOlder: () => void;
   error?: string;
 }
 
 const probeRef: { current: ProbeView | null } = { current: null };
+/** The hook's `refresh()`, i.e. the kick that re-enters the drain loop. */
+const refreshRef: { current: (() => void) | null } = { current: null };
 
 function Probe({ agentId }: { agentId: string }) {
   const delta = useTrajectoryDelta(agentId);
@@ -78,8 +85,11 @@ function Probe({ agentId }: { agentId: string }) {
     status: delta.status,
     rows: delta.rows.length,
     headSeq: delta.headSeq,
+    hasOlderHistory: delta.hasOlderHistory,
+    loadOlder: delta.loadOlder,
     ...(delta.status === "error" ? { error: delta.error } : {}),
   };
+  refreshRef.current = delta.refresh;
   return React.createElement("span", { "data-testid": "probe" });
 }
 
@@ -149,6 +159,7 @@ beforeEach(() => {
   rpcHandlers.current = {};
   rpcFns.current = {};
   probeRef.current = null;
+  refreshRef.current = null;
 });
 
 afterEach(async () => {
@@ -160,6 +171,99 @@ afterEach(async () => {
   root = null;
   vi.restoreAllMocks();
 });
+
+/** Shared by both suites that drive the real store and handlers. */
+/** One turn per 4 events so tool/call and tool/result stay paired. */
+function seed(store: TrajectoryStore, total: number, agentId: string): void {
+  for (let i = 1; i <= total; i++) {
+    const cycle = Math.ceil(i / 4);
+    const kind = i % 4;
+    const turn = `t${cycle}`;
+    const callId = `c${cycle}`;
+    if (kind === 1)
+      store.append({
+        time: iso(i),
+        type: "user/message",
+        turn,
+        step: null,
+        agentId,
+        data: { textLength: 10 },
+      });
+    else if (kind === 2)
+      store.append({
+        time: iso(i),
+        type: "assistant/message",
+        turn,
+        step: 1,
+        agentId,
+        data: { textLength: 20 },
+      });
+    else if (kind === 3)
+      store.append({
+        time: iso(i),
+        type: "tool/call",
+        turn,
+        step: 1,
+        agentId,
+        data: { callId, name: "shell" },
+      });
+    else
+      store.append({
+        time: iso(i),
+        type: "tool/result",
+        turn,
+        step: 1,
+        agentId,
+        data: { callId, name: "shell", durationMs: 400, outputChars: 12 },
+      });
+  }
+}
+
+const iso = (seq: number) => new Date(BASE + seq * 1_000).toISOString();
+
+/**
+ * Wire the real handlers, teeing every seq the hook is handed. The hook folds
+ * into rows that drop structure-only events and merge tool pairs, so the
+ * buffered *event* seqs are the only faithful record of what was delivered.
+ */
+function wireRealStore(store: TrajectoryStore): {
+  received: number[];
+  listInputs: { agentId: string; afterSeq?: number; beforeSeq?: number; limit?: number }[];
+} {
+  const received: number[] = [];
+  const listInputs: { agentId: string; afterSeq?: number; beforeSeq?: number; limit?: number }[] =
+    [];
+  const teeChanges = async (input: never) => {
+    const page = await handleChanges(store)(input);
+    received.push(...page.events.map((event) => event.seq));
+    return page;
+  };
+  const teeList = async (input: never) => {
+    listInputs.push(input as { agentId: string; beforeSeq?: number });
+    const page = await handleList(store)(input);
+    received.push(...page.events.map((event) => event.seq));
+    return page;
+  };
+  rpcHandlers.current = {
+    "trajectory.list": teeList as RpcHandler,
+    "trajectory.changes": teeChanges as RpcHandler,
+  };
+  return { received, listInputs };
+}
+
+/** The seq values missing from [min, max] of `seqs`. */
+function holesIn(seqs: readonly number[]): number[] {
+  if (seqs.length === 0) return [];
+  const sorted = [...new Set(seqs)].sort((a, b) => a - b);
+  const missing: number[] = [];
+  for (let i = sorted[0]; i <= sorted[sorted.length - 1]; i++) {
+    if (!sorted.includes(i)) missing.push(i);
+  }
+  return missing;
+}
+
+const range = (seqs: readonly number[]) =>
+  seqs.length === 0 ? "(empty)" : `${Math.min(...seqs)}..${Math.max(...seqs)}`;
 
 describe("useTrajectoryDelta", () => {
   it("lists once, drains changes while events flow, parks on empty (no hot loop)", async () => {
@@ -229,9 +333,14 @@ describe("useTrajectoryDelta", () => {
           headSeq: base + 2,
         };
       }) as RpcHandler,
-      "trajectory.changes": (async () => {
+      "trajectory.changes": (async (input: unknown) => {
         if (failChanges) throw new Error("daemon hiccup");
-        return { events: [], headSeq: 99 };
+        // An empty page reports the cursor the caller sent (see the page
+        // contract in shared/trajectory.ts). A headSeq ahead of the cursor on
+        // an empty page is the shape the torn-ledger fix removes, so it must
+        // not be what these mocks teach.
+        const { afterSeq } = input as { afterSeq: number };
+        return { events: [], headSeq: afterSeq };
       }) as RpcHandler,
     };
 
@@ -247,5 +356,240 @@ describe("useTrajectoryDelta", () => {
     await renderProbe("a2");
     await settleUntil((current) => current.status === "error" && current.headSeq === 12);
     expect(view()).toMatchObject({ status: "error", rows: 2, headSeq: 12 });
+  });
+});
+
+/**
+ * Backlog paging. These drive the hook against the REAL store and the REAL rpc
+ * handlers (only `useRpc` is mocked), so the server's paging and its `headSeq`
+ * are what the assertions actually measure. A hand-written fake would only
+ * prove the fake is self-consistent.
+ *
+ * The mocks above cannot catch the backlog defect: every page they return
+ * happens to be the whole table, so `headSeq` is both the page tail and the
+ * global max at once, and the two readings are indistinguishable. That
+ * coincidence is why the torn-ledger defect survived QC.
+ */
+describe("useTrajectoryDelta against the real store (backlog paging)", () => {
+  const TOTAL = 1200;
+  const PAGE = 500;
+
+  it("drains the newest window and parks at the true head, with no hole inside it", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      seed(store, TOTAL, "a1");
+      const { received } = wireRealStore(store);
+
+      await renderProbe("a1");
+      const done = await settleUntil(settledLive);
+
+      // The defect in one assertion: the client must end up holding the newest
+      // events and parked on the newest seq. Returning the oldest page leaves
+      // max(received) at the page tail while headSeq claims the real head.
+      expect({
+        delivered: range(received),
+        deliveredMax: Math.max(...received),
+        hookHeadSeq: done.headSeq,
+        trueHead: store.headSeq("a1"),
+      }).toEqual({
+        delivered: "701..1200",
+        deliveredMax: TOTAL,
+        hookHeadSeq: TOTAL,
+        trueHead: TOTAL,
+      });
+
+      // Contiguous: the window is a gap-free suffix, never a torn ledger.
+      expect(holesIn(received)).toEqual([]);
+      expect(received.length).toBeLessThanOrEqual(PAGE);
+    } finally {
+      store.close();
+    }
+  });
+
+  /**
+   * A backlog that arrives AFTER the ledger has parked, which is the live case
+   * the drain loop exists for. The two tests above start from a fresh open,
+   * where `list` returns the tail and the next `changes` is empty, so the drain
+   * never has to walk. This one forces it to.
+   *
+   * A forward drain must step forward one page at a time. If `changes` selects
+   * the newest N above the cursor instead of the oldest N, a backlog larger
+   * than one page is consumed from the end: the client receives the last page,
+   * parks on it, and the middle of the backlog is unreachable by any
+   * `seq > afterSeq` poll. That is the same torn ledger, in a different place.
+   */
+  it("drains a backlog that arrives after parking, without skipping its middle", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      seed(store, TOTAL, "a1");
+      const { received } = wireRealStore(store);
+
+      await renderProbe("a1");
+      const opened = await settleUntil(settledLive);
+      expect({ openedRange: range(received), headSeq: opened.headSeq }).toEqual({
+        openedRange: "701..1200",
+        headSeq: TOTAL,
+      });
+
+      // The ledger goes quiet, then a backlog lands out of band.
+      await quietSettle(50);
+      const backlog = 1000;
+      seed(store, backlog, "a1");
+      const trueHead = store.headSeq("a1");
+      expect(trueHead).toBe(TOTAL + backlog);
+
+      // One kick, exactly as a manual refresh or an agent update would do it.
+      await act(async () => {
+        refreshRef.current?.();
+      });
+      const drained = await settleUntil((current) => current.headSeq === trueHead);
+
+      // Every row of the backlog arrived, and the window has no hole in it.
+      const backlogDelivered = received.filter((seq) => seq > TOTAL).length;
+      expect({
+        backlogDelivered,
+        expectedBacklog: backlog,
+        deliveredRange: range(received),
+        holes: holesIn(received).length,
+        headSeq: drained.headSeq,
+        trueHead,
+      }).toEqual({
+        backlogDelivered: backlog,
+        expectedBacklog: backlog,
+        deliveredRange: `701..${trueHead}`,
+        holes: 0,
+        headSeq: trueHead,
+        trueHead,
+      });
+    } finally {
+      store.close();
+    }
+  });
+});
+
+/**
+ * Load older. The reverse read exists server-side since S1 (beforeSeq on
+ * trajectory.list) but nothing in the client has ever sent it, so the page, its
+ * loading state, and the exhausted flag are all built here.
+ */
+describe("useTrajectoryDelta load-older", () => {
+  const TOTAL = 1200;
+
+  /** A ledger of `total` events, seq 1..total, all on agent a1. */
+  function seedLoadOlder(store: TrajectoryStore, total: number, agentId: string): void {
+    for (let i = 1; i <= total; i++) {
+      store.append({
+        time: iso(i),
+        type: i % 2 === 1 ? "user" : "assistant",
+        turn: `t${Math.ceil(i / 2)}`,
+        step: null,
+        agentId,
+        data: {},
+      });
+    }
+  }
+
+  /** Lets pending promise chains settle, without polling for a condition only
+   *  the new code could produce (that reads as a timeout, not an assertion). */
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
+
+  const beforeSeqReads = (inputs: readonly { beforeSeq?: number }[]): number[] =>
+    inputs.flatMap((input) => (input.beforeSeq === undefined ? [] : [input.beforeSeq]));
+
+  it("reads the page below the oldest buffered seq and prepends it", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      seedLoadOlder(store, TOTAL, "a1");
+      const { listInputs, received } = wireRealStore(store);
+      await renderProbe("a1");
+      await settleUntil(settledLive);
+      // The open page is the newest 500, so the oldest buffered seq is 701.
+      expect({ opened: range(received), headSeq: view().headSeq }).toEqual({
+        opened: "701..1200",
+        headSeq: TOTAL,
+      });
+
+      await act(async () => {
+        view().loadOlder();
+      });
+      await settle();
+
+      // One press is one page, and the cursor it read with is the oldest
+      // buffered seq, not the head.
+      expect({ beforeSeq: beforeSeqReads(listInputs) }).toEqual({ beforeSeq: [701] });
+      // Prepended, still contiguous, and 500 rows not 1000: the page is the
+      // newest 500 below the cursor, so 201..700.
+      expect({ union: range(received), holes: holesIn(received).length }).toEqual({
+        union: "201..1200",
+        holes: 0,
+      });
+
+      // The next press pages from the NEW oldest seq, so walking to exhaustion
+      // reaches the start with no hole at any step.
+      await act(async () => {
+        view().loadOlder();
+      });
+      await settle();
+      expect({ beforeSeq: beforeSeqReads(listInputs) }).toEqual({ beforeSeq: [701, 201] });
+      expect({ union: range(received), holes: holesIn(received).length }).toEqual({
+        union: "1..1200",
+        holes: 0,
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("two rapid calls fetch once — the in-flight lock is the whole point", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      seedLoadOlder(store, TOTAL, "a1");
+      const { listInputs } = wireRealStore(store);
+      await renderProbe("a1");
+      await settleUntil(settledLive);
+
+      // Three presses in one tick, before the first read resolves. A sequential
+      // test can never see this: the lock exists to stop concurrent re-entry,
+      // and pressing twice in a row after a resolve would be two legitimate
+      // pages, not a double-fetch.
+      await act(async () => {
+        view().loadOlder();
+        view().loadOlder();
+        view().loadOlder();
+      });
+      await settle();
+
+      expect({ beforeSeqReads: beforeSeqReads(listInputs).length }).toEqual({ beforeSeqReads: 1 });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("the affordance disappears once older history is exhausted", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      // Fewer events than one page: the open already returned everything, so
+      // there is nothing below it.
+      seedLoadOlder(store, 10, "a1");
+      const { listInputs } = wireRealStore(store);
+      await renderProbe("a1");
+      await settleUntil(settledLive);
+
+      await act(async () => {
+        view().loadOlder();
+      });
+      await settle();
+
+      // An exhausted ledger answers with an empty page, which is how we know —
+      // and per the S1 empty-page contract that page echoes the cursor, so it
+      // cannot rewind the head.
+      expect({
+        hasOlderHistory: view().hasOlderHistory,
+        beforeSeqReads: beforeSeqReads(listInputs),
+        headSeq: view().headSeq,
+      }).toEqual({ hasOlderHistory: false, beforeSeqReads: [1], headSeq: 10 });
+    } finally {
+      store.close();
+    }
   });
 });

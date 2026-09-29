@@ -142,6 +142,9 @@ function LiveLedger(props: { agentId: string; compact: boolean; theme: PluginThe
             onCellPress={onCellPress}
             textFor={textFor}
             onVisibleCells={onVisibleCells}
+            hasOlderHistory={delta.hasOlderHistory}
+            loadingOlder={delta.loadingOlder}
+            onLoadOlder={delta.loadOlder}
           />
         </View>
         {/* Wide dock takes layout space; compact overlays (absolute fill). */}

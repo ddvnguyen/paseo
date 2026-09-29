@@ -281,6 +281,11 @@ export function deriveTrajectoryLayout(
   const numbers = turnNumbersFor(rows, explicitNumbers);
 
   const turns = new Map<number, TurnBucket>();
+  // Group title -> group, per turn. The step path used groups.find(), which is
+  // quadratic in steps WITHIN a turn: measured 3.12 / 9.39 / 24.03 / 68.68 ms
+  // at 500 / 1000 / 2000 / 4000 steps, per-doubling ratios of ~3. A size ladder
+  // cannot see this, because it grows turns while holding steps fixed.
+  const groupIndex = new Map<number, Map<string, LaidGroup>>();
   let index = 0;
 
   const bucket = (turn: number): TurnBucket => {
@@ -288,9 +293,13 @@ export function deriveTrajectoryLayout(
     if (entry === undefined) {
       entry = { groups: [] };
       turns.set(turn, entry);
+      groupIndex.set(turn, new Map());
     }
     return entry;
   };
+
+  const groupFor = (turn: number, title: string): LaidGroup | undefined =>
+    groupIndex.get(turn)?.get(title);
 
   const pushMessage = (turn: number, laid: LaidCell): void => {
     const groups = bucket(turn).groups;
@@ -307,14 +316,15 @@ export function deriveTrajectoryLayout(
       pushMessage(turn, laid);
       return;
     }
-    const groups = bucket(turn).groups;
     const title = `Step ${step}`;
-    const existing = groups.find((group) => group.title === title);
+    const existing = groupFor(turn, title);
     if (existing !== undefined) {
       existing.laid.push(laid);
       return;
     }
-    groups.push({ title, laid: [laid] });
+    const group: LaidGroup = { title, laid: [laid] };
+    bucket(turn).groups.push(group);
+    groupIndex.get(turn)?.set(title, group);
   };
 
   // dsh folds user rows into the turn they arrived in; our ledger already
@@ -347,7 +357,11 @@ export function deriveTrajectoryLayout(
         sourceSeq: row.seq,
         ...sourceIdentity(row),
         text: row.label,
-        recordId: `assistant\u0000${row.turnId ?? ""}\u0000${row.step ?? 0}`,
+        // The ledger seq disambiguates. recorder.ts yields step=null when no
+        // step is open, so two assistant messages in one turn would otherwise
+        // share the same recordId — and the virtual-row projection drops a
+        // duplicate key, silently losing a message.
+        recordId: `assistant\u0000${row.turnId ?? ""}\u0000${row.step ?? 0}\u0000${row.seq}`,
         timeSeconds: rowEndSeconds(row, absTime),
         startedAt: absTime,
       };

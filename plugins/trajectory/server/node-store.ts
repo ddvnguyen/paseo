@@ -96,18 +96,30 @@ export function createNodeStore(path: string): TrajectoryStore {
 
     listByAgent(agentId: string, opts: ListByAgentOptions): TrajectoryEvent[] {
       const params: unknown[] = [agentId];
-      let where = "agent_id = ?";
+      const bounds: string[] = ["agent_id = ?"];
       if (opts.afterSeq !== undefined) {
-        where += " AND seq > ?";
+        bounds.push("seq > ?");
         params.push(opts.afterSeq);
       }
+      if (opts.beforeSeq !== undefined) {
+        bounds.push("seq < ?");
+        params.push(opts.beforeSeq);
+      }
       params.push(opts.limit);
+      // The inner query picks WHICH end of the window comes back; the outer one
+      // fixes the order it arrives in. Both halves are load-bearing, and the
+      // order is always ascending regardless of direction: the client fold
+      // walks events in arrival order and never sorts, so a newest-first page
+      // would mis-pair tool/call with tool/result.
+      const pick = opts.direction === "oldest" ? "ASC" : "DESC";
       const stmt = db.prepare(
-        `SELECT seq, time, type, turn, step, agent_id AS agentId, data
-         FROM trajectory_events
-         WHERE ${where}
-         ORDER BY seq ASC
-         LIMIT ?`,
+        `SELECT seq, time, type, turn, step, agent_id AS agentId, data FROM (
+           SELECT seq, time, type, turn, step, agent_id, data
+           FROM trajectory_events
+           WHERE ${bounds.join(" AND ")}
+           ORDER BY seq ${pick}
+           LIMIT ?
+         ) ORDER BY seq ASC`,
       );
       const rows = stmt.all(...(params as never[])) as unknown as RawRow[];
       return rows.map(toEvent);

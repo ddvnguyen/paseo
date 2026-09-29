@@ -1,0 +1,82 @@
+name: Paseo Trajectory Plugin
+
+# plugins/trajectory is not a workspace member, so nothing in ci.yml can see
+# it: `npm run typecheck --workspaces` and the per-package test jobs all skip
+# it. Without this workflow every test in the plugin — the paging suite
+# included — is ungated and a regression merges silently.
+#
+# Deliberately NOT part of ci.yml: that file routes jobs through
+# .github/ci-paths.yml, whose contract is asserted by
+# scripts/ci-workflow.test.mjs. A standalone workflow gates the plugin without
+# touching either. Making the plugin a workspace member would remove the need
+# for this file entirely; that is tracked separately.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: trajectory-plugin-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  trajectory-plugin-tests:
+    name: trajectory-plugin-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: node scripts/npm-retry.mjs ci
+
+      # The plugin's vitest config resolves @getpaseo/plugin/client to
+      # packages/plugin/dist, so the SDK must be built before its tests can
+      # import anything. build:plugin type-checks against the protocol and
+      # client declarations, so those come first — the same order sdk-tests
+      # uses in ci.yml.
+      - name: Build plugin SDK
+        run: npm run build:client && npm run build:plugin
+
+      # tsc does not apply the vite aliases in the plugin's vitest config, and
+      # the plugin's tsconfig maps @getpaseo/*, react and react-native to the
+      # workspace but not to zod or vitest. It is designed around a vendored
+      # node_modules of its own (see the paths comment in
+      # plugins/trajectory/tsconfig.json), which a root `npm ci` never
+      # creates. Link the two packages it cannot resolve from the SDK's
+      # install, which is the same version the plugin pins.
+      - name: Link the plugin's unaliased dev dependencies
+        run: |
+          mkdir -p plugins/trajectory/node_modules
+          ln -sfn ../../../packages/plugin/node_modules/zod plugins/trajectory/node_modules/zod
+          ln -sfn ../../../packages/plugin/node_modules/vitest plugins/trajectory/node_modules/vitest
+
+      # The SDK's own vitest, by path. `npx vitest` does not work from here: the
+      # plugin has no local install and the root install carries no vitest, so
+      # npx resolves nothing and exits "vitest: not found". The plugin's vitest
+      # config is written against the SDK's install anyway — it aliases zod,
+      # react, react-dom, react-native and jsdom into the workspace — so this
+      # binary is the one whose resolution the config can satisfy.
+      - name: Run plugin tests
+        working-directory: plugins/trajectory
+        run: ../../packages/plugin/node_modules/.bin/vitest run
+
+      - name: Typecheck plugin
+        working-directory: plugins/trajectory
+        run: npm run typecheck
+
+      # Scoped to the plugin, not repo-wide: `npm run format:check` and
+      # `npm run lint` are red on files this workflow does not own, and a gate
+      # that is always failing gates nothing.
+      - name: Check plugin formatting
+        run: npm run format:check:files -- plugins/trajectory
+
+      - name: Lint plugin
+        run: npm run lint -- plugins/trajectory
