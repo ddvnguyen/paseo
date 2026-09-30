@@ -1,15 +1,18 @@
 import type { Command } from "commander";
-import type { ListResult } from "../../output/index.js";
+import type { CommandError, ListResult } from "../../output/index.js";
 import {
   createScheduleInspectRows,
   createScheduleInspectSchema,
   type ScheduleInspectRow,
 } from "./schema.js";
 import {
+  assertDaemonSupportsWorkspaceReuseClear,
   connectScheduleClient,
+  isWorkspaceReuseClearRejection,
   parseScheduleUpdateInput,
   requireNewAgentSchedule,
   toScheduleCommandError,
+  warnOnSharedWorkspace,
   type ScheduleCommandOptions,
 } from "./shared.js";
 
@@ -62,6 +65,13 @@ export async function runUpdateCommand(
   const { client } = await connectScheduleClient(options.daemonTarget);
   try {
     await requireNewAgentSchedule(client, id);
+    // COMPAT(scheduleWorkspaceReuseClear): added in v0.8.0, remove after 2027-09-30.
+    // Only the clear is gated. Setting an id is a plain string and every daemon that
+    // has schedules understands it.
+    if (input.newAgentConfig?.workspaceId === null) {
+      assertDaemonSupportsWorkspaceReuseClear(client);
+    }
+    await warnOnSharedWorkspace(client, input.newAgentConfig?.workspaceId ?? undefined, id);
     const payload = await client.scheduleUpdate(input);
     if (payload.error || !payload.schedule) {
       throw new Error(payload.error ?? `Failed to update schedule: ${id}`);
@@ -72,6 +82,15 @@ export async function runUpdateCommand(
       schema: createScheduleInspectSchema(payload.schedule),
     };
   } catch (error) {
+    // COMPAT(scheduleWorkspaceReuseClear): added in v0.8.0, remove after 2027-09-30.
+    // A daemon too old to read the clear says so as a schema error; name the flag.
+    if (input.newAgentConfig?.workspaceId === null && isWorkspaceReuseClearRejection(error)) {
+      throw {
+        code: "DAEMON_TOO_OLD",
+        message:
+          "This daemon is too old to clear workspace reuse. Update the Paseo daemon, then retry.",
+      } satisfies CommandError;
+    }
     throw toScheduleCommandError("SCHEDULE_UPDATE_FAILED", "update schedule", error);
   } finally {
     await client.close().catch(() => {});

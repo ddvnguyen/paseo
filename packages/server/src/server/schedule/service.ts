@@ -31,6 +31,9 @@ import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 
 const SCHEDULE_TICK_INTERVAL_MS = 1000;
 
+/** Where one run's workspace came from. Mirrors ScheduleRun.workspaceOrigin. */
+type ScheduleRunWorkspaceOrigin = NonNullable<ScheduleRun["workspaceOrigin"]>;
+
 // A run failed because its target no longer exists: the agent was deleted or
 // archived, or a new-agent cwd was removed. These are permanent, so the schedule
 // is completed instead of retried until it burns down to its expiry.
@@ -140,19 +143,41 @@ function countCompletedRuns(schedule: StoredSchedule): number {
   return schedule.runs.filter((run) => run.status !== "running").length;
 }
 
+/**
+ * Decide whether the workspace a run used should be archived when the run ends.
+ *
+ * Decided by the workspace's ORIGIN, not by the target's `archiveOnFinish`:
+ * `archiveOnFinish` describes the workspace the target NAMED, and when reuse is
+ * refused that workspace is not the one this run used. Reading the flag there let
+ * every refused run leak a workspace of its own — a `--every 5m` schedule archived
+ * none of them, so it accumulated hundreds of active workspaces a day.
+ *
+ * - reused: never archived. A shared workspace archived by whichever run finishes
+ *   first would vanish out from under every other run.
+ * - provisioned while the target names a workspace: this run's own scratch space
+ *   standing in for an unusable named one. Archived, or it leaks per run.
+ * - provisioned with no named workspace: the user's explicit choice, honoured.
+ */
 function shouldArchiveScheduleRunWorkspace(input: {
   agentId: string | null;
   archiveOnFinish?: boolean;
-  /**
-   * This run REUSED a workspace named by the target rather than provisioning one.
-   * Never archive a shared workspace: whichever run finishes first would delete it
-   * out from under every other run. Checked here, not only at the reuse site, so
-   * the crash-recovery path (which also archives) cannot take it out either.
-   */
-  reusedWorkspace?: boolean;
+  /** Origin recorded on the run; undefined for runs persisted before it existed. */
+  workspaceOrigin?: ScheduleRun["workspaceOrigin"];
+  /** The workspace the target names, if any. */
+  namedWorkspaceId?: string | null;
+  /** The workspace this run actually used. */
+  runWorkspaceId?: string | null;
 }): boolean {
-  if (input.reusedWorkspace) return false;
-  return input.agentId === null || (input.archiveOnFinish ?? true);
+  if (input.workspaceOrigin === "reused") return false;
+  if (input.workspaceOrigin === "provisioned") {
+    if (input.namedWorkspaceId != null) return true;
+    return input.agentId === null || (input.archiveOnFinish ?? true);
+  }
+  // A run from before the origin was recorded. Never archive a workspace that
+  // matches the named one — leaking is recoverable, deleting a shared workspace
+  // is not.
+  const reused = input.namedWorkspaceId != null && input.runWorkspaceId === input.namedWorkspaceId;
+  return !reused && (input.agentId === null || (input.archiveOnFinish ?? true));
 }
 
 function shouldCompleteSchedule(schedule: StoredSchedule, now: Date): boolean {
@@ -286,6 +311,8 @@ export class ScheduleService {
     runId: string,
   ) => Promise<ScheduleExecutionResult>;
   private readonly runningScheduleIds = new Set<string>();
+  /** scheduleId:reason keys already logged, so a refused reuse is not logged per tick. */
+  private readonly warnedWorkspaceReuse = new Set<string>();
   private tickTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: ScheduleServiceOptions) {
@@ -635,9 +662,9 @@ export class ScheduleService {
           shouldArchiveScheduleRunWorkspace({
             agentId: runningRun.agentId,
             archiveOnFinish: updated.target.config.archiveOnFinish,
-            reusedWorkspace:
-              updated.target.config.workspaceId != null &&
-              runningRun.workspaceId === updated.target.config.workspaceId,
+            workspaceOrigin: runningRun.workspaceOrigin,
+            namedWorkspaceId: updated.target.config.workspaceId,
+            runWorkspaceId: runningRun.workspaceId,
           })
         ) {
           interruptedWorkspaces.push({
@@ -844,6 +871,7 @@ export class ScheduleService {
     scheduleId: string;
     runId: string;
     workspaceId: string;
+    workspaceOrigin?: ScheduleRun["workspaceOrigin"];
     agentId: string | null;
   }): Promise<void> {
     const updatedSchedule = await this.store.update(params.scheduleId, (schedule) => ({
@@ -854,6 +882,7 @@ export class ScheduleService {
           ? {
               ...run,
               workspaceId: params.workspaceId,
+              workspaceOrigin: params.workspaceOrigin ?? run.workspaceOrigin,
               agentId: params.agentId,
             }
           : run,
@@ -913,15 +942,41 @@ export class ScheduleService {
     }
     await this.assertNewAgentCwdDirectory(config.cwd);
     let workspace: PersistedWorkspaceRecord | null = null;
+    let workspaceOrigin: ScheduleRun["workspaceOrigin"];
     let agentId: string | null = null;
     try {
-      workspace = await this.createScheduleRunWorkspace(config, schedule.prompt);
+      const resolved = await this.resolveScheduleRunWorkspace(config, schedule);
+      workspace = resolved.workspace;
+      workspaceOrigin = resolved.origin;
       await this.recordRunWorkspace({
         scheduleId: schedule.id,
         runId,
         workspaceId: workspace.workspaceId,
+        workspaceOrigin,
         agentId: null,
       });
+      // The workspace was resolved before the run was recorded, so a workspace
+      // archived in between is still in hand here. Re-read immediately before
+      // creating the agent: reusing a workspace that just went to retired would
+      // drop an agent where nobody can see it. Falls back to this run's own
+      // workspace and re-records the origin, so the archive decision matches.
+      const revalidated = await this.revalidateScheduleRunWorkspace(
+        config,
+        schedule,
+        workspace,
+        workspaceOrigin,
+      );
+      workspace = revalidated.workspace;
+      workspaceOrigin = revalidated.origin;
+      if (revalidated.switched) {
+        await this.recordRunWorkspace({
+          scheduleId: schedule.id,
+          runId,
+          workspaceId: workspace.workspaceId,
+          workspaceOrigin,
+          agentId: null,
+        });
+      }
       const runConfig = { ...config, cwd: workspace.cwd };
       const created = await this.createAgent({
         kind: "mcp",
@@ -948,6 +1003,7 @@ export class ScheduleService {
         scheduleId: schedule.id,
         runId,
         workspaceId: workspace.workspaceId,
+        workspaceOrigin,
         agentId,
       });
       if (created.initialPromptError) {
@@ -981,8 +1037,9 @@ export class ScheduleService {
         shouldArchiveScheduleRunWorkspace({
           agentId,
           archiveOnFinish: config.archiveOnFinish,
-          reusedWorkspace:
-            config.workspaceId != null && workspace.workspaceId === config.workspaceId,
+          workspaceOrigin,
+          namedWorkspaceId: config.workspaceId,
+          runWorkspaceId: workspace.workspaceId,
         })
       ) {
         try {
@@ -1003,20 +1060,76 @@ export class ScheduleService {
     }
   }
 
-  private async createScheduleRunWorkspace(
+  /**
+   * Pick the workspace for one run and record where it came from.
+   *
+   * Explicit reuse names an existing workspace instead of provisioning one, so the
+   * schedule's history collects in one place. When reuse is refused the run still
+   * needs a workspace, and the origin it gets is what decides whether that
+   * workspace is archived afterwards — see shouldArchiveScheduleRunWorkspace.
+   */
+  private async resolveScheduleRunWorkspace(
+    config: Extract<ScheduleTarget, { type: "new-agent" }>["config"],
+    schedule: StoredSchedule,
+  ): Promise<{ workspace: PersistedWorkspaceRecord; origin: ScheduleRunWorkspaceOrigin }> {
+    if (config.workspaceId) {
+      const reusable = await this.findReusableScheduleWorkspace(config, schedule);
+      if (reusable) {
+        return { workspace: reusable, origin: "reused" };
+      }
+    }
+    return {
+      workspace: await this.provisionScheduleRunWorkspace(config, schedule.prompt),
+      origin: "provisioned",
+    };
+  }
+
+  /**
+   * Re-check a workspace chosen moments earlier, immediately before the agent is
+   * created. A reused workspace can be archived in between, and creating an agent
+   * inside a retired workspace hides it from the workspace list. Falls back to a
+   * workspace of this run's own; the caller re-records the origin so the archive
+   * decision follows the workspace actually used.
+   */
+  private async revalidateScheduleRunWorkspace(
+    config: Extract<ScheduleTarget, { type: "new-agent" }>["config"],
+    schedule: StoredSchedule,
+    workspace: PersistedWorkspaceRecord,
+    origin: ScheduleRunWorkspaceOrigin,
+  ): Promise<{
+    workspace: PersistedWorkspaceRecord;
+    origin: ScheduleRunWorkspaceOrigin;
+    switched: boolean;
+  }> {
+    if (origin !== "reused" || !config.workspaceId) {
+      return { workspace, origin, switched: false };
+    }
+    const current = this.getWorkspace ? await this.getWorkspace(config.workspaceId) : null;
+    if (current && !current.archivedAt) {
+      return { workspace: current, origin, switched: false };
+    }
+    this.warnOncePerSchedule(
+      schedule.id,
+      current ? "archived-before-agent" : "vanished-before-agent",
+      {
+        workspaceId: config.workspaceId,
+        ...(current ? { archivedAt: current.archivedAt } : {}),
+      },
+      current
+        ? "schedule workspace reuse: workspace was archived before the agent started, provisioning a new workspace instead"
+        : "schedule workspace reuse: workspace disappeared before the agent started, provisioning a new workspace instead",
+    );
+    return {
+      workspace: await this.provisionScheduleRunWorkspace(config, schedule.prompt),
+      origin: "provisioned",
+      switched: true,
+    };
+  }
+
+  private async provisionScheduleRunWorkspace(
     config: Extract<ScheduleTarget, { type: "new-agent" }>["config"],
     prompt: string,
   ): Promise<PersistedWorkspaceRecord> {
-    // Explicit reuse: name an existing workspace instead of provisioning one. Every
-    // run of a schedule otherwise got its own workspace, so a 288-run schedule left
-    // 288 directories and no single place to see the schedule's history.
-    if (config.workspaceId) {
-      const reusable = await this.findReusableScheduleWorkspace(config);
-      if (reusable) {
-        return reusable;
-      }
-    }
-
     const firstAgentContext = { prompt };
     switch (config.isolation ?? "local") {
       case "local":
@@ -1025,6 +1138,26 @@ export class ScheduleService {
         return (await this.createPaseoWorktreeWorkspace({ cwd: config.cwd, firstAgentContext }))
           .workspace;
     }
+  }
+
+  /**
+   * Log a refused-reuse warning once per schedule per reason for the life of the
+   * daemon. A schedule whose named workspace is unusable logs on every tick, and a
+   * 5-minute schedule would bury every other warning in the log for as long as the
+   * misconfiguration lasts. The reason stays in the message, and a different reason
+   * still gets its own line, so a schedule that goes from "archived" to "cwd
+   * mismatch" does not look unchanged.
+   */
+  private warnOncePerSchedule(
+    scheduleId: string,
+    reason: string,
+    bindings: Record<string, unknown>,
+    message: string,
+  ): void {
+    const key = `${scheduleId}:${reason}`;
+    if (this.warnedWorkspaceReuse.has(key)) return;
+    this.warnedWorkspaceReuse.add(key);
+    this.logger.warn({ scheduleId, reason, ...bindings }, message);
   }
 
   /**
@@ -1043,13 +1176,16 @@ export class ScheduleService {
    */
   private async findReusableScheduleWorkspace(
     config: Extract<ScheduleTarget, { type: "new-agent" }>["config"],
+    schedule: StoredSchedule,
   ): Promise<PersistedWorkspaceRecord | null> {
     const workspaceId = config.workspaceId;
     if (!workspaceId) {
       return null;
     }
     if (config.archiveOnFinish !== false) {
-      this.logger.warn(
+      this.warnOncePerSchedule(
+        schedule.id,
+        "archive-on-finish",
         { workspaceId, archiveOnFinish: config.archiveOnFinish ?? null },
         "schedule workspace reuse: needs archiveOnFinish false, provisioning a new workspace instead",
       );
@@ -1057,7 +1193,9 @@ export class ScheduleService {
     }
     const existing = this.getWorkspace ? await this.getWorkspace(workspaceId) : null;
     if (!existing) {
-      this.logger.warn(
+      this.warnOncePerSchedule(
+        schedule.id,
+        "not-found",
         { workspaceId },
         "schedule workspace reuse: id not found, provisioning a new workspace instead",
       );
@@ -1067,7 +1205,9 @@ export class ScheduleService {
     // rejected here. Placing agents in it hides them from the workspace list and
     // re-archives a workspace the user already retired.
     if (existing.archivedAt) {
-      this.logger.warn(
+      this.warnOncePerSchedule(
+        schedule.id,
+        "archived",
         { workspaceId, archivedAt: existing.archivedAt },
         "schedule workspace reuse: workspace is archived, provisioning a new workspace instead",
       );
@@ -1078,7 +1218,9 @@ export class ScheduleService {
     const configuredCwd = config.cwd?.replace(/\/+$/, "");
     const workspaceCwd = existing.cwd?.replace(/\/+$/, "");
     if (configuredCwd && workspaceCwd && configuredCwd !== workspaceCwd) {
-      this.logger.warn(
+      this.warnOncePerSchedule(
+        schedule.id,
+        "cwd-mismatch",
         { workspaceId, workspaceCwd: existing.cwd, configuredCwd: config.cwd },
         "schedule workspace reuse: workspace cwd does not match the target cwd, provisioning a new workspace instead",
       );

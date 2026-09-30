@@ -285,6 +285,43 @@ try {
     );
     console.log("schedule rejects an empty --workspace-id\n");
   }
+  {
+    console.log("Test 1h: schedule create warns when another schedule shares the workspace");
+    const args = (workspaceId: string) => [
+      "schedule",
+      "create",
+      "Shared workspace",
+      "--every",
+      "5m",
+      "--provider",
+      "claude",
+      "--cwd",
+      ctx.workDir,
+      "--workspace-id",
+      workspaceId,
+      "--json",
+    ];
+
+    const first = await ctx.paseo(args("wks_e2e_shared_pair"), { timeout: 30000 });
+    assert.strictEqual(first.exitCode, 0, first.stderr);
+    const firstJson = JSON.parse(first.stdout);
+
+    // Nothing excludes one schedule's run from another's, so the CLI says so
+    // instead of letting two schedules quietly share a directory.
+    const second = await ctx.paseo(args("wks_e2e_shared_pair"), { timeout: 30000 });
+    assert.strictEqual(second.exitCode, 0, second.stderr);
+    assert(
+      second.stderr.includes("already use workspace wks_e2e_shared_pair"),
+      `should warn about the shared workspace, got: ${second.stderr}`,
+    );
+    const secondJson = JSON.parse(second.stdout);
+
+    for (const id of [firstJson.id, secondJson.id]) {
+      const deleted = await ctx.paseo(["schedule", "delete", id, "--json"]);
+      assert.strictEqual(deleted.exitCode, 0, deleted.stderr);
+    }
+    console.log("schedule create warns when another schedule shares the workspace\n");
+  }
 } finally {
   await ctx.stop();
   await rm(ctx.paseoHome, { recursive: true, force: true });

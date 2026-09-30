@@ -59,6 +59,18 @@ export const ScheduleRunSchema = z.object({
   status: z.enum(["running", "succeeded", "failed"]),
   agentId: z.guid().nullable(),
   workspaceId: z.string().nullable().optional(),
+  /**
+   * Where this run's workspace came from. Recorded per run rather than inferred from
+   * the target's config, because the target can be edited while a run is in flight and
+   * crash recovery reads the config long after the run ended. A workspace the run
+   * reused is never archived; one the run provisioned is this run's own.
+   *
+   * Absent on runs persisted before this field existed: those are resolved by
+   * comparing the run's workspace against the target's named workspace.
+   */
+  // COMPAT(scheduleRunWorkspaceOrigin): added in v0.8.0, remove the absent-run
+  // fallback in resolveRunWorkspaceArchive after the daemon floor is >= v0.8.0.
+  workspaceOrigin: z.enum(["reused", "provisioned"]).optional(),
   output: z.string().nullable(),
   error: z.string().nullable(),
 });
