@@ -53,6 +53,7 @@ import {
   TokenText,
   TrajectoryCellRow,
   cellContext,
+  rowSurface,
   columnLayout,
   formatClockTime,
   kindRailColor,
@@ -480,5 +481,77 @@ describe("ledger cells", () => {
     expect(document.querySelector('[data-testid="kind-tag-llm"]')?.textContent).toBe("L");
     render(<KindTag kind="systemPrompt" compact theme={THEME} />);
     expect(document.querySelector('[data-testid="kind-tag-systemPrompt"]')?.textContent).toBe("P");
+  });
+
+  // --- T3 item 10: dividers, type tint, zebra -----------------------------
+
+  function rowStyleOf(probe: TrajectoryCellProps): Record<string, unknown> {
+    render(<TrajectoryCellRow cell={probe} compact={false} theme={THEME} testID="probe" />);
+    return JSON.parse(
+      document.querySelector('[data-testid="probe"]')?.getAttribute("data-style") ?? "{}",
+    );
+  }
+
+  it("draws a hairline divider under every row", () => {
+    for (const probe of [
+      cell(),
+      cell({ index: 2, kind: "message" }),
+      cell({ index: 3, kind: "tool" }),
+    ]) {
+      expect(rowStyleOf(probe).borderBottomWidth).toBe(1);
+      expect(rowStyleOf(probe).borderBottomColor).toBe(THEME.colors.border);
+    }
+  });
+
+  it("uses only theme surface tokens for every kind's background", () => {
+    const surfaces = new Set([
+      "transparent",
+      THEME.colors.surface0,
+      THEME.colors.surface1,
+      THEME.colors.surface2,
+    ]);
+    for (const kind of ["user", "message", "tool", "system", "llm", "systemPrompt"] as const) {
+      const background = rowStyleOf(cell({ index: 1, kind })).backgroundColor;
+      expect(surfaces.has(background as string)).toBe(true);
+    }
+  });
+
+  it("gives each kind its own base tint", () => {
+    expect(rowSurface(THEME, "user", false, 0)).toBe(THEME.colors.surface1);
+    expect(rowSurface(THEME, "message", false, 0)).toBe(THEME.colors.surface0);
+    expect(rowSurface(THEME, "tool", false, 0)).toBe("transparent");
+    expect(rowSurface(THEME, "system", false, 0)).toBe(THEME.colors.surface2);
+  });
+
+  it("steps odd rows one level darker so adjacent rows differ", () => {
+    const even = rowSurface(THEME, "message", false, 0);
+    const odd = rowSurface(THEME, "message", false, 1);
+    expect(odd).not.toBe(even);
+    // One step, not all the way down the ladder.
+    expect(even).toBe(THEME.colors.surface0);
+    expect(odd).toBe(THEME.colors.surface1);
+  });
+
+  it("caps the zebra at surface2 instead of inventing a darker colour", () => {
+    expect(rowSurface(THEME, "system", false, 1)).toBe(THEME.colors.surface2);
+    expect(rowSurface(THEME, "llm", false, 1)).toBe(THEME.colors.surface2);
+  });
+
+  it("keeps a failed row on surface1 regardless of the zebra", () => {
+    // The failure wins the background, so an error never reads as an ordinary
+    // alternate row; the rail is what distinguishes it from its neighbours.
+    expect(rowSurface(THEME, "message", true, 0)).toBe(THEME.colors.surface1);
+    expect(rowSurface(THEME, "message", true, 1)).toBe(THEME.colors.surface1);
+    expect(rowSurface(THEME, "tool", true, 1)).toBe(THEME.colors.surface1);
+  });
+
+  it("gives the sticky column header its own bottom rule", () => {
+    render(<LedgerColumnHeader compact={false} theme={THEME} />);
+    const style = JSON.parse(
+      document.querySelector('[data-testid="ledger-column-header"]')?.getAttribute("data-style") ??
+        "{}",
+    );
+    expect(style.borderBottomWidth).toBe(1);
+    expect(style.borderBottomColor).toBe(THEME.colors.border);
   });
 });

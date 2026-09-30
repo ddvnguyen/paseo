@@ -36,6 +36,61 @@ export function columnLayout(compact: boolean): {
     : { time: 64, type: 68, stats: 150, gap: 8, padLeft: 6 };
 }
 
+/**
+ * Surface ladder, lightest first. Only theme tokens are used — no manufactured
+ * or translucent colours (design.md) — so "one step darker" always means the
+ * next entry here.
+ */
+const SURFACE_LADDER = ["transparent", "surface0", "surface1", "surface2"] as const;
+type SurfaceToken = (typeof SURFACE_LADDER)[number];
+
+/**
+ * Base surface per kind. The tint says WHICH KIND a row is; the zebra below
+ * says WHICH ROW it is. The rail and the kind tag stay the precise signal for
+ * type, so these tints only have to separate broad groups.
+ */
+const KIND_SURFACE: Record<TrajectoryCellProps["kind"], SurfaceToken> = {
+  user: "surface1",
+  message: "surface0",
+  tool: "transparent",
+  system: "surface2",
+  llm: "surface2",
+  systemPrompt: "surface1",
+  context: "transparent",
+  compacted: "transparent",
+  subtool: "transparent",
+};
+
+/**
+ * Background for one row.
+ *
+ * Precedence, applied in this order:
+ *  1. A FAILED row is fixed at `surface1`. The failure wins the background: the
+ *     statusDanger rail already says what happened, and letting the zebra move
+ *     that surface would make the error row look like an ordinary alternate one.
+ *  2. Otherwise the row's kind picks the base from the ladder.
+ *  3. Then the ZEBRA steps the base ONE level darker for odd rows, capped at
+ *     surface2. Stepping (rather than toggling between two fixed levels) keeps
+ *     the mapping monotone and predictable: base + parity.
+ *
+ * Kinds already sitting at the cap (system, llm) do not move. The per-row
+ * divider is what separates those, which is why the divider is not optional
+ * polish here but part of this scheme.
+ */
+export function rowSurface(
+  theme: PluginTheme,
+  kind: TrajectoryCellProps["kind"],
+  isError: boolean,
+  zebraStep: 0 | 1,
+): string {
+  if (isError) return theme.colors.surface1;
+  const base = KIND_SURFACE[kind] ?? "transparent";
+  const start = SURFACE_LADDER.indexOf(base);
+  const index = Math.min(start + zebraStep, SURFACE_LADDER.length - 1);
+  const token = SURFACE_LADDER[index];
+  return token === "transparent" ? "transparent" : theme.colors[token];
+}
+
 /** Per-kind accent, mapped onto existing theme tokens. No new colors. */
 export function kindAccentColor(
   theme: PluginTheme,
@@ -236,6 +291,8 @@ function headerStyles(theme: PluginTheme, columns: Columns) {
       paddingLeft: columns.padLeft,
       paddingRight: 8,
       paddingVertical: 3,
+      // The header sits on the last row it labels, so its rule reads as the
+      // table's top edge rather than as another row divider.
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: theme.colors.border,
       backgroundColor: theme.colors.surface1,
@@ -309,9 +366,13 @@ export function TrajectoryCellRow(props: {
 }) {
   const { cell, compact, theme, resolvedText, onPress, testID } = props;
   const columns = columnLayout(compact);
+  // `cell.index` is assigned by the fold over every row in arrival order, so it
+  // increases monotonically down the list — which is exactly what a zebra needs.
+  // No extra prop, and it stays correct as turns stream in.
+  const zebraStep: 0 | 1 = cell.index % 2 === 1 ? 1 : 0;
   const styles = useMemo(
-    () => cellStyles(theme, cell.isError === true, columns),
-    [theme, cell.isError, columns],
+    () => cellStyles(theme, cell.isError === true, columns, zebraStep, cell.kind),
+    [theme, cell.isError, columns, zebraStep, cell.kind],
   );
   // Bound here (not inline in JSX): Pressable passes the press event as the
   // first argument, so an unbound handler would receive the event, not the cell.
@@ -408,7 +469,13 @@ function StatsCell(props: { cell: TrajectoryCellProps; theme: PluginTheme }) {
   return <DurationText timeSeconds={cell.timeSeconds} theme={theme} />;
 }
 
-function cellStyles(theme: PluginTheme, error: boolean, columns: Columns) {
+function cellStyles(
+  theme: PluginTheme,
+  error: boolean,
+  columns: Columns,
+  zebraStep: 0 | 1,
+  kind: TrajectoryCellProps["kind"],
+) {
   return StyleSheet.create({
     row: {
       flexDirection: "row",
@@ -418,7 +485,11 @@ function cellStyles(theme: PluginTheme, error: boolean, columns: Columns) {
       paddingLeft: columns.padLeft,
       paddingRight: 8,
       paddingVertical: 2,
-      backgroundColor: error ? theme.colors.surface1 : "transparent",
+      // The hairline is the visual line break between rows (owner item 10); the
+      // background carries type + order on top of it.
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: theme.colors.border,
+      backgroundColor: rowSurface(theme, kind, error, zebraStep),
     },
     rail: {
       width: 3,
