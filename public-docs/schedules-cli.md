@@ -114,6 +114,8 @@ paseo schedule update <id> --workspace-id wks_def456
 paseo schedule update <id> --no-workspace-id
 ```
 
+`--no-workspace-id` only drops the shared workspace. Archiving stays off, so the runs that follow each get a workspace of their own that is never archived; clear that separately if you want them retired.
+
 The daemon re-checks reuse on every run rather than trusting the stored config. A run falls back to its own workspace, and logs a warning, when the workspace was archived, when it does not exist, or when its directory differs from `--cwd`. The schedule keeps running either way.
 
 ## Cadence
