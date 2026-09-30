@@ -30,6 +30,9 @@ export type ScheduleTarget =
         thinkingOptionId?: string;
         title?: string | null;
         providerOptions?: Record<string, unknown>;
+        /** Reuse this existing workspace for every run instead of provisioning one. */
+        workspaceId?: string;
+        archiveOnFinish?: boolean;
       };
     };
 
@@ -140,7 +143,8 @@ export interface UpdateScheduleNewAgentConfig {
   modeId?: string | null;
   cwd?: string;
   /** Reuse this existing workspace for every run instead of provisioning one. */
-  workspaceId?: string;
+  workspaceId?: string | null;
+  archiveOnFinish?: boolean;
 }
 
 export interface UpdateScheduleInput {

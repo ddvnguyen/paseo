@@ -682,7 +682,12 @@ describe("ScheduleService", () => {
         type: "new-agent",
         // archiveOnFinish omitted, so it defaults to true. Reuse would let whichever
         // run finishes first archive the workspace out from under the others.
-        config: { provider: "claude", model: "test-model", cwd: tempDir, workspaceId: shared.workspaceId },
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          workspaceId: shared.workspaceId,
+        },
       },
     });
 
@@ -690,8 +695,20 @@ describe("ScheduleService", () => {
     // usable: the run falls back to a dedicated workspace instead of failing.
     await service.tick();
     const inspected = await service.inspect(created.id);
-    const agent = await agentStorage.get(inspected.runs[0]!.agentId!);
+    expect(inspected.runs).toHaveLength(1);
+    const run = inspected.runs[0]!;
+    // The run must actually happen. Refusing reuse is a config problem, not a lost
+    // workspace: the run has to succeed against a workspace of its own.
+    expect(run.status).toBe("succeeded");
+    expect(run.agentId).not.toBeNull();
+    const agent = await agentStorage.get(run.agentId!);
+    expect(agent?.workspaceId).toMatch(/^wks_/);
     expect(agent?.workspaceId).not.toBe(shared.workspaceId);
+    // Completing the schedule here would be a one-way door: the run above is
+    // reported as a dead target, and finishRun reads that as "permanently gone".
+    // Every future tick would be skipped, so the schedule has to stay live.
+    expect(inspected.status).not.toBe("completed");
+    expect(inspected.nextRunAt).not.toBeNull();
     // The critical safety property: refusing reuse must leave the named workspace
     // intact, so the schedule stays usable instead of pointing at a deleted workspace.
     const named = (await workspaceRegistry.list()).find(
@@ -701,10 +718,8 @@ describe("ScheduleService", () => {
   });
 
   test("target workspaceId that does not exist falls back to a new workspace", async () => {
-    const {
-      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
-      createArchiveWorkspace,
-    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const { createDirectoryWorkspace: createScheduleDirectoryWorkspace, createArchiveWorkspace } =
+      await createRegistryBackedScheduleWorkspaceDeps(tempDir);
     const manager = new AgentManager({
       logger: createTestLogger(),
       clients: createTestAgentClients(),
@@ -749,10 +764,8 @@ describe("ScheduleService", () => {
   });
 
   test("target workspaceId whose cwd differs from the target cwd is refused", async () => {
-    const {
-      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
-      createArchiveWorkspace,
-    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const { createDirectoryWorkspace: createScheduleDirectoryWorkspace, createArchiveWorkspace } =
+      await createRegistryBackedScheduleWorkspaceDeps(tempDir);
     const shared = await createScheduleDirectoryWorkspace({
       cwd: `${tempDir}/elsewhere`,
       firstAgentContext: { prompt: "pre-existing workspace" },
@@ -796,8 +809,68 @@ describe("ScheduleService", () => {
     // would quietly run the schedule in the wrong place.
     await service.tick();
     const inspected = await service.inspect(created.id);
-    const agent = await agentStorage.get(inspected.runs[0]!.agentId!);
+    expect(inspected.runs).toHaveLength(1);
+    const run = inspected.runs[0]!;
+    expect(run.status).toBe("succeeded");
+    expect(run.agentId).not.toBeNull();
+    const agent = await agentStorage.get(run.agentId!);
+    expect(agent?.workspaceId).toMatch(/^wks_/);
     expect(agent?.workspaceId).not.toBe(shared.workspaceId);
+    // A rejected reuse is a warning, not a dead target — completing the schedule
+    // would silently stop every future run of it.
+    expect(inspected.status).not.toBe("completed");
+    expect(inspected.nextRunAt).not.toBeNull();
+  });
+
+  test("target workspaceId that is already archived provisions instead of reusing", async () => {
+    const { createDirectoryWorkspace: createScheduleDirectoryWorkspace } =
+      await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const shared = await createScheduleDirectoryWorkspace({
+      cwd: tempDir,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      seedWorkspaces: [{ ...shared, archivedAt: "2026-01-01T00:00:00.000Z" }],
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "reuse an archived workspace",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: false,
+          workspaceId: shared.workspaceId,
+        },
+      },
+    });
+
+    // An archived id still resolves in the registry, so reuse has to reject it
+    // explicitly. Dropping agents into an archived workspace hides them from the
+    // workspace list and re-archives a workspace the user already retired.
+    await service.tick();
+    const inspected = await service.inspect(created.id);
+    const run = inspected.runs[0]!;
+    expect(run.status).toBe("succeeded");
+    expect(run.agentId).not.toBeNull();
+    const agent = await agentStorage.get(run.agentId!);
+    expect(agent?.workspaceId).not.toBe(shared.workspaceId);
+    expect(inspected.status).not.toBe("completed");
   });
 
   test("archiveOnFinish=false local runs create one active workspace per run", async () => {

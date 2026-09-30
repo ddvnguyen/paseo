@@ -205,9 +205,11 @@ export function parseScheduleCreateInput(options: {
         ...(resolvedProviderModel.model ? { model: resolvedProviderModel.model } : {}),
         ...(modeId ? { modeId } : {}),
         ...(thinkingOptionId ? { thinkingOptionId } : {}),
-        // Reuse is meaningless unless the workspace is not archived per run; refuse
-        // the unsafe pair at the CLI rather than at run time, so the user learns
-        // before the schedule exists rather than on its first tick.
+        // Reuse is meaningless unless the workspace survives the run, so asking for
+        // a workspaceId also pins archiveOnFinish false rather than refusing the
+        // combination. The user asked for one workspace; archiving it per run would
+        // silently give them a new one each time, which is the behaviour they were
+        // trying to avoid. The daemon re-checks the pair on every run regardless.
         ...(options.workspaceId
           ? { workspaceId: parseWorkspaceId(options.workspaceId), archiveOnFinish: false }
           : {}),
@@ -258,6 +260,8 @@ export interface ScheduleUpdateOptionsInput {
   cwd?: string;
   /** Reuse an existing workspace for every run; omit to keep per-run workspaces. */
   workspaceId?: string;
+  /** Drop workspace reuse and go back to one workspace per run. */
+  clearWorkspaceId?: boolean;
   maxRuns?: string;
   expiresIn?: string;
   clearMaxRuns?: boolean;
@@ -446,15 +450,21 @@ function buildNewAgentConfigPatch(
     }
     patch.cwd = trimmed;
   }
+  if (options.workspaceId !== undefined && options.clearWorkspaceId) {
+    throw {
+      code: "CONFLICTING_WORKSPACE_ID",
+      message: "Use either --workspace-id <id> or --no-workspace-id, not both",
+    } satisfies CommandError;
+  }
   if (options.workspaceId !== undefined) {
-    const trimmed = options.workspaceId.trim();
-    if (!trimmed) {
-      throw {
-        code: "INVALID_WORKSPACE_ID",
-        message: "--workspace-id cannot be empty; omit the flag to keep provisioning a new workspace",
-      } satisfies CommandError;
-    }
-    patch.workspaceId = trimmed;
+    // Same pairing as create: naming a workspace also stops the schedule archiving
+    // one per run. Without this an update could leave the unsafe pair in place on a
+    // schedule that was created before --workspace-id existed, or on one whose
+    // archiveOnFinish was left at its default.
+    patch.workspaceId = parseWorkspaceId(options.workspaceId);
+    patch.archiveOnFinish = false;
+  } else if (options.clearWorkspaceId) {
+    patch.workspaceId = null;
   }
   return Object.keys(patch).length > 0 ? patch : undefined;
 }

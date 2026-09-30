@@ -23,11 +23,16 @@ export interface ScheduleUpdateOptions extends ScheduleCommandOptions {
   model?: string;
   mode?: string;
   cwd?: string;
-  /** Reuse this existing workspace for every run (requires --no-archive-on-finish). */
-  workspaceId?: string;
-  maxRuns?: string;
+  /**
+   * `--workspace-id <id>` sets the id; `--no-workspace-id` sets it to false, so the
+   * two share one key. Commander negates `--no-x` onto `x` itself — it never
+   * produces a separate `noX` field, so reading `options.noWorkspaceId` would be
+   * permanently undefined and the clear flag would silently do nothing.
+   */
+  workspaceId?: string | false;
+  maxRuns?: string | false;
   noMaxRuns?: boolean;
-  expiresIn?: string;
+  expiresIn?: string | false;
   noExpiresIn?: boolean;
 }
 
@@ -47,11 +52,12 @@ export async function runUpdateCommand(
     model: options.model,
     mode: options.mode,
     cwd: options.cwd,
-    workspaceId: options.workspaceId,
-    maxRuns: options.maxRuns,
-    expiresIn: options.expiresIn,
-    clearMaxRuns: options.noMaxRuns,
-    clearExpires: options.noExpiresIn,
+    workspaceId: typeof options.workspaceId === "string" ? options.workspaceId : undefined,
+    clearWorkspaceId: options.workspaceId === false,
+    maxRuns: typeof options.maxRuns === "string" ? options.maxRuns : undefined,
+    expiresIn: typeof options.expiresIn === "string" ? options.expiresIn : undefined,
+    clearMaxRuns: options.maxRuns === false || options.noMaxRuns === true,
+    clearExpires: options.expiresIn === false || options.noExpiresIn === true,
   });
   const { client } = await connectScheduleClient(options.daemonTarget);
   try {
