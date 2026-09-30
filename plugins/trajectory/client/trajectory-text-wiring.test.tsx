@@ -129,15 +129,12 @@ afterEach(() => {
   container.remove();
 });
 
-/** Expand the fold, since turns render collapsed. */
-async function expand(): Promise<void> {
-  const toggle = container.querySelector('[data-testid="toggle-turns"]');
-  if (toggle !== null) {
-    await act(async () => {
-      (toggle as HTMLButtonElement).click();
-    });
-  }
-}
+/**
+ * Turns render expanded by default (T3 item 9), so there is nothing to expand.
+ * Deliberately a no-op: these tests should FAIL if that default ever changes,
+ * rather than quietly clicking the toolbar to compensate.
+ */
+async function expand(): Promise<void> {}
 
 function cellText(index: number): string | null {
   return (

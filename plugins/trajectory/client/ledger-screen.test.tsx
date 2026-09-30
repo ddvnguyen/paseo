@@ -72,6 +72,7 @@ vi.mock("react-native", () => ({
     ),
 }));
 
+import type { TrajectoryFoldRow } from "../shared/dsh/layout.js";
 import { LedgerScreen } from "./ledger-screen.js";
 import { FIXTURE_OPEN_CALLS, FIXTURE_ROWS, FIXTURE_TURN_NUMBERS } from "./fixtures.js";
 
@@ -105,12 +106,33 @@ afterEach(() => {
   container.remove();
 });
 
-function render(overrides: { compact?: boolean } = {}): void {
+/** A third turn, as a live append would deliver it after mount. */
+const APPENDED_ROW: TrajectoryFoldRow = {
+  seq: 90,
+  timeMs: Date.parse("2026-09-26T00:01:30Z"),
+  kind: "user",
+  label: "a later turn",
+  durationMs: null,
+  turnId: "t3",
+  step: null,
+};
+
+/** Hoisted so no array literal is created inside a JSX prop (react-perf). */
+const ROWS_WITH_APPENDED_TURN: readonly TrajectoryFoldRow[] = [...FIXTURE_ROWS, APPENDED_ROW];
+const TURN_NUMBERS_WITH_APPENDED: ReadonlyMap<string, number> = new Map([
+  ...FIXTURE_TURN_NUMBERS,
+  ["t3", 3],
+]);
+
+function render(overrides: { compact?: boolean; extraTurn?: boolean } = {}): void {
+  const appended = overrides.extraTurn === true;
+  const rows = appended ? ROWS_WITH_APPENDED_TURN : FIXTURE_ROWS;
+  const turnNumbers = appended ? TURN_NUMBERS_WITH_APPENDED : FIXTURE_TURN_NUMBERS;
   act(() => {
     root.render(
       <LedgerScreen
-        rows={FIXTURE_ROWS}
-        turnNumbers={FIXTURE_TURN_NUMBERS}
+        rows={rows}
+        turnNumbers={turnNumbers}
         openCallIds={FIXTURE_OPEN_CALLS}
         compact={overrides.compact === true}
         theme={THEME}
@@ -120,25 +142,63 @@ function render(overrides: { compact?: boolean } = {}): void {
 }
 
 describe("ledger screen", () => {
-  it("renders one folded header per turn plus the heavier inter-turn rule", () => {
+  it("renders one header per turn plus the heavier inter-turn rule", () => {
     render();
     expect(document.querySelector('[data-testid="turn-header-1"]')).not.toBeNull();
     expect(document.querySelector('[data-testid="turn-header-2"]')).not.toBeNull();
     expect(document.querySelectorAll('[data-testid="turn-rule"]')).toHaveLength(1);
-    // Folded by default: no cell rows visible.
-    expect(document.querySelector('[data-testid="ledger-list"] [data-testid^="cell-"]')).toBeNull();
   });
 
-  it("unfolds a turn on press and puts every cell directly under its header", () => {
+  it("expands every turn by default (owner item 9)", () => {
     render();
-    const header = document.querySelector('[data-testid="turn-header-1"]') as HTMLButtonElement;
-    act(() => header.click());
-    const open = document.querySelectorAll('[data-testid^="cell-"]').length;
-    expect(open).toBeGreaterThan(0);
-    // No step grouping: tool rows are visible with the rest, and there is no
-    // step header anywhere in the list.
+    // The ledger's default posture: a reader sees the rows, not a list of
+    // closed headers they have to open one at a time.
+    expect(cells().length).toBeGreaterThan(0);
+    const header = container.querySelector('[data-testid="turn-header-1"]');
+    // The chevron reads open (▾), not closed (▸).
+    expect(header?.textContent).toContain("▾");
+  });
+
+  it("keeps a manual collapse and still expands a turn appended later", () => {
+    render();
+    const allOpen = cells().length;
+    expect(allOpen).toBeGreaterThan(0);
+    // The user collapses turn 1 by hand. Turn 2 stays open, so the count drops
+    // rather than reaching zero.
+    act(() =>
+      (container.querySelector('[data-testid="turn-header-1"]') as HTMLButtonElement).click(),
+    );
+    const afterCollapse = cells().length;
+    expect(afterCollapse).toBeGreaterThan(0);
+    expect(afterCollapse).toBeLessThan(allOpen);
+
+    // A new turn arrives from the live stream.
+    render({ extraTurn: true });
+    expect(document.querySelector('[data-testid="turn-header-3"]')).not.toBeNull();
+    // Expanded without any user action: its chevron reads open and the visible
+    // row count went back up, while turn 1 stayed collapsed.
+    expect(document.querySelector('[data-testid="turn-header-3"]')?.textContent).toContain("▾");
+    expect(cells().length).toBeGreaterThan(afterCollapse);
+    expect(document.querySelector('[data-testid="turn-header-1"]')?.textContent).toContain("▸");
+    // And it is still exactly the state the reader left it in.
+    expect(cells().length).toBeGreaterThan(afterCollapse);
+  });
+
+  it("collapses and re-expands a turn on press, with every cell under its header", () => {
+    render();
+    const header = container.querySelector('[data-testid="turn-header-1"]') as HTMLButtonElement;
+    const shown = () => container.querySelectorAll('[data-testid^="cell-"]').length;
+    const opened = shown();
+    expect(opened).toBeGreaterThan(0);
+    // No step grouping: tool rows live with the rest, and there is no step
+    // header anywhere in the list.
     expect(document.querySelector('[data-testid="chars-text"]')).not.toBeNull();
     expect(container.querySelector('[data-testid^="step-header"]')).toBeNull();
+
+    act(() => header.click());
+    expect(shown()).toBeLessThan(opened);
+    act(() => header.click());
+    expect(shown()).toBe(opened);
   });
 
   it("renders the sticky column header above the ledger", () => {
@@ -149,11 +209,21 @@ describe("ledger screen", () => {
     }
   });
 
-  it("the Turns toggle exposes tool rows with characters and durations, then collapses", () => {
+  it("the Turns toggle hides tool rows with characters and durations, then restores them", () => {
     render();
+    const visible = () =>
+      container.querySelectorAll('[data-testid="ledger-list"] [data-testid^="cell-"]').length;
+    const shown = visible();
+    expect(shown).toBeGreaterThan(0);
+    // Already open by default, so the toggle collapses everything.
     act(() =>
       (document.querySelector('[data-testid="toggle-turns"]') as HTMLButtonElement).click(),
     );
+    expect(visible()).toBe(0);
+    act(() =>
+      (document.querySelector('[data-testid="toggle-turns"]') as HTMLButtonElement).click(),
+    );
+    expect(visible()).toBe(shown);
     // In-flight tool (c3) shows the em dash; settled one shows 2,400 ms.
     const durations = [...document.querySelectorAll('[data-testid="duration-text"]')].map(
       (node) => node.textContent,
@@ -164,19 +234,10 @@ describe("ledger screen", () => {
       (node) => node.textContent,
     );
     expect(chars).toContain("1,520 chars");
-    // Everything is open now, so the same toggle closes it again.
-    act(() =>
-      (document.querySelector('[data-testid="toggle-turns"]') as HTMLButtonElement).click(),
-    );
-    expect(document.querySelector('[data-testid="ledger-list"] [data-testid^="cell-"]')).toBeNull();
   });
 
   it("wide layout renders wordy kind tags; compact renders icons and skips turn usage", () => {
-    // Turns fold by default (first test), so unfold before asserting cell tags.
     render({ compact: false });
-    act(() =>
-      (document.querySelector('[data-testid="toggle-turns"]') as HTMLButtonElement).click(),
-    );
     expect(document.querySelector('[data-testid="kind-tag-user"]')?.textContent).toBe("user");
     const wideRules = document.querySelectorAll('[data-testid="turn-rule"]').length;
     // Re-render the same root with compact=true: fold state persists, so the
@@ -213,33 +274,31 @@ describe("ledger screen", () => {
     expect(container.querySelector('[data-testid="toggle-calls"]')).toBeNull();
   });
 
-  it("the Turns toggle opens every turn and closes them again", () => {
+  it("the Turns toggle closes every turn and opens them again", () => {
     render();
-    expect(cells()).toHaveLength(0);
-
-    press("toggle-turns");
     const open = cells().length;
     expect(open).toBeGreaterThan(0);
 
     press("toggle-turns");
     expect(cells()).toHaveLength(0);
+
+    press("toggle-turns");
+    expect(cells().length).toBe(open);
   });
 
-  it("keeps tool rows visible alongside message rows once a turn is open", () => {
+  it("keeps tool rows visible alongside message rows", () => {
     // Steps were removed, so there is no second fold level hiding tool work
-    // behind a collapsed group: opening a turn reveals all of its cells.
+    // behind a collapsed group: every turn reveals all of its cells.
     function toolRows(): Element[] {
       return [...container.querySelectorAll('[data-testid="chars-text"]')];
     }
     render();
-    press("toggle-turns");
     expect(toolRows().length).toBeGreaterThan(0);
     expect(cells().length).toBeGreaterThan(0);
   });
 
   it("search filters rows to the matching record", () => {
     render();
-    press("toggle-turns");
     const all = cells().length;
 
     // "npm" appears only in the shell tool label.
@@ -250,11 +309,13 @@ describe("ledger screen", () => {
     expect(matched.some((node) => node.textContent?.includes("npm"))).toBe(true);
   });
 
-  it("search reveals a match that sits inside a folded turn", () => {
+  it("search reveals a match inside a turn the user collapsed", () => {
     render();
+    // The reader folds everything, including the turn holding the shell tool.
+    press("toggle-turns");
     expect(cells()).toHaveLength(0);
 
-    // Turns start folded; a match must still be reachable without pressing Turns.
+    // A match must still be reachable without the reader reopening anything.
     search("npm");
     expect(cells().length).toBeGreaterThan(0);
   });
@@ -270,7 +331,6 @@ describe("ledger screen", () => {
 
   it("clearing the search restores every row", () => {
     render();
-    press("toggle-turns");
     const all = cells().length;
 
     search("npm");

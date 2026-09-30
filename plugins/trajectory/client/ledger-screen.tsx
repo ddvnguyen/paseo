@@ -20,12 +20,23 @@ import { TrajectoryTimelineStrip, type TimelinePlatform } from "./trajectory-tim
  * useTrajectoryDelta.
  */
 
+/**
+ * Which turn numbers the user has COLLAPSED. Everything else is open.
+ *
+ * The state tracks the exception, not the rule, because turns stream in live and
+ * turn numbers are positional (1..N as they arrive). An "open" set seeded at
+ * mount would leave every turn that arrives afterwards collapsed, which is the
+ * opposite of what a live ledger wants. With closed-turns tracked instead, a
+ * turn appended after mount is expanded until the user says otherwise, and a
+ * manual collapse survives later appends because it is keyed by turn number.
+ */
 interface FoldState {
-  /** Unfolded turn numbers (default: all folded to headers). */
-  openTurns: ReadonlySet<number>;
+  /** Turn numbers the user collapsed; absent means open. */
+  closedTurns: ReadonlySet<number>;
 }
 
-const INITIAL_FOLD: FoldState = { openTurns: new Set() };
+/** Nothing collapsed: every turn expanded, including ones not yet recorded. */
+const ALL_OPEN: FoldState = { closedTurns: new Set() };
 
 export function LedgerScreen(props: {
   rows: readonly TrajectoryFoldRow[];
@@ -69,7 +80,7 @@ export function LedgerScreen(props: {
     platform,
     testID,
   } = props;
-  const [fold, setFold] = useState<FoldState>(INITIAL_FOLD);
+  const [fold, setFold] = useState<FoldState>(ALL_OPEN);
   const [follow, setFollow] = useState(true);
   const [query, setQuery] = useState("");
   const [actualDuration, setActualDuration] = useState(false);
@@ -82,10 +93,7 @@ export function LedgerScreen(props: {
 
   // Everything open, as a fold state. Shared by the "unfold all" action and by an
   // active search, which must not leave a match stranded behind a collapsed header.
-  const allOpen = useMemo<FoldState>(
-    () => ({ openTurns: new Set(turnNumbers1ToN(turns)) }),
-    [turns],
-  );
+  const allOpen = useMemo<FoldState>(() => ALL_OPEN, []);
 
   // View-local incremental index: it re-parses a record only when that record's
   // sources change, so live appends stay cheap. Always fed the UNFILTERED layout,
@@ -155,25 +163,27 @@ export function LedgerScreen(props: {
 
   const toggleTurn = useCallback((turn: number) => {
     setFold((previous) => {
-      const openTurns = new Set(previous.openTurns);
-      if (openTurns.has(turn)) openTurns.delete(turn);
-      else openTurns.add(turn);
-      return { openTurns };
+      const closedTurns = new Set(previous.closedTurns);
+      if (closedTurns.has(turn)) closedTurns.delete(turn);
+      else closedTurns.add(turn);
+      return { closedTurns };
     });
   }, []);
 
   // Toolbar toggles are tri-state-free on purpose: each one is either "everything
   // open" or "everything closed", matching the dsh aria-pressed contract. A mixed
   // state reports closed, so a press always moves toward fully open.
-  const allTurnsOpen = turnNumbers1ToN(turns).every((turn) => fold.openTurns.has(turn));
+  const allTurnsOpen = turnNumbers1ToN(turns).every((turn) => !fold.closedTurns.has(turn));
 
   const toggleAllTurns = useCallback(() => {
     setFold((previous) => {
-      const openTurns = new Set(previous.openTurns);
-      if (turnNumbers1ToN(turns).every((turn) => openTurns.has(turn))) {
-        return INITIAL_FOLD;
+      // "Everything open" -> close every turn there is right now. The inverse
+      // clears the closed set rather than re-seeding it, so turns that arrive
+      // after this press are open too.
+      if (turnNumbers1ToN(turns).every((turn) => !previous.closedTurns.has(turn))) {
+        return { closedTurns: new Set(turnNumbers1ToN(turns)) };
       }
-      return { openTurns: new Set(turnNumbers1ToN(turns)) };
+      return ALL_OPEN;
     });
   }, [turns]);
 
@@ -619,7 +629,7 @@ function expandTurns(
   turns.forEach((turn) => {
     const isNumbered = turn.turn !== null;
     const turnNumber = isNumbered ? ++numbered : 0;
-    const open = fold.openTurns.has(turnNumber);
+    const open = !fold.closedTurns.has(turnNumber);
     // Under an active search a turn with no match is noise; drop its header and
     // rule so results read as one list, while positional numbering is untouched.
     if (hideEmptyTurns && turn.groups.length === 0) return;
