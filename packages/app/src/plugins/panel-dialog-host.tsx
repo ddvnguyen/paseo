@@ -191,13 +191,11 @@ const FULL_SCREEN_MAX_WIDTH = 2400;
 /**
  * Header for a plugin panel dialog: close control, no text.
  *
- * The bar stays and only the title block is gone, because for a full-screen
- * dialog this bar is the only way out of a viewport-filling overlay. Removing
- * the strings costs no layout: AdaptiveModalSheet's header row is
- * [title group] [actions] [close] and the title group carries `flex: 1`, so an
- * empty title still absorbs the free space and leaves the close button
- * right-aligned at the same bar height. AdaptiveModalSheet renders the group
- * unconditionally, so no shared-file change is needed to express this.
+ * `edgeToEdge` is what actually decides the shape of this dialog — the bar is
+ * suppressed outright and AdaptiveModalSheet floats the close control over the
+ * content at the top right, so the plugin surface starts flush at 0,0. The
+ * header object stays because the prop is required, and its title is never
+ * rendered in this mode.
  *
  * Module constant, so the header object is never reallocated per render.
  */
@@ -221,8 +219,11 @@ function PluginPanelSheet(props: {
       // Caller-owned FlatList body (ledger): the host must not own scrolling.
       scrollable={false}
       bodyStyle={styles.body}
-      // Full-screen keeps the sheet's own header/close bar: it is the only way out
-      // of a viewport-filling overlay.
+      // The plugin surface owns its own padding and draws full bleed, so the
+      // sheet's content inset must not sit on top of it. The close control
+      // stays reachable as a floating overlay, which is what keeps a full-screen
+      // dialog escapable now that the bar is gone.
+      edgeToEdge
       desktopHeight={fullScreen ? "100%" : undefined}
       desktopMaxWidth={fullScreen ? FULL_SCREEN_MAX_WIDTH : undefined}
       snapPoints={fullScreen ? fullScreenSnapPoints : undefined}
