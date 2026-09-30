@@ -73,6 +73,8 @@ vi.mock("react-native", () => ({
 }));
 
 import type { TrajectoryFoldRow } from "../shared/dsh/layout.js";
+import type { TrajectoryEvent } from "../shared/trajectory.js";
+import { eventsToFoldRows } from "./events-to-rows.js";
 import { LedgerScreen } from "./ledger-screen.js";
 import { FIXTURE_OPEN_CALLS, FIXTURE_ROWS, FIXTURE_TURN_NUMBERS } from "./fixtures.js";
 
@@ -345,5 +347,83 @@ describe("ledger screen", () => {
     press("toggle-turns");
     search("zzzz-no-such-term");
     expect(cells()).toHaveLength(0);
+  });
+
+  // --- QC r20 item 11: the newest rows must reach the DOM -----------------
+
+  /**
+   * One agent response as the ledger stores it: several chunks, all carrying the
+   * SAME source message id, which is how the provider streams a single message.
+   */
+  function responseChunks(
+    turnId: string,
+    sourceMessageId: string,
+    firstSeq: number,
+    firstStep: number,
+    length: number,
+  ): TrajectoryEvent[] {
+    const out: TrajectoryEvent[] = [];
+    for (let chunk = 0; chunk < length; chunk += 1) {
+      out.push(event(firstSeq + chunk, "assistant/message", turnId, firstStep, sourceMessageId));
+    }
+    return out;
+  }
+
+  function event(
+    seq: number,
+    type: string,
+    turn: string,
+    step: number,
+    sourceMessageId: string,
+  ): TrajectoryEvent {
+    return {
+      seq,
+      time: new Date(1_700_000_000_000 + seq * 1_000).toISOString(),
+      type,
+      turn,
+      step,
+      agentId: "a1",
+      data: { sourceMessageId, textLength: 10 * (step + 1) },
+    };
+  }
+
+  function draw(events: readonly TrajectoryEvent[]): void {
+    act(() => {
+      root.render(<LedgerScreen rows={eventsToFoldRows(events)} compact={false} theme={THEME} />);
+    });
+  }
+
+  function messageCells(): Element[] {
+    return [...container.querySelectorAll('[data-testid="kind-tag-message"]')];
+  }
+
+  it("renders a second turn that reuses the first turn's id", () => {
+    // QC r20 fingerprint: the newest MESSAGE rows produce no DOM at all, while
+    // tool and llm rows appear. A provider reuses its turn ids across sessions,
+    // so a second turn-0 arrives carrying step 1 again -- the same identity the
+    // first turn's merged row already claimed.
+    const first = responseChunks("opencode-turn-0", "m-a", 1, 1, 3);
+    draw(first);
+    // One response, one row.
+    expect(messageCells().length).toBe(1);
+
+    // A second turn, reusing the SAME turn id and starting at step 1 again --
+    // appended after initial render, with a different source message id.
+    const second = responseChunks("opencode-turn-0", "m-b", 101, 1, 3);
+    draw([...first, ...second]);
+
+    // Both responses must be in the document.
+    expect(messageCells().length).toBe(2);
+  });
+
+  it("keeps both colliding rows findable by search", () => {
+    const first = responseChunks("opencode-turn-0", "m-a", 1, 1, 2);
+    const second = responseChunks("opencode-turn-0", "m-b", 101, 1, 2);
+    draw([...first, ...second]);
+    // Two distinct rows, each with its own cell node.
+    expect(messageCells().length).toBe(2);
+    expect(container.querySelectorAll('[data-testid="col-context"]').length).toBeGreaterThanOrEqual(
+      2,
+    );
   });
 });

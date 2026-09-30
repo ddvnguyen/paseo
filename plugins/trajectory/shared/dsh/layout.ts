@@ -482,7 +482,21 @@ function assistantMessageCell(
     ...mergedIdentity(row),
     text: row.label,
     ...deltaFields(row),
-    recordId: `assistant\u0000${row.turnId ?? ""}\u0000${row.step ?? 0}`,
+    // Unique per RECORDED ROW, not per (turn, step).
+    //
+    // This used to be `assistant\0${turnId}\0${step}`, which is unique only
+    // inside one turn. Providers reuse their turn ids across sessions -- QC r20
+    // measured `opencode-turn-0` used by two different turns, and b1b's ledger
+    // has 95 assistant rows sharing just 34 of those ids. Everything downstream
+    // keys on the record id: the virtualizer's dedupe in ledger-screen DROPS the
+    // later row outright (so the newest message cells rendered no DOM at all),
+    // and the search index OVERWRITES the earlier row's text (so it stopped being
+    // findable). Both symptoms, one cause.
+    //
+    // `seq` is the ledger's own DB-assigned id: unique, monotonic, stable across
+    // a live append. A merged response keeps the first segment's seq, which is
+    // exactly the identity selection and the timeline outline already use.
+    recordId: `assistant\u0000${row.seq}`,
     timeSeconds: rowEndSeconds(row, absTime),
     startedAt: absTime,
   };

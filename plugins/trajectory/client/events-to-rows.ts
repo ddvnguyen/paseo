@@ -142,15 +142,32 @@ function mergeMessageRuns(rows: TrajectoryFoldRow[]): TrajectoryFoldRow[] {
 /**
  * Whether two adjacent rows belong to the same run.
  *
- * A run is contiguous rows of the SAME kind in the same turn: a message run is
- * one agent response, a thinking run is one thought. Anything else — a tool, a
- * user row, an llm round marker, the other kind — ends the run, which is what
- * keeps thinking -> text as two rows rather than one.
+ * A MESSAGE run is one agent response, and a response is identified by its
+ * source message id -- NOT by its turn. QC r20: providers reuse their turn ids
+ * across sessions (b1b's ledger uses `opencode-turn-0` for two different turns,
+ * 95 assistant rows sharing 34 turn+step identities), and only step/start and
+ * step/end sit between those turns. Keying the run on turnId therefore welded
+ * the newest response onto the previous one: the merged row kept its identity,
+ * only its text grew, and the DOM showed no new row at all. The source id is
+ * the stable per-response identity, so it is what ends or continues a run.
+ *
+ * Anything else still ends a run: a tool, a user row, an llm round marker, or
+ * the other kind. That keeps thinking -> text as two rows.
+ *
+ * THINKING has no source id (the provider sends none), so its run is plain
+ * contiguity within a turn. A reused turn id can in principle weld two thoughts
+ * together; recording a per-part id upstream is what would fix that, and nothing
+ * here pretends otherwise.
  */
 function continuesRun(previous: TrajectoryFoldRow, row: TrajectoryFoldRow): boolean {
-  if (previous.turnId !== row.turnId) return false;
   if (previous.kind !== row.kind) return false;
-  return previous.kind === "message" || previous.kind === "thinking";
+  if (previous.turnId !== row.turnId) return false;
+  if (row.kind === "thinking") return true;
+  if (row.kind !== "message") return false;
+  const previousId = previous.sourceMessageId;
+  const nextId = row.sourceMessageId;
+  if (previousId === undefined || nextId === undefined) return true;
+  return previousId === nextId;
 }
 
 /**

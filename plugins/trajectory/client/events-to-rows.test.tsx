@@ -221,21 +221,22 @@ describe("eventsToFoldRows", () => {
     expect(messages[1]?.sourceMessageIds).toEqual(["m-2"]);
   });
 
-  it("collects every source id in a run, in seq order", () => {
+  it("starts a new row when the source message id changes", () => {
+    // A run is one agent response, and the source message id IS the response.
+    // QC r20: merging on turn welded a reused-turn-id response onto the previous
+    // one, so the newest response never became a row of its own.
     const rows = eventsToFoldRows([
       event({ seq: 1, type: "assistant/message", data: { sourceMessageId: "m-1", textLength: 4 } }),
       event({ seq: 2, type: "assistant/message", data: { sourceMessageId: "m-2", textLength: 6 } }),
     ]);
-    expect(rows).toHaveLength(1);
-    // A contiguous run is one response even when the ids differ; both are kept
-    // so the detail view can fetch and compose each one.
-    expect(rows[0]?.sourceMessageIds).toEqual(["m-1", "m-2"]);
-    expect(rows[0]?.sourceMessageId).toBe("m-1");
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.sourceMessageIds)).toEqual([["m-1"], ["m-2"]]);
   });
 
-  it("merges an interleaved stream into the one response it is", () => {
-    // Two ids arriving back to back with nothing between them are still one
-    // contiguous run: there is no tool, user, system or llm row to break it.
+  it("splits an interleaved stream per source id rather than welding it", () => {
+    // Each id is its own response, so an interleaved stream is several responses.
+    // Before this rule the whole thing collapsed into one row whose identity the
+    // previous response already held.
     const rows = eventsToFoldRows([
       event({
         seq: 1,
@@ -250,11 +251,9 @@ describe("eventsToFoldRows", () => {
       }),
       event({ seq: 4, type: "assistant/message", data: { sourceMessageId: "m-2", textLength: 6 } }),
     ]);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.segments).toBe(4);
-    expect(rows[0]?.sourceMessageIds).toEqual(["m-1", "m-2"]);
-    // The final cumulative length is the last one the producer sent.
-    expect(rows[0]?.textLength).toBe(6);
+    const messages = rows.filter((row) => row.kind === "message");
+    expect(messages).toHaveLength(4);
+    expect(messages.map((row) => row.sourceMessageIds?.[0])).toEqual(["m-1", "m-2", "m-1", "m-2"]);
   });
 
   it("reports no delta when the message carries no source identity", () => {
