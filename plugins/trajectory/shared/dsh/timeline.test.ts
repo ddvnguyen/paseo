@@ -34,6 +34,7 @@ describe("deriveTrajectoryTimeline", () => {
       spans: [
         {
           index: 1,
+          durationMs: 0,
           isError: false,
           kind: "message",
           label: "assistant",
@@ -43,6 +44,7 @@ describe("deriveTrajectoryTimeline", () => {
         },
         {
           index: 2,
+          durationMs: 0,
           isError: false,
           kind: "tool",
           label: "bash",
@@ -52,6 +54,7 @@ describe("deriveTrajectoryTimeline", () => {
         },
         {
           index: 3,
+          durationMs: 0,
           isError: false,
           kind: "user",
           label: "unknown",

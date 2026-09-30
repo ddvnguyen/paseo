@@ -8,7 +8,7 @@ import { groupTrajectoryVirtualRows } from "../shared/dsh/virtual-rows.js";
 import { TrajectorySearchIndex } from "../shared/dsh/search-index.js";
 import { trajectoryRecordId, type TrajectoryCellProps } from "../shared/dsh/record.js";
 import { LedgerColumnHeader, TrajectoryCellRow } from "./ledger-cells.js";
-import { TrajectoryTimelineStrip } from "./trajectory-timeline.js";
+import { TrajectoryTimelineStrip, type TimelinePlatform } from "./trajectory-timeline.js";
 
 /**
  * Trajectory ledger screen: FlatList over the ported virtual-row projection of
@@ -41,6 +41,18 @@ export function LedgerScreen(props: {
   textFor?: (cell: TrajectoryCellProps) => string | undefined;
   /** Reports the cells actually on screen so only those are resolved. */
   onVisibleCells?: (cells: readonly TrajectoryCellProps[]) => void;
+  /**
+   * Source seq of the open inspector's row. Optional: the strip outlines the
+   * matching bar when it is given, and highlights nothing when it is not.
+   */
+  selectedSeq?: number | null;
+  /** Called when a timeline bar is pressed, with that record's source seq. */
+  onSelectSpan?: (sourceSeq: number) => void;
+  /**
+   * Which surface this is, from the host's layout contract. Drives whether the
+   * strip's tooltip is hover-driven or tap-driven; omitted means tap-only.
+   */
+  platform?: TimelinePlatform;
   testID?: string;
 }) {
   const {
@@ -52,6 +64,9 @@ export function LedgerScreen(props: {
     onCellPress,
     textFor,
     onVisibleCells,
+    selectedSeq,
+    onSelectSpan,
+    platform,
     testID,
   } = props;
   const [fold, setFold] = useState<FoldState>(INITIAL_FOLD);
@@ -252,6 +267,9 @@ export function LedgerScreen(props: {
         actualDuration={actualDuration}
         compact={compact}
         theme={theme}
+        selectedSeq={selectedSeq}
+        onSelectSpan={onSelectSpan}
+        platform={platform}
       />
       <FlatList
         ref={listRef}

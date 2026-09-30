@@ -46,7 +46,14 @@ export function TrajectoryPanel(props: TrajectoryPanelProps) {
     );
   }
 
-  return <LiveLedger agentId={selection.agentId} compact={layout.compact} theme={theme} />;
+  return (
+    <LiveLedger
+      agentId={selection.agentId}
+      compact={layout.compact}
+      platform={layout.platform}
+      theme={theme}
+    />
+  );
 }
 
 /**
@@ -56,8 +63,13 @@ export function TrajectoryPanel(props: TrajectoryPanelProps) {
  * rows with a retry kick (the loop parks on error — no timers, no auto
  * retry — so manual refresh is the only recovery).
  */
-function LiveLedger(props: { agentId: string; compact: boolean; theme: PluginTheme }) {
-  const { agentId, compact, theme } = props;
+function LiveLedger(props: {
+  agentId: string;
+  compact: boolean;
+  platform: "ios" | "android" | "web";
+  theme: PluginTheme;
+}) {
+  const { agentId, compact, platform, theme } = props;
   const delta = useTrajectoryDelta(agentId);
   // Selected row seq (null = inspector closed, the default). Seq — not the
   // row object — so live updates refresh the inspector content in place; a
@@ -74,6 +86,14 @@ function LiveLedger(props: { agentId: string; compact: boolean; theme: PluginThe
 
   const onCloseInspector = useCallback(() => {
     setSelectedSeq(null);
+  }, []);
+
+  /**
+   * Timeline bars select by source seq, the same identity the ledger rows and
+   * the inspector use, so a bar press just moves the existing selection.
+   */
+  const onSelectSpan = useCallback((sourceSeq: number) => {
+    setSelectedSeq(sourceSeq);
   }, []);
 
   /**
@@ -141,10 +161,13 @@ function LiveLedger(props: { agentId: string; compact: boolean; theme: PluginThe
           <LedgerScreen
             rows={delta.rows}
             compact={compact}
+            platform={platform}
             theme={theme}
             onCellPress={onCellPress}
             textFor={textFor}
             onVisibleCells={onVisibleCells}
+            selectedSeq={selectedSeq}
+            onSelectSpan={onSelectSpan}
           />
         </View>
         {/* Wide dock takes layout space; compact overlays (absolute fill). */}

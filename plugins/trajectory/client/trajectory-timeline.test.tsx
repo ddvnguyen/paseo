@@ -14,14 +14,60 @@ vi.mock("react-native", () => ({
     children,
     testID,
     style,
-  }: React.PropsWithChildren<{ testID?: string; style?: unknown }>) =>
+    onPointerEnter,
+    onPointerLeave,
+  }: React.PropsWithChildren<{
+    testID?: string;
+    style?: unknown;
+    onPointerEnter?: () => void;
+    onPointerLeave?: () => void;
+  }>) =>
     React.createElement(
       "div",
-      { "data-testid": testID, "data-style": JSON.stringify(style ?? null) },
+      {
+        "data-testid": testID,
+        "data-style": JSON.stringify(style ?? null),
+        onPointerEnter,
+        onPointerLeave,
+      },
       children,
     ),
   Text: ({ children, testID }: React.PropsWithChildren<{ testID?: string }>) =>
     React.createElement("span", { "data-testid": testID }, children),
+  // The bar is a Pressable inside the hover-tracking View (docs/hover.md), so
+  // the mock has to carry press, disabled and the accessibility props.
+  Pressable: ({
+    children,
+    onPress,
+    testID,
+    style,
+    disabled,
+    accessibilityLabel,
+    accessibilityState,
+  }: React.PropsWithChildren<{
+    onPress?: () => void;
+    testID?: string;
+    style?: unknown;
+    disabled?: boolean;
+    accessibilityLabel?: string;
+    accessibilityState?: { selected?: boolean };
+  }>) =>
+    React.createElement(
+      "button",
+      {
+        type: "button",
+        "data-testid": testID,
+        // The bar's own geometry lives on the Pressable, so the style has to be
+        // observable here too or the projection assertions read nothing.
+        "data-style": JSON.stringify(style ?? null),
+        "data-disabled": disabled === true ? "1" : "0",
+        "data-selected": accessibilityState?.selected === true ? "1" : "0",
+        "aria-label": accessibilityLabel,
+        disabled: disabled === true,
+        onClick: disabled === true ? undefined : onPress,
+      },
+      children,
+    ),
 }));
 
 import { deriveTrajectoryLayout } from "../shared/dsh/layout.js";
@@ -63,7 +109,15 @@ afterEach(() => {
   container.remove();
 });
 
-function render(props: { actualDuration?: boolean; compact?: boolean } = {}): void {
+function render(
+  props: {
+    actualDuration?: boolean;
+    compact?: boolean;
+    platform?: "ios" | "android" | "web";
+    selectedSeq?: number | null;
+    onSelectSpan?: (sourceSeq: number) => void;
+  } = {},
+): void {
   const turns = deriveTrajectoryLayout({
     rows: FIXTURE_ROWS as readonly TrajectoryFoldRow[],
     turnNumbers: FIXTURE_TURN_NUMBERS,
@@ -76,6 +130,9 @@ function render(props: { actualDuration?: boolean; compact?: boolean } = {}): vo
         actualDuration={props.actualDuration === true}
         compact={props.compact === true}
         theme={THEME}
+        platform={props.platform}
+        selectedSeq={props.selectedSeq}
+        onSelectSpan={props.onSelectSpan}
       />,
     );
   });
@@ -190,5 +247,157 @@ describe("TrajectoryTimelineStrip rendering", () => {
   it("adapts to the compact layout", () => {
     render({ compact: true });
     expect(spans().length).toBeGreaterThan(0);
+  });
+
+  // --- T3-C: tooltip, selection highlight, tap-to-detail ------------------
+
+  /** A selection spy built outside any JSX scope (react-perf). */
+  function collector(): { picked: number[]; record: (sourceSeq: number) => void } {
+    const picked: number[] = [];
+    return { picked, record: (sourceSeq: number) => void picked.push(sourceSeq) };
+  }
+
+  it("shows no tooltip until a bar is hovered or pressed", () => {
+    render({ platform: "web" });
+    expect(container.querySelector('[data-testid="timeline-tooltip"]')).toBeNull();
+  });
+
+  it("opens the tooltip on hover on web, with kind, label and duration", () => {
+    render({ platform: "web" });
+    const target = spans()[0];
+    const envelope = container.querySelector(
+      `[data-testid="timeline-hover-${target.getAttribute("data-testid")?.replace("timeline-span-", "")}"]`,
+    );
+    act(() => {
+      // React's onPointerEnter is driven by the bubbling pointerover/out pair.
+      envelope?.dispatchEvent(new Event("pointerover", { bubbles: true }));
+    });
+    const tooltip = container.querySelector('[data-testid="timeline-tooltip"]');
+    expect(tooltip).not.toBeNull();
+    // Kind, the record's own label, and a duration from the ported formatter.
+    expect(container.querySelector('[data-testid="timeline-tooltip-kind"]')?.textContent).toMatch(
+      /message|user|tool/,
+    );
+    expect(
+      container.querySelector('[data-testid="timeline-tooltip-label"]')?.textContent?.length,
+    ).toBeGreaterThan(0);
+    expect(
+      container.querySelector('[data-testid="timeline-tooltip-duration"]')?.textContent,
+    ).toMatch(/ms|—/);
+  });
+
+  it("does not open on hover when the surface is not web", () => {
+    // Native has no hover at all, so the hover path must stay inert there and
+    // the tooltip has to be reachable by tap instead.
+    render({ platform: "ios" });
+    const envelope = container.querySelector('[data-testid^="timeline-hover-"]');
+    act(() => {
+      // React's onPointerEnter is driven by the bubbling pointerover/out pair.
+      envelope?.dispatchEvent(new Event("pointerover", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="timeline-tooltip"]')).toBeNull();
+  });
+
+  it("opens the tooltip on tap and toggles it off on a second tap", () => {
+    render({ platform: "ios" });
+    const target = spans()[0] as HTMLButtonElement;
+    act(() => target.click());
+    expect(container.querySelector('[data-testid="timeline-tooltip"]')).not.toBeNull();
+    act(() => target.click());
+    expect(container.querySelector('[data-testid="timeline-tooltip"]')).toBeNull();
+  });
+
+  it("moves the tooltip to another bar on tap", () => {
+    render({ platform: "web" });
+    const [first, second] = spans() as HTMLButtonElement[];
+    act(() => first.click());
+    const afterFirst = container.querySelector(
+      '[data-testid="timeline-tooltip-label"]',
+    )?.textContent;
+    act(() => second.click());
+    const afterSecond = container.querySelector(
+      '[data-testid="timeline-tooltip-label"]',
+    )?.textContent;
+    expect(afterSecond).not.toBe(afterFirst);
+  });
+
+  it("outlines the selected record's bar and leaves the rest alone", () => {
+    render();
+    const target = spans()[0];
+    const key = target.getAttribute("data-testid")?.replace("timeline-span-", "");
+    render({ platform: "web", selectedSeq: FIXTURE_ROWS[0].seq });
+    const selected = container.querySelector(`[data-testid="timeline-span-${key}"]`);
+    expect(spanStyle(selected as Element).borderColor).toBe(THEME.colors.accent);
+    // Unselected bars carry no outline.
+    for (const node of spans().filter((n) => n !== selected)) {
+      expect(spanStyle(node).borderColor).toBeUndefined();
+    }
+  });
+
+  it("outlines nothing when no row is selected", () => {
+    render({ platform: "web", selectedSeq: null });
+    for (const node of spans()) {
+      expect(spanStyle(node).borderColor).toBeUndefined();
+    }
+  });
+
+  it("keeps a failed record reading as statusDanger while selected", () => {
+    const errorRow = FIXTURE_ROWS.find((row) => row.isError === true);
+    if (errorRow === undefined) throw new Error("fixture has no error row");
+    render({ platform: "web", selectedSeq: errorRow.seq });
+    const danger = spans().filter(
+      (node) => spanStyle(node).backgroundColor === THEME.colors.statusDanger,
+    );
+    expect(danger.length).toBeGreaterThan(0);
+    // The selection outline is an addition, never a replacement of the failure.
+    for (const node of danger) {
+      const style = spanStyle(node);
+      expect(style.backgroundColor).toBe(THEME.colors.statusDanger);
+      expect(style.borderColor).toBe(THEME.colors.accent);
+    }
+  });
+
+  it("selects the record behind a pressed bar, by the row seq the ledger uses", () => {
+    // The bridge field is the cell's own sourceSeq, which is the fold row's seq
+    // -- the same identity the ledger selects on, so a bar press needs no
+    // re-derivation of cell indexes.
+    const picked: number[] = [];
+    render({ platform: "web", onSelectSpan: (sourceSeq) => picked.push(sourceSeq) });
+    const first = spans()[0] as HTMLButtonElement;
+    act(() => first.click());
+    expect(picked).toEqual([FIXTURE_ROWS[0].seq]);
+  });
+
+  it("does not make a record with no source seq selectable", () => {
+    const { picked, record } = collector();
+    // Hand-built cell with no sourceSeq: there is nothing to open, and the strip
+    // must not invent a target.
+    const turns = [
+      {
+        turn: 1,
+        groups: [
+          {
+            title: "Message",
+            cells: [{ index: 1, kind: "message" as const, text: "orphan", timeSeconds: 0 }],
+          },
+        ],
+      },
+    ] satisfies readonly TrajectoryTurnModel[];
+    act(() => {
+      root.render(
+        <TrajectoryTimelineStrip
+          turns={turns}
+          actualDuration={false}
+          compact={false}
+          theme={THEME}
+          platform="web"
+          onSelectSpan={record}
+        />,
+      );
+    });
+    const orphan = spans()[0] as HTMLButtonElement;
+    expect(orphan.getAttribute("data-disabled")).toBe("1");
+    act(() => orphan.click());
+    expect(picked).toEqual([]);
   });
 });
