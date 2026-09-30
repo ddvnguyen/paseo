@@ -69,7 +69,7 @@ export const ScheduleRunSchema = z.object({
    * comparing the run's workspace against the target's named workspace.
    */
   // COMPAT(scheduleRunWorkspaceOrigin): added in v0.8.0, remove the absent-run
-  // fallback in resolveRunWorkspaceArchive after the daemon floor is >= v0.8.0.
+  // fallback in shouldArchiveScheduleRunWorkspace after the daemon floor is >= v0.8.0.
   workspaceOrigin: z.enum(["reused", "provisioned"]).optional(),
   output: z.string().nullable(),
   error: z.string().nullable(),

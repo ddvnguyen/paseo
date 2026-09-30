@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
-import { join } from "node:path";
+import { realpath, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { Logger } from "pino";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentSessionConfig } from "../agent/agent-sdk-types.js";
@@ -178,6 +178,25 @@ function shouldArchiveScheduleRunWorkspace(input: {
   // is not.
   const reused = input.namedWorkspaceId != null && input.runWorkspaceId === input.namedWorkspaceId;
   return !reused && (input.agentId === null || (input.archiveOnFinish ?? true));
+}
+
+/**
+ * Reduce a path to a comparable form: absolute, no `.`/`..` segments, no trailing
+ * separator, and — when it can be read — through symlinks. `resolve` alone still
+ * reports a symlinked checkout as different from the real directory behind it, and
+ * a workspace whose cwd is stored by whichever path the user typed should still
+ * match a target configured by another. Falls back to `resolve` when `realpath`
+ * cannot read the path, so a directory that does not exist yet compares as its own
+ * best-effort form instead of throwing.
+ */
+async function normalizeScheduleCwd(cwd: string | undefined): Promise<string | undefined> {
+  if (!cwd) return undefined;
+  const resolved = resolve(cwd);
+  try {
+    return await realpath(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 function shouldCompleteSchedule(schedule: StoredSchedule, now: Date): boolean {
@@ -1215,8 +1234,12 @@ export class ScheduleService {
     }
     // Cwd must match: the agent inherits workspace.cwd, and a reused workspace
     // whose cwd drifted would silently run the schedule in the wrong directory.
-    const configuredCwd = config.cwd?.replace(/\/+$/, "");
-    const workspaceCwd = existing.cwd?.replace(/\/+$/, "");
+    // Compared by resolved path, because the two arrive from different places and
+    // spell the same directory differently — `a/./b`, a trailing slash, or a
+    // symlinked checkout. A false mismatch is not loud: reuse is simply refused and
+    // every run quietly gets a workspace of its own.
+    const configuredCwd = await normalizeScheduleCwd(config.cwd);
+    const workspaceCwd = await normalizeScheduleCwd(existing.cwd);
     if (configuredCwd && workspaceCwd && configuredCwd !== workspaceCwd) {
       this.warnOncePerSchedule(
         schedule.id,

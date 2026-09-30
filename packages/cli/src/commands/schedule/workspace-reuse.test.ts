@@ -150,11 +150,12 @@ describe("schedule update workspace flags through commander", () => {
     expect(input.newAgentConfig).toEqual({ workspaceId: "wks_shared", archiveOnFinish: false });
   });
 
-  test("--no-workspace-id clears reuse", async () => {
+  test("--no-workspace-id clears reuse and restores archiving", async () => {
     // Commander stores `--no-x` on `x` itself as false; it never populates a
     // separate `noX` key, so this is the only place the clear flag can be read.
     const input = await runUpdateArgv(["sch_1", "--no-workspace-id"]);
-    expect(input.newAgentConfig).toEqual({ workspaceId: null });
+    // archiveOnFinish comes back too, or every later run leaks a workspace.
+    expect(input.newAgentConfig).toEqual({ workspaceId: null, archiveOnFinish: true });
   });
 
   test("--no-max-runs clears the limit", async () => {
@@ -204,7 +205,7 @@ describe("schedule update workspace flags through commander", () => {
     test("a capable daemon receives the null clear", async () => {
       serverInfo = { features: { scheduleWorkspaceReuseClear: true } };
       const input = await runUpdateArgv(["sch_1", "--no-workspace-id"]);
-      expect(input.newAgentConfig).toEqual({ workspaceId: null });
+      expect(input.newAgentConfig).toEqual({ workspaceId: null, archiveOnFinish: true });
     });
 
     test("an unknown daemon is allowed through and a rejection is explained", async () => {
@@ -275,6 +276,23 @@ describe("schedule update workspace flags through commander", () => {
         await subcommand("update").parseAsync(["sch_1", "--workspace-id", "wks_shared"], {
           from: "user",
         });
+        expect(stderr.join("")).toBe("");
+      } finally {
+        stderr.restore();
+      }
+    });
+
+    test("clearing reuse does not warn about sharing", async () => {
+      // There is no shared workspace left to collide with, so a warning here would
+      // be noise on the one operation that fixes the problem.
+      serverInfo = { features: { scheduleWorkspaceReuseClear: true } };
+      scheduleList.mockResolvedValue({
+        schedules: [sharingSchedule("sch_other", "wks_shared")],
+        error: null,
+      });
+      const stderr = captureStderr();
+      try {
+        await subcommand("update").parseAsync(["sch_1", "--no-workspace-id"], { from: "user" });
         expect(stderr.join("")).toBe("");
       } finally {
         stderr.restore();

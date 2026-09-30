@@ -533,6 +533,11 @@ function buildNewAgentConfigPatch(
     patch.archiveOnFinish = false;
   } else if (options.clearWorkspaceId) {
     patch.workspaceId = null;
+    // Clearing reuse restores the per-run workspace behaviour, and that includes
+    // archiving each one. Reuse is what pins archiveOnFinish false; leaving it
+    // false here would rebuild the leak this feature exists to avoid — one
+    // never-archived workspace per run, accumulating for the life of the schedule.
+    patch.archiveOnFinish = true;
   }
   return Object.keys(patch).length > 0 ? patch : undefined;
 }
