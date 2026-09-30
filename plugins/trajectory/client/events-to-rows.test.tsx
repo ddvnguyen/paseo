@@ -229,4 +229,63 @@ describe("eventsToFoldRows", () => {
     expect(rows[0].textLength).toBe(18);
     expect(rows[0].deltaChars).toBeUndefined();
   });
+
+  // --- T3-D: derived round + system-prompt rows ---------------------------
+
+  it("turns a derived round event into an llm row stating the claim", () => {
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "round/begin",
+        turn: "t1",
+        data: { derived: true, ordinal: 2, consumedResults: 3 },
+      }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe("llm");
+    expect(rows[0].label).toBe("llm round 2 · consumed 3 results");
+    expect(rows[0].derived).toBe(true);
+    expect(rows[0].durationMs).toBeNull();
+  });
+
+  it("says so plainly when a round has no ordinal or no results", () => {
+    const rows = eventsToFoldRows([event({ seq: 1, type: "round/begin", turn: "t1", data: {} })]);
+    expect(rows[0].label).toBe("llm round · consumed 0 results");
+    expect(rows[0].derived).toBeUndefined();
+  });
+
+  it("turns a system/attach event into a size-and-hash row with no turn", () => {
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "system/attach",
+        turn: null,
+        data: { derived: true, charsLength: 1234, hash12: "abcdef123456" },
+      }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe("systemPrompt");
+    expect(rows[0].label).toBe("system prompt · 1,234 chars · hash abcdef123456…");
+    expect(rows[0].turnId).toBeNull();
+    expect(rows[0].derived).toBe(true);
+  });
+
+  it("reports an unknown prompt size as an em dash rather than zero", () => {
+    const rows = eventsToFoldRows([
+      event({ seq: 1, type: "system/attach", turn: null, data: { hash12: "abc" } }),
+    ]);
+    expect(rows[0].label).toBe("system prompt · — chars · hash abc…");
+  });
+
+  it("never renders prompt text even if one somehow reached the event", () => {
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "system/attach",
+        turn: null,
+        data: { charsLength: 12, hash12: "abc", systemPrompt: "SECRET PROMPT" },
+      }),
+    ]);
+    expect(rows[0].label).not.toContain("SECRET");
+  });
 });

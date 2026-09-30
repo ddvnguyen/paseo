@@ -8,7 +8,12 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { deriveTrajectoryLayout, type TrajectoryFoldRow } from "./layout.ts";
+import {
+  deriveTrajectoryLayout,
+  type TrajectoryFoldRow,
+  type TrajectoryTurnModel,
+} from "./layout.ts";
+import type { TrajectoryCellProps } from "./record.ts";
 
 let seq = 0;
 function row(
@@ -24,6 +29,46 @@ function row(
     step: null,
     ...overrides,
   };
+}
+
+/** Every cell across every turn; a module helper keeps the tests shallow. */
+function allCellsOf(turns: readonly TrajectoryTurnModel[]): TrajectoryCellProps[] {
+  return turns.flatMap((turn) => turn.groups.flatMap((group) => [...group.cells]));
+}
+
+function derivedRows(): TrajectoryFoldRow[] {
+  const rows: TrajectoryFoldRow[] = [
+    {
+      seq: 1,
+      timeMs: null,
+      kind: "systemPrompt",
+      label: "system prompt · 1,234 chars · hash abcdef123456…",
+      durationMs: null,
+      turnId: null,
+      step: null,
+      derived: true,
+    },
+    {
+      seq: 2,
+      timeMs: null,
+      kind: "user",
+      label: "user message (4 chars)",
+      durationMs: null,
+      turnId: "t1",
+      step: null,
+    },
+    {
+      seq: 3,
+      timeMs: null,
+      kind: "llm",
+      label: "llm round 1 · consumed 2 results",
+      durationMs: null,
+      turnId: "t1",
+      step: null,
+      derived: true,
+    },
+  ];
+  return rows;
 }
 
 describe("deriveTrajectoryLayout (ledger rows)", () => {
@@ -122,5 +167,34 @@ describe("deriveTrajectoryLayout (ledger rows)", () => {
 
   it("empty input folds to no turns", () => {
     expect(deriveTrajectoryLayout({ rows: [] })).toEqual([]);
+  });
+
+  // --- T3-D: derived round + system-prompt rows ---------------------------
+
+  it("renders a derived round as its own llm cell inside its turn", () => {
+    const turns = deriveTrajectoryLayout({ rows: derivedRows() });
+    const t1 = turns.find((turn) => turn.turn === 1);
+    expect(t1).toBeDefined();
+    const cells = t1 === undefined ? [] : allCellsOf([t1]);
+    const llm = cells.find((cell) => cell.kind === "llm");
+    expect(llm?.text).toBe("llm round 1 · consumed 2 results");
+    expect(llm?.timeSeconds).toBeNull();
+  });
+
+  it("puts a turn-less system prompt in an unnumbered bucket that precedes Turn 1", () => {
+    const turns = deriveTrajectoryLayout({ rows: derivedRows() });
+    // The prompt row has turnId=null, so it cannot join a numbered turn. It
+    // lands in its own bucket, ordered first by cell index.
+    expect(turns[0]?.turn).toBeNull();
+    const preamble = turns[0] === undefined ? [] : allCellsOf([turns[0]]);
+    expect(preamble.map((cell) => cell.kind)).toEqual(["systemPrompt"]);
+    expect(preamble[0]?.text).toBe("system prompt · 1,234 chars · hash abcdef123456…");
+    // And the real turn is still numbered 1, not pushed down by the preamble.
+    expect(turns.some((turn) => turn.turn === 1)).toBe(true);
+  });
+
+  it("drops no rows: every derived row reaches some cell", () => {
+    const cells = allCellsOf(deriveTrajectoryLayout({ rows: derivedRows() }));
+    expect(cells.map((cell) => cell.kind).sort()).toEqual(["llm", "systemPrompt", "user"]);
   });
 });

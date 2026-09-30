@@ -398,4 +398,87 @@ describe("ledger cells", () => {
     );
     expect(context).toBe("assistant message (68 chars)");
   });
+
+  // --- T3-D: derived round + system prompt --------------------------------
+
+  it("gives every kind, including the derived ones, a colour from the token set", () => {
+    const tokens = new Set(Object.values(THEME.colors));
+    for (const kind of [
+      "system",
+      "user",
+      "context",
+      "compacted",
+      "message",
+      "tool",
+      "subtool",
+      "llm",
+      "systemPrompt",
+    ] as const) {
+      expect(tokens.has(kindRailColor(THEME, kind, false))).toBe(true);
+    }
+  });
+
+  it("keeps the derived round visually distinct from user, message, tool and error", () => {
+    // The round is the one kind that borrows a colour rather than owning one,
+    // so the collisions below are exactly what must NOT happen.
+    const round = kindRailColor(THEME, "llm", false);
+    for (const other of ["user", "message", "tool", "system"] as const) {
+      expect(round).not.toBe(kindRailColor(THEME, other, false));
+    }
+    expect(round).not.toBe(THEME.colors.statusDanger);
+    // An error still wins over the round's own colour.
+    expect(kindRailColor(THEME, "llm", true)).toBe(THEME.colors.statusDanger);
+  });
+
+  it("renders a derived round row with its label and result count", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({ kind: "llm", text: "llm round 1 · consumed 2 results" })}
+        compact={false}
+        theme={THEME}
+      />,
+    );
+    expect(document.querySelector('[data-testid="kind-tag-llm"]')?.textContent).toBe("llm");
+    expect(document.querySelector('[data-testid="col-context"]')?.textContent).toBe(
+      "llm round 1 · consumed 2 results",
+    );
+    expect(document.querySelector('[data-testid="stats-text"]')?.textContent).toBe("2 results");
+  });
+
+  it("reports an unrecognised round with an em dash rather than a zero", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({ kind: "llm", text: "llm round" })}
+        compact={false}
+        theme={THEME}
+      />,
+    );
+    expect(document.querySelector('[data-testid="stats-text"]')?.textContent).toBe("results: —");
+  });
+
+  it("renders the system prompt row with its size-and-hash label", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({
+          kind: "systemPrompt",
+          text: "system prompt · 1,234 chars · hash abcdef123456…",
+        })}
+        compact={false}
+        theme={THEME}
+      />,
+    );
+    expect(document.querySelector('[data-testid="kind-tag-systemPrompt"]')?.textContent).toBe(
+      "systemPrompt",
+    );
+    expect(document.querySelector('[data-testid="col-context"]')?.textContent).toBe(
+      "system prompt · 1,234 chars · hash abcdef123456…",
+    );
+  });
+
+  it("collapses both derived kinds to a single-character tag on compact", () => {
+    render(<KindTag kind="llm" compact theme={THEME} />);
+    expect(document.querySelector('[data-testid="kind-tag-llm"]')?.textContent).toBe("L");
+    render(<KindTag kind="systemPrompt" compact theme={THEME} />);
+    expect(document.querySelector('[data-testid="kind-tag-systemPrompt"]')?.textContent).toBe("P");
+  });
 });

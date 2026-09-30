@@ -17,7 +17,18 @@ export type TrajectoryCellKind =
   | "compacted"
   | "message"
   | "tool"
-  | "subtool";
+  | "subtool"
+  /**
+   * A derived LLM round: tool results were handed to a model, which then chose
+   * the next action. No provider emits this event, so the recorder infers it —
+   * see the recorder's round-marker rule for why the inference is sound.
+   */
+  | "llm"
+  /**
+   * The caller system prompt, as size and hash only. Never the text; the
+   * ledger is length-only by rule.
+   */
+  | "systemPrompt";
 
 /** Recorded inputs needed to derive assistant TTFT and decode throughput. */
 export interface AssistantMetricDetail {

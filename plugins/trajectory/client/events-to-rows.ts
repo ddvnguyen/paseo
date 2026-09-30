@@ -181,6 +181,55 @@ function applyTurnUsage(
   rows[index] = { ...row, usage: buckets };
 }
 
+/**
+ * A derived LLM-round row.
+ *
+ * The recorder emits this when tool results are waiting and the agent's next
+ * action begins, so the label states the falsifiable claim rather than
+ * pretending to know the provider's internals: "these N results were consumed
+ * before this round".
+ */
+function roundRow(event: TrajectoryEvent): TrajectoryFoldRow {
+  const consumed = numericLength(event.data.consumedResults) ?? 0;
+  const ordinal = numericLength(event.data.ordinal);
+  return {
+    seq: event.seq,
+    timeMs: timeOf(event),
+    kind: "llm",
+    label:
+      ordinal === null
+        ? `llm round · consumed ${consumed} results`
+        : `llm round ${ordinal} · consumed ${consumed} results`,
+    durationMs: null,
+    turnId: event.turn,
+    step: null,
+    ...(typeof event.data.derived === "boolean" ? { derived: true } : {}),
+  };
+}
+
+/**
+ * The caller system prompt, as a size and a hash. The prompt text is never in
+ * the ledger, so there is nothing to leak into this row either.
+ */
+function systemPromptRow(event: TrajectoryEvent): TrajectoryFoldRow {
+  const chars = numericLength(event.data.charsLength);
+  const hash = typeof event.data.hash12 === "string" ? event.data.hash12 : null;
+  const parts = [
+    `system prompt · ${chars === null ? "— chars" : `${chars.toLocaleString("en-US")} chars`}`,
+  ];
+  if (hash !== null) parts.push(`hash ${hash}…`);
+  return {
+    seq: event.seq,
+    timeMs: timeOf(event),
+    kind: "systemPrompt",
+    label: parts.join(" · "),
+    durationMs: null,
+    turnId: null,
+    step: null,
+    ...(typeof event.data.derived === "boolean" ? { derived: true } : {}),
+  };
+}
+
 export function eventsToFoldRows(events: readonly TrajectoryEvent[]): TrajectoryFoldRow[] {
   const rows: TrajectoryFoldRow[] = [];
   const openCalls = new Map<string, OpenToolCall>();
@@ -223,6 +272,14 @@ export function eventsToFoldRows(events: readonly TrajectoryEvent[]): Trajectory
         }
         const row = toolRow(event, call);
         if (row !== null) rows.push(row);
+        break;
+      }
+      case "round/begin": {
+        rows.push(roundRow(event));
+        break;
+      }
+      case "system/attach": {
+        rows.push(systemPromptRow(event));
         break;
       }
       case "turn/end": {

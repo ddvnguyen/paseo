@@ -56,6 +56,27 @@ export interface Recorder {
   turnEnded(input: TurnEndedInput): void;
   /** Stash usage on the open turn; turn/end reports it if no terminal usage arrives. */
   usage(input: UsageInput): void;
+  /**
+   * Record the caller system prompt's SIZE and a short hash. Never the text:
+   * the ledger is length-only by rule, and d-893c722f28 sets the hash precedent
+   * for something that must be comparable across runs without being readable.
+   */
+  systemPromptAttached(input: SystemPromptInput): void;
+}
+
+export interface SystemPromptInput {
+  agentId: string;
+  /** Character count of the caller-supplied prompt. */
+  charsLength: number;
+  /** First 12 hex chars of the prompt's sha256, for equality comparison. */
+  hash12: string;
+  /**
+   * How the row was attributed to this agent: "config" when the create config
+   * matched the agent exactly, "fifo" when it fell back to the oldest pending
+   * create. The daemon exposes no request id on either hook, so this is recorded
+   * rather than assumed.
+   */
+  correlated?: "config" | "fifo";
 }
 
 interface OpenTurn {
@@ -69,6 +90,13 @@ interface OpenTurn {
   openTools: Map<string, number>;
   /** Usage seen mid-turn (usage_updated); reported at terminal if not superseded. */
   usage: AgentUsage | null;
+  /**
+   * Tool results recorded since the last round marker. Zero means no LLM round
+   * boundary is pending, which is the whole trigger condition below.
+   */
+  resultsSinceRound: number;
+  /** 1-based count of round markers emitted in this turn. */
+  rounds: number;
 }
 
 const ARG_SUMMARY_MAX = 200;
@@ -181,11 +209,51 @@ export function createRecorder(options: {
     return turns[turns.length - 1];
   };
 
+  /**
+   * Dedupe a tool phase across restarts, not just within one process.
+   *
+   * The in-memory set cannot see rows written by an earlier run, and the
+   * turn_ended replay re-sends an agent's whole timeline — so a replay after a
+   * re-attach would duplicate every call. The store is consulted first; the set
+   * still does the fast path when the store has no such query.
+   */
   const toolPhaseSeen = (agentId: string, callId: string, phase: "call" | "result"): boolean => {
     const key = `${agentId}\u0000${callId}\u0000${phase}`;
     if (seenToolPhases.has(key)) return true;
+    if (store.hasToolPhase?.(agentId, callId, phase) === true) {
+      seenToolPhases.add(key);
+      return true;
+    }
     seenToolPhases.add(key);
     return false;
+  };
+
+  /**
+   * Emit an LLM-round boundary if one is pending on this turn.
+   *
+   * No provider hands plugins a real "the model was called" event, so the round
+   * is derived from the one thing every provider does emit: an action arriving
+   * AFTER tool results. If results are waiting and the next thing the agent does
+   * is start a tool or emit a message, those results must have been handed to a
+   * model first -- that is the round. The claim is falsifiable and provider
+   * agnostic, and it is only made when results are actually outstanding, so a
+   * turn with no tool work never gets a marker.
+   */
+  const maybeMarkRound = (open: OpenTurn | null, turnId: string | null, agentId: string): void => {
+    if (open === null || open.resultsSinceRound === 0) return;
+    open.rounds += 1;
+    append({
+      type: "round/begin",
+      turn: turnId,
+      step: null,
+      agentId,
+      data: {
+        derived: true,
+        ordinal: open.rounds,
+        consumedResults: open.resultsSinceRound,
+      },
+    });
+    open.resultsSinceRound = 0;
   };
 
   const resolveTurnForTool = (agentId: string, turnId?: string | null): string | null => {
@@ -205,6 +273,7 @@ export function createRecorder(options: {
 
     if (item.status === "running") {
       if (toolPhaseSeen(agentId, callId, "call")) return;
+      maybeMarkRound(open, turnId, agentId);
       if (open) open.openTools.set(callId, now().getTime());
       append({
         type: "tool/call",
@@ -222,6 +291,25 @@ export function createRecorder(options: {
 
     // Terminal tool item (completed | failed | canceled).
     if (toolPhaseSeen(agentId, callId, "result")) return;
+    // Orphan terminal: the call row never arrived (a resumed agent replays its
+    // history as results only, and a mid-flight attach can miss the start). Write
+    // the paired call FIRST, backfilled from the terminal item's own fields, so
+    // every result in the ledger has a call and the fold never has to invent one.
+    // `backfilled` marks it as reconstructed rather than observed.
+    if (!toolPhaseSeen(agentId, callId, "call")) {
+      append({
+        type: "tool/call",
+        turn: turnId,
+        step: null,
+        agentId,
+        data: {
+          callId,
+          name: item.name,
+          argSummary: argSummary(item.detail),
+          backfilled: true,
+        },
+      });
+    }
     const startedAt = open?.openTools.get(callId);
     open?.openTools.delete(callId);
     const durationMs = startedAt === undefined ? null : now().getTime() - startedAt;
@@ -238,6 +326,8 @@ export function createRecorder(options: {
         durationMs,
       },
     });
+    // A completed result is what a model has to consume before its next action.
+    if (open) open.resultsSinceRound += 1;
   };
 
   return {
@@ -253,6 +343,8 @@ export function createRecorder(options: {
         stepOpen: false,
         openTools: new Map(),
         usage: null,
+        resultsSinceRound: 0,
+        rounds: 0,
       };
       const turns = existing ?? [];
       turns.push(turn);
@@ -280,6 +372,7 @@ export function createRecorder(options: {
         const turnId = open?.turnId ?? input.turnId ?? null;
         const step = open ? ++open.step : null;
         if (open) open.stepOpen = true;
+        maybeMarkRound(open, turnId, agentId);
         append({
           type: "step/start",
           turn: turnId,
@@ -342,12 +435,16 @@ export function createRecorder(options: {
     },
 
     turnEnded(input) {
+      // Exactly one terminal per turn, on BOTH the hook and the stream path.
+      // The guard used to run only when the recorder had no open turn, so the
+      // FIRST terminal (which does have one) never marked the turn terminated
+      // and a second terminal sailed through and wrote a duplicate turn/end --
+      // PROD carried 78 terminals against 44 starts. Marking first fixes it:
+      // the first caller wins, every later one is a no-op. Turns we never saw
+      // opened still record (lazy attach), and null-turnId terminals always
+      // record because there is no id to dedupe on.
+      if (input.turnId && !markTurnTerminated(input.agentId, input.turnId)) return;
       const open = takeOpenTurn(input.agentId, input.turnId);
-
-      // Exactly one terminal per turn: a second terminal for an already
-      // terminated id is a no-op. Turns we never saw opened still record
-      // (lazy attach), and null-turnId terminals always record.
-      if (!open && input.turnId && !markTurnTerminated(input.agentId, input.turnId)) return;
       // Any tools still marked open at terminal time have no reported end.
       open?.openTools.clear();
 
@@ -376,6 +473,23 @@ export function createRecorder(options: {
       const open = openTurnOf(input.agentId, input.turnId);
       if (!open) return; // Usage without turn context cannot be attributed.
       open.usage = input.usage;
+    },
+
+    systemPromptAttached(input) {
+      // turn=null on purpose: the prompt is bound to the agent, not to a turn,
+      // and it was in force before any turn existed.
+      append({
+        type: "system/attach",
+        turn: null,
+        step: null,
+        agentId: input.agentId,
+        data: {
+          derived: true,
+          charsLength: input.charsLength,
+          hash12: input.hash12,
+          ...(input.correlated === undefined ? {} : { correlated: input.correlated }),
+        },
+      });
     },
   };
 }

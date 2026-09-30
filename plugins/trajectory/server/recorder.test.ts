@@ -82,6 +82,9 @@ describe("recorder", () => {
       "turn/start",
       "tool/call",
       "tool/result",
+      // The second tool call only starts after the first result is in, so the
+      // model must have consumed it: that boundary is the derived round.
+      "round/begin",
       "tool/call",
       "tool/result",
       "turn/end",
@@ -140,9 +143,12 @@ describe("recorder", () => {
       },
     });
     const events = allEvents(store);
-    expect(events).toHaveLength(1);
-    expect(events[0].type).toBe("tool/result");
+    // The call row is now backfilled so the pair is complete even though the
+    // call itself was never observed (this is the orphan-terminal case).
+    expect(events.map((event) => event.type)).toEqual(["tool/call", "tool/result"]);
     expect(events[0].turn).toBeNull();
+    expect(events[0].data.backfilled).toBe(true);
+    expect(events[1].turn).toBeNull();
     // No turn/start or turn/end rows were fabricated.
     expect(allEvents(store).some((event) => event.type.startsWith("turn/"))).toBe(false);
   });
@@ -161,7 +167,12 @@ describe("recorder", () => {
     expect(ends[0].data.outcome).toBe("completed");
     expect(ends[1].data.outcome).toBe("failed");
     expect(ends[1].data.error).toBe("nope");
-    // No open turns remain for the agent.
+    // A repeat terminal for an already-terminated turn is dropped: exactly one
+    // turn/end per turn id, whichever path (hook or stream) gets there first.
+    recorder.turnEnded({ agentId: "agent-1", turnId: "t2", outcome: "completed" });
+    expect(allEvents(store).filter((event) => event.type === "turn/end")).toHaveLength(2);
+    // Re-opening the same id makes it live again and terminable again.
+    recorder.turnStarted({ agentId: "agent-1", turnId: "t2" });
     recorder.turnEnded({ agentId: "agent-1", turnId: "t2", outcome: "completed" });
     expect(allEvents(store).filter((event) => event.type === "turn/end")).toHaveLength(3);
   });
@@ -192,4 +203,167 @@ describe("recorder", () => {
     expect(seen.map((event) => event.seq)).toEqual([1, 2]);
     store.close();
   });
+
+  // --- T3-D: derived rows + recorder integrity ---------------------------
+
+  test("derives an llm round when an action follows a tool result", () => {
+    const { store, recorder } = harness();
+    recorder.turnStarted({ agentId: "agent-1", turnId: "t1" });
+    toolCall(recorder, "t1", "c1", "running");
+    toolCall(recorder, "t1", "c1", "completed");
+
+    // Nothing pending yet: the very next thing is a tool call, so the results
+    // must have been consumed first.
+    toolCall(recorder, "t1", "c2", "running");
+    const rounds = allEvents(store).filter((event) => event.type === "round/begin");
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0].data.derived).toBe(true);
+    expect(rounds[0].data.ordinal).toBe(1);
+    expect(rounds[0].data.consumedResults).toBe(1);
+    expect(rounds[0].turn).toBe("t1");
+  });
+
+  test("does not derive a round when no result is outstanding", () => {
+    const { store, recorder } = harness();
+    recorder.turnStarted({ agentId: "agent-1", turnId: "t1" });
+    // First action of the turn: there is nothing a model could have consumed.
+    recorder.timelineItem({
+      agentId: "agent-1",
+      turnId: "t1",
+      item: { type: "assistant_message" as const, messageId: "m1", text: "done" },
+    });
+    // A call still running has produced no result either.
+    toolCall(recorder, "t1", "c1", "running");
+    expect(allEvents(store).filter((event) => event.type === "round/begin")).toHaveLength(0);
+  });
+
+  test("counts every pending result into one round and numbers rounds in order", () => {
+    const { store, recorder } = harness();
+    recorder.turnStarted({ agentId: "agent-1", turnId: "t1" });
+    // Two tools run in PARALLEL: both start before either finishes, so two
+    // results pile up with no action in between to close them early.
+    toolCall(recorder, "t1", "c1", "running");
+    toolCall(recorder, "t1", "c2", "running");
+    toolCall(recorder, "t1", "c1", "completed");
+    toolCall(recorder, "t1", "c2", "completed");
+    // The next action consumes both at once.
+    recorder.timelineItem({
+      agentId: "agent-1",
+      turnId: "t1",
+      item: { type: "assistant_message" as const, messageId: "m1", text: "next" },
+    });
+    toolCall(recorder, "t1", "c3", "running");
+    toolCall(recorder, "t1", "c3", "completed");
+    recorder.timelineItem({
+      agentId: "agent-1",
+      turnId: "t1",
+      item: { type: "assistant_message" as const, messageId: "m2", text: "again" },
+    });
+    const rounds = allEvents(store).filter((event) => event.type === "round/begin");
+    expect(rounds.map((event) => event.data.consumedResults)).toEqual([2, 1]);
+    expect(rounds.map((event) => event.data.ordinal)).toEqual([1, 2]);
+  });
+
+  test("restarts round numbering for each turn", () => {
+    const { store, recorder } = harness();
+    recorder.turnStarted({ agentId: "agent-1", turnId: "t1" });
+    toolCall(recorder, "t1", "c1", "running");
+    toolCall(recorder, "t1", "c1", "completed");
+    recorder.timelineItem({
+      agentId: "agent-1",
+      turnId: "t1",
+      item: { type: "assistant_message" as const, messageId: "m1", text: "x" },
+    });
+    recorder.turnEnded({ agentId: "agent-1", turnId: "t1", outcome: "completed" });
+    recorder.turnStarted({ agentId: "agent-1", turnId: "t2" });
+    toolCall(recorder, "t2", "c9", "running");
+    toolCall(recorder, "t2", "c9", "completed");
+    recorder.timelineItem({
+      agentId: "agent-1",
+      turnId: "t2",
+      item: { type: "assistant_message" as const, messageId: "m2", text: "y" },
+    });
+    const rounds = allEvents(store).filter((event) => event.type === "round/begin");
+    expect(rounds.map((event) => event.data.ordinal)).toEqual([1, 1]);
+    expect(rounds.map((event) => event.turn)).toEqual(["t1", "t2"]);
+  });
+
+  test("backfills a call row for an orphan terminal so the pair always exists", () => {
+    const { store, recorder } = harness();
+    recorder.turnStarted({ agentId: "agent-1", turnId: "t1" });
+    recorder.timelineItem({
+      agentId: "agent-1",
+      turnId: "t1",
+      item: {
+        type: "tool_call" as const,
+        callId: "orphan",
+        name: "shell",
+        status: "failed",
+        error: "boom",
+        detail: { type: "shell", command: "ls", output: "" },
+      },
+    });
+    const events = allEvents(store);
+    const call = events.find((event) => event.type === "tool/call");
+    const result = events.find((event) => event.type === "tool/result");
+    expect(call?.data.callId).toBe("orphan");
+    expect(call?.data.name).toBe("shell");
+    expect(call?.data.backfilled).toBe(true);
+    expect(result?.data.callId).toBe("orphan");
+    // Exactly one call row, even though the terminal also passes the dedupe gate.
+    expect(events.filter((event) => event.type === "tool/call")).toHaveLength(1);
+  });
+
+  test("does not backfill a second call row when the call was observed", () => {
+    const { store, recorder } = harness();
+    recorder.turnStarted({ agentId: "agent-1", turnId: "t1" });
+    toolCall(recorder, "t1", "c1", "running");
+    toolCall(recorder, "t1", "c1", "completed");
+    const calls = allEvents(store).filter((event) => event.type === "tool/call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].data.backfilled).toBeUndefined();
+  });
+
+  test("records the system prompt as length and hash only, with no turn", () => {
+    const { store, recorder } = harness();
+    recorder.systemPromptAttached({
+      agentId: "agent-1",
+      charsLength: 1234,
+      hash12: "abcdef123456",
+      correlated: "config",
+    });
+    const [row] = allEvents(store);
+    expect(row.type).toBe("system/attach");
+    expect(row.turn).toBeNull();
+    expect(row.data.charsLength).toBe(1234);
+    expect(row.data.hash12).toBe("abcdef123456");
+    expect(row.data.derived).toBe(true);
+    expect(row.data.correlated).toBe("config");
+    // The prompt text must not be anywhere in the row.
+    expect(JSON.stringify(row.data)).not.toMatch(/prompt\s*:/i);
+  });
+
+  function toolCall(
+    rec: ReturnType<typeof harness>["recorder"],
+    turnId: string,
+    callId: string,
+    status: "running" | "completed",
+  ): void {
+    rec.timelineItem({
+      agentId: "agent-1",
+      turnId,
+      item: {
+        type: "tool_call" as const,
+        callId,
+        name: "shell",
+        status,
+        error: null,
+        detail: {
+          type: "shell" as const,
+          command: "ls",
+          ...(status === "completed" ? { output: "ok" } : {}),
+        },
+      },
+    });
+  }
 });

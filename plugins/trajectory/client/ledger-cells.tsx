@@ -47,6 +47,11 @@ export function kindAccentColor(
   if (kind === "message" || kind === "compacted") return theme.colors.accent;
   if (kind === "tool" || kind === "subtool") return theme.colors.statusWarning;
   if (kind === "context") return theme.colors.statusSuccess;
+  // The derived round boundary is the one kind with no lane colour of its own:
+  // it must not read as user/success, message/accent, tool/warning or a
+  // failure, so it takes the foreground and separates by weight instead.
+  if (kind === "llm") return theme.colors.foreground;
+  if (kind === "systemPrompt") return theme.colors.foreground;
   // system and anything unknown read as muted.
   return theme.colors.foregroundMuted;
 }
@@ -69,6 +74,8 @@ const KIND_ICON: Record<TrajectoryCellProps["kind"], string> = {
   message: "M",
   tool: "T",
   subtool: "↳",
+  llm: "L",
+  systemPrompt: "P",
 };
 
 export function KindTag(props: {
@@ -242,6 +249,12 @@ function headerStyles(theme: PluginTheme, columns: Columns) {
   });
 }
 
+/** `K results` pulled back out of a round row's label, for its STATS column. */
+function consumedResults(label: string): string {
+  const match = label.match(/consumed (\d+) results/);
+  return match?.[1] === undefined ? "results: —" : `${match[1]} results`;
+}
+
 /** First line of an added slice, clipped to the column. */
 function firstLine(text: string, limit = 160): string {
   const line = text.split(/\r?\n/, 1)[0] ?? "";
@@ -352,6 +365,15 @@ function StatsCell(props: { cell: TrajectoryCellProps; theme: PluginTheme }) {
     () => ({ flexDirection: "row" as const, alignItems: "center" as const, gap: 6 }),
     [],
   );
+  // A derived round carries no numbers of its own: its STATS column reports the
+  // facts that justify it — how many tool results it stands between.
+  if (cell.kind === "llm") {
+    return (
+      <Text style={monoStyles(theme)} testID="stats-text" numberOfLines={1}>
+        {consumedResults(cell.text)}
+      </Text>
+    );
+  }
   if (cell.kind === "user") {
     return (
       <Text style={monoStyles(theme)} testID="stats-text" numberOfLines={1}>

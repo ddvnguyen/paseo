@@ -611,17 +611,23 @@ function expandTurns(
   hideEmptyTurns = false,
 ): LeadRecord[] {
   const records: LeadRecord[] = [];
-  turns.forEach((turn, index) => {
-    const turnNumber = index + 1;
+  // Only buckets that carry a real turn number consume one. The unnumbered
+  // preamble bucket (the system prompt, recorded with turn=null) is labelled
+  // "Setup" and stays out of the count, so Turn 1 is still the first real turn
+  // rather than being pushed down by a row that belongs to no turn.
+  let numbered = 0;
+  turns.forEach((turn) => {
+    const isNumbered = turn.turn !== null;
+    const turnNumber = isNumbered ? ++numbered : 0;
     const open = fold.openTurns.has(turnNumber);
     // Under an active search a turn with no match is noise; drop its header and
     // rule so results read as one list, while positional numbering is untouched.
     if (hideEmptyTurns && turn.groups.length === 0) return;
-    if (index > 0) records.push({ __kind: "turn-rule", turn: turnNumber });
+    if (records.length > 0) records.push({ __kind: "turn-rule", turn: turnNumber });
     records.push({
       __kind: "turn-header",
       turn: turnNumber,
-      title: `Turn ${turnNumber}`,
+      title: isNumbered ? `Turn ${turnNumber}` : "Setup",
       ...(turn.usage === undefined ? {} : { usage: turn.usage }),
       open,
     });

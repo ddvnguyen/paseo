@@ -117,6 +117,10 @@ export function createWiring(options: { store: TrajectoryStore }): Wiring {
         }
         break;
       case "usage_updated":
+        // Dead on arrival: `usage_updated` is not in the host's wire event
+        // union, so this branch never matches (backburner task-acbbd5e75d).
+        // Kept, not deleted: the moment upstream adds the event this becomes
+        // live with no recorder change, and the branch documents that intent.
         if (event.usage) {
           recorder.usage({
             agentId,
