@@ -114,7 +114,7 @@ paseo schedule update <id> --workspace-id wks_def456
 paseo schedule update <id> --no-workspace-id
 ```
 
-`--no-workspace-id` only drops the shared workspace, so archiving stays off and the runs that follow each get a workspace of their own that is never archived. There is no flag to turn archiving back on for an existing schedule.
+`--no-workspace-id` goes back to a workspace per run, and those are archived again when the run ends. Reuse is what turned archiving off, so clearing it turns archiving back on.
 
 The daemon re-checks reuse on every run rather than trusting the stored config, and refuses reuse — falling back to a workspace of that run's own, archived when the run ends — when the workspace is archived, when it does not exist, or when its directory differs from `--cwd`. A refused run logs a warning once per schedule, and the schedule keeps running.
 

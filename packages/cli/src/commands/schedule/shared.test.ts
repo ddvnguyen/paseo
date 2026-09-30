@@ -346,10 +346,13 @@ describe("schedule workspace reuse flags", () => {
     });
   });
 
-  test("update --no-workspace-id clears reuse", () => {
+  test("update --no-workspace-id clears reuse and restores archiving", () => {
+    // Reuse is what pins archiveOnFinish false. Clearing only the id would leave
+    // every later run provisioning a workspace that is never archived — the same
+    // per-run leak, once the feature meant to prevent it is switched off.
     expect(parseScheduleUpdateInput({ id: "abc", clearWorkspaceId: true })).toEqual({
       id: "abc",
-      newAgentConfig: { workspaceId: null },
+      newAgentConfig: { workspaceId: null, archiveOnFinish: true },
     });
   });
 

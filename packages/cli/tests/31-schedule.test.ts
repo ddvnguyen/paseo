@@ -252,6 +252,14 @@ try {
       undefined,
       "--no-workspace-id must drop the shared workspace",
     );
+    // Clearing also restores archiving. Reuse is what pinned archiveOnFinish
+    // false; leaving it false would give every later run a workspace that is
+    // never archived.
+    assert.strictEqual(
+      config.archiveOnFinish,
+      true,
+      "--no-workspace-id must restore archiving so per-run workspaces are retired",
+    );
 
     const deleted = await ctx.paseo(["schedule", "delete", id, "--json"]);
     assert.strictEqual(deleted.exitCode, 0, deleted.stderr);
