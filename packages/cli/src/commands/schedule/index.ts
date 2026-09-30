@@ -100,8 +100,9 @@ export function createScheduleCommand(): Command {
       .option("--max-runs <n>", "Set or change maximum number of runs")
       .option(
         "--workspace-id <id>",
-        "Reuse this existing workspace for every run (requires archiveOnFinish false)",
+        "Reuse this existing workspace for every run (also sets archiveOnFinish false)",
       )
+      .option("--no-workspace-id", "Stop reusing a workspace (restore one workspace per run)")
       .option("--no-max-runs", "Clear the max-runs limit")
       .option("--expires-in <duration>", "Set or change time to live for the schedule")
       .option("--no-expires-in", "Clear the expiration"),

@@ -20,6 +20,8 @@ export interface ScheduleCreateOptions extends ScheduleCommandOptions {
   mode?: string;
   thinking?: string;
   cwd?: string;
+  /** Reuse this existing workspace for every run instead of provisioning one. */
+  workspaceId?: string;
   maxRuns?: string;
   expiresIn?: string;
   runNow?: boolean;
@@ -44,6 +46,7 @@ export async function runCreateCommand(
     thinking: options.thinking,
     cwd: options.cwd,
     daemonTarget: options.daemonTarget,
+    workspaceId: options.workspaceId,
     maxRuns: options.maxRuns,
     expiresIn: options.expiresIn,
     runNow,

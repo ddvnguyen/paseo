@@ -97,6 +97,25 @@ paseo schedule update <id> --every 10m --max-runs 6
 paseo schedule delete <id>
 ```
 
+## Workspace per run
+
+Each run of a new-agent schedule provisions its own workspace by default. Pass `--workspace-id <id>` to run every tick in one workspace you already have, so the schedule's history collects in a single place instead of a directory per run:
+
+```bash
+paseo schedule create --every 30m --cwd ~/dev/my-app \
+  --workspace-id wks_abc123 \
+  "Triage new issues."
+```
+
+Naming a workspace also stops the schedule archiving one per run; an archived workspace is not shared with anything. `--workspace-id` is safe to change later, and `--no-workspace-id` goes back to a workspace per run:
+
+```bash
+paseo schedule update <id> --workspace-id wks_def456
+paseo schedule update <id> --no-workspace-id
+```
+
+The daemon re-checks reuse on every run rather than trusting the stored config. A run falls back to its own workspace, and logs a warning, when the workspace was archived, when it does not exist, or when its directory differs from `--cwd`. The schedule keeps running either way.
+
 ## Cadence
 
 Use `--cron "<expr>"` for a 5-field cron expression. For common cron-compatible cadences, `--every <duration>` accepts presets such as `5m` or `1h` and compiles them to cron. It does not create a rolling interval anchored to creation time.

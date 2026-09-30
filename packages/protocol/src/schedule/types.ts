@@ -105,6 +105,8 @@ export interface UpdateScheduleNewAgentConfig {
   archiveOnFinish?: boolean;
   isolation?: "local" | "worktree";
   cwd?: string;
+  /** Set to reuse a workspace for every run; `null` clears reuse. */
+  workspaceId?: string | null;
 }
 
 export interface UpdateScheduleInput {

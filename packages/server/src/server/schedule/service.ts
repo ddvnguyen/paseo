@@ -110,6 +110,16 @@ function applyNewAgentConfig(
   if (patch.archiveOnFinish !== undefined) {
     config.archiveOnFinish = patch.archiveOnFinish;
   }
+  if (patch.workspaceId !== undefined) {
+    const trimmed = patch.workspaceId?.trim();
+    if (trimmed) {
+      config.workspaceId = trimmed;
+    } else {
+      // null clears reuse: without this a workspaceId could be set once and never
+      // removed, so every later run kept sharing it.
+      delete config.workspaceId;
+    }
+  }
   if (patch.isolation !== undefined) {
     config.isolation = patch.isolation;
   }
@@ -1000,38 +1010,11 @@ export class ScheduleService {
     // Explicit reuse: name an existing workspace instead of provisioning one. Every
     // run of a schedule otherwise got its own workspace, so a 288-run schedule left
     // 288 directories and no single place to see the schedule's history.
-    //
-    // SAFETY: only valid when the schedule does NOT archive on finish. A shared
-    // workspace archived by whichever run finishes first would vanish out from
-    // under every other run, so the unsafe combination is refused rather than
-    // trusted — config is not a safety mechanism.
     if (config.workspaceId) {
-      if (config.archiveOnFinish !== false) {
-        throw new ScheduleTargetGoneError(
-          `workspaceId reuse requires archiveOnFinish: false — a shared workspace would be ` +
-            `archived by the first run that finishes (schedule target ${config.workspaceId})`,
-        );
+      const reusable = await this.findReusableScheduleWorkspace(config);
+      if (reusable) {
+        return reusable;
       }
-      const existing = this.getWorkspace
-        ? await this.getWorkspace(config.workspaceId)
-        : null;
-      if (existing) {
-        // Cwd must match: the agent inherits workspace.cwd, and a reused workspace
-        // whose cwd drifted would silently run the schedule in the wrong directory.
-        const configuredCwd = config.cwd?.replace(/\/+$/, "");
-        const workspaceCwd = existing.cwd?.replace(/\/+$/, "");
-        if (configuredCwd && workspaceCwd && configuredCwd !== workspaceCwd) {
-          throw new ScheduleTargetGoneError(
-            `workspaceId ${config.workspaceId} has cwd ${existing.cwd}, which does not match the ` +
-              `target's ${config.cwd}`,
-          );
-        }
-        return existing;
-      }
-      this.logger.warn(
-        { workspaceId: config.workspaceId },
-        "schedule workspace reuse: id not found, provisioning a new workspace instead",
-      );
     }
 
     const firstAgentContext = { prompt };
@@ -1042,6 +1025,66 @@ export class ScheduleService {
         return (await this.createPaseoWorktreeWorkspace({ cwd: config.cwd, firstAgentContext }))
           .workspace;
     }
+  }
+
+  /**
+   * Resolve the workspace a target named via `config.workspaceId`, or null when it
+   * cannot be safely reused and the run has to provision its own.
+   *
+   * Reuse is only safe when the schedule does NOT archive on finish (a shared
+   * workspace archived by whichever run finishes first would vanish out from under
+   * every other run) and when the named workspace is live and sits at the target's
+   * cwd. Config is not a safety mechanism, so each of those is re-checked here.
+   *
+   * A rejected reuse must degrade, never fail: the run still has to happen, and
+   * `ScheduleTargetGoneError` is the daemon's "this target is gone for good" signal
+   * — it completes the schedule permanently (see finishRun). Reporting a bad
+   * workspaceId that way silently cancels every future run of the schedule.
+   */
+  private async findReusableScheduleWorkspace(
+    config: Extract<ScheduleTarget, { type: "new-agent" }>["config"],
+  ): Promise<PersistedWorkspaceRecord | null> {
+    const workspaceId = config.workspaceId;
+    if (!workspaceId) {
+      return null;
+    }
+    if (config.archiveOnFinish !== false) {
+      this.logger.warn(
+        { workspaceId, archiveOnFinish: config.archiveOnFinish ?? null },
+        "schedule workspace reuse: needs archiveOnFinish false, provisioning a new workspace instead",
+      );
+      return null;
+    }
+    const existing = this.getWorkspace ? await this.getWorkspace(workspaceId) : null;
+    if (!existing) {
+      this.logger.warn(
+        { workspaceId },
+        "schedule workspace reuse: id not found, provisioning a new workspace instead",
+      );
+      return null;
+    }
+    // An archived id still resolves in the workspace registry, so it has to be
+    // rejected here. Placing agents in it hides them from the workspace list and
+    // re-archives a workspace the user already retired.
+    if (existing.archivedAt) {
+      this.logger.warn(
+        { workspaceId, archivedAt: existing.archivedAt },
+        "schedule workspace reuse: workspace is archived, provisioning a new workspace instead",
+      );
+      return null;
+    }
+    // Cwd must match: the agent inherits workspace.cwd, and a reused workspace
+    // whose cwd drifted would silently run the schedule in the wrong directory.
+    const configuredCwd = config.cwd?.replace(/\/+$/, "");
+    const workspaceCwd = existing.cwd?.replace(/\/+$/, "");
+    if (configuredCwd && workspaceCwd && configuredCwd !== workspaceCwd) {
+      this.logger.warn(
+        { workspaceId, workspaceCwd: existing.cwd, configuredCwd: config.cwd },
+        "schedule workspace reuse: workspace cwd does not match the target cwd, provisioning a new workspace instead",
+      );
+      return null;
+    }
+    return existing;
   }
 
   private async assertNewAgentCwdDirectory(cwd: string): Promise<void> {
