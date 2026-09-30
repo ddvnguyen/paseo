@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import type { TextStyle } from "react-native";
+import type { TextStyle, ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { formatElapsedSeconds } from "../shared/dsh/record.js";
 import type { TrajectoryCellProps } from "../shared/dsh/record.js";
@@ -25,6 +25,7 @@ import type { TrajectoryCellProps } from "../shared/dsh/record.js";
  * STATS fits `token: In 1,234(56) / out 789`. CONTEXT takes the remainder.
  */
 export function columnLayout(compact: boolean): {
+  rail: number;
   time: number;
   type: number;
   stats: number;
@@ -32,8 +33,31 @@ export function columnLayout(compact: boolean): {
   padLeft: number;
 } {
   return compact
-    ? { time: 52, type: 58, stats: 84, gap: 4, padLeft: 4 }
-    : { time: 64, type: 68, stats: 150, gap: 8, padLeft: 6 };
+    ? { rail: 3, time: 52, type: 58, stats: 84, gap: 4, padLeft: 4 }
+    : { rail: 3, time: 64, type: 68, stats: 150, gap: 8, padLeft: 6 };
+}
+
+type Columns = ReturnType<typeof columnLayout>;
+
+/**
+ * The per-column layout, as ONE object shared by the sticky header and every
+ * body row.
+ *
+ * This is the single source of alignment. It previously existed only inside the
+ * row styles, so the header inherited its widths in a comment and not in fact:
+ * QC r18 measured the labels at x=7/39/70/122 against body values at
+ * x=18/96/166/1372. Both sides now build from this, so they cannot drift.
+ *
+ * `context` is the one flexible column; the other three are fixed so a long tool
+ * argument cannot shift the numbers sideways.
+ */
+function columnStyles(columns: Columns): Record<"time" | "type" | "context" | "stats", ViewStyle> {
+  return {
+    time: { width: columns.time },
+    type: { width: columns.type },
+    context: { flex: 1, minWidth: 0 },
+    stats: { width: columns.stats },
+  };
 }
 
 /**
@@ -271,25 +295,25 @@ export function LedgerColumnHeader(props: { compact: boolean; theme: PluginTheme
   const styles = useMemo(() => headerStyles(theme, columns), [theme, columns]);
   return (
     <View style={styles.row} testID="ledger-column-header">
-      <Text style={styles.cell} testID="column-header-time">
+      <View style={styles.rail} testID="column-header-rail" />
+      <Text style={styles.time} testID="column-header-time">
         TIME
       </Text>
-      <Text style={styles.cell} testID="column-header-type">
+      <Text style={styles.type} testID="column-header-type">
         TYPE
       </Text>
-      <Text style={styles.cell} testID="column-header-context">
+      <Text style={styles.context} testID="column-header-context">
         CONTEXT
       </Text>
-      <Text style={styles.cell} testID="column-header-stats">
+      <Text style={styles.stats} testID="column-header-stats">
         STATS
       </Text>
     </View>
   );
 }
 
-type Columns = ReturnType<typeof columnLayout>;
-
 function headerStyles(theme: PluginTheme, columns: Columns) {
+  const shared = columnStyles(columns);
   return StyleSheet.create({
     row: {
       flexDirection: "row",
@@ -304,12 +328,22 @@ function headerStyles(theme: PluginTheme, columns: Columns) {
       borderBottomColor: theme.colors.border,
       backgroundColor: theme.colors.surface1,
     },
-    cell: {
+    /**
+     * Spacer for the per-row kind rail. A body row starts with the rail as its
+     * first flex child, so a header that skipped it would sit `rail + gap` to
+     * the left of the column it labels. Reserving the width here is what puts
+     * TIME directly above TIME.
+     */
+    rail: { width: columns.rail },
+    time: { ...shared.time, color: theme.colors.foregroundMuted, fontSize: 9, fontWeight: "600" },
+    type: { ...shared.type, color: theme.colors.foregroundMuted, fontSize: 9, fontWeight: "600" },
+    context: {
+      ...shared.context,
       color: theme.colors.foregroundMuted,
       fontSize: 9,
       fontWeight: "600",
-      letterSpacing: 0.4,
     },
+    stats: { ...shared.stats, color: theme.colors.foregroundMuted, fontSize: 9, fontWeight: "600" },
   });
 }
 
@@ -430,7 +464,7 @@ export function TrajectoryCellRow(props: {
       <Text style={styles.time} testID="col-time">
         {formatClockTime(cell.startedAt)}
       </Text>
-      <View style={styles.type}>
+      <View style={styles.type} testID="col-type">
         <KindTag kind={cell.kind} compact={compact} theme={theme} error={cell.isError === true} />
       </View>
       <Text
@@ -519,6 +553,7 @@ function cellStyles(
   zebraStep: 0 | 1,
   kind: TrajectoryCellProps["kind"],
 ) {
+  const shared = columnStyles(columns);
   return StyleSheet.create({
     row: {
       flexDirection: "row",
@@ -535,38 +570,25 @@ function cellStyles(
       backgroundColor: rowSurface(theme, kind, error, zebraStep),
     },
     rail: {
-      width: 3,
+      width: columns.rail,
       alignSelf: "stretch",
       borderRadius: 1,
     },
     time: {
-      width: columns.time,
+      ...shared.time,
       color: theme.colors.foregroundMuted,
       fontSize: 11,
       fontVariant: ["tabular-nums"],
     },
-    type: {
-      width: columns.type,
-      flexDirection: "row",
-    },
-    context: {
-      flex: 1,
-      minWidth: 0,
-      color: theme.colors.foreground,
-      fontSize: 12,
-    },
+    type: { ...shared.type, flexDirection: "row" },
+    context: { ...shared.context, color: theme.colors.foreground, fontSize: 12 },
     // Reasoning reads as supporting material: italic, and muted via the rail.
     contextItalic: {
-      flex: 1,
-      minWidth: 0,
+      ...shared.context,
       color: theme.colors.foregroundMuted,
       fontSize: 12,
       fontStyle: "italic",
     },
-    stats: {
-      width: columns.stats,
-      flexDirection: "row",
-      justifyContent: "flex-end",
-    },
+    stats: { ...shared.stats, flexDirection: "row", justifyContent: "flex-end" },
   });
 }

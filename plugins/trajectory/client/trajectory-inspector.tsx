@@ -48,7 +48,14 @@ export function TrajectoryInspector(props: {
         <Text numberOfLines={2} style={titleStyles(theme)} testID="inspector-label">
           {row.label}
         </Text>
-        <Pressable accessibilityRole="button" onPress={onClose} testID="inspector-close">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="close"
+          hitSlop={CLOSE_HIT_SLOP}
+          onPress={onClose}
+          style={closeButtonStyles(theme)}
+          testID="inspector-close"
+        >
           <Text style={closeStyles(theme)}>close</Text>
         </Pressable>
       </View>
@@ -251,6 +258,38 @@ function titleStyles(theme: PluginTheme): TextStyle {
     color: theme.colors.foreground,
     fontSize: 13,
     fontWeight: "600",
+  };
+}
+
+/**
+ * Minimum comfortable target, matching the host sheet's own floor for its close
+ * control.
+ */
+const CLOSE_TARGET = 44;
+/** Keeps the painted button small while the target stays CLOSE_TARGET. */
+const CLOSE_PAINTED = 32;
+const CLOSE_HIT_SLOP = (CLOSE_TARGET - CLOSE_PAINTED) / 2;
+
+/**
+ * A text button's box is whatever the glyph measures, so the padding pins it to
+ * a known size. Without it the hit area equals the text (QC r18 measured a
+ * 32x32 border box and nothing larger), and `hitSlop` on top of an unpinned box
+ * cannot be reasoned about: the same number that takes a 32px box to 44px leaves
+ * a 14px-tall text row well short.
+ *
+ * `hitSlop` grows the touch/hit rect without changing layout or painting, which
+ * is the whole point -- the button stays visually compact in the header.
+ */
+function closeButtonStyles(_theme: PluginTheme): ViewStyle {
+  const side = (CLOSE_PAINTED - 24) / 2;
+  return {
+    paddingVertical: Math.max(0, side),
+    paddingHorizontal: Math.max(0, side),
+    borderRadius: 4,
+    justifyContent: "center",
+    alignItems: "center",
+    // Painted on the header's own surface, so the larger target stays invisible.
+    backgroundColor: "transparent",
   };
 }
 

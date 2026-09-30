@@ -1,6 +1,10 @@
 /** Component tests for the ledger cell primitives (wide + compact). */
 
 // @vitest-environment jsdom
+// Expose the act() support flag before react loads, as the sibling component
+// tests do. Without it act() warns and does not flush synchronously, which only
+// shows up when a test renders twice and reads the DOM in between.
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -612,5 +616,109 @@ describe("ledger cells", () => {
     expect(cellContext(cell({ kind: "thinking", text: "reasoning" }), false, undefined)).toBe(
       "reasoning · — chars",
     );
+  });
+
+  // --- QC r18: the header must sit over the body columns -------------------
+
+  /**
+   * A node's style as one flat object. Composed styles arrive as an array (the
+   * kind rail is base + colour), so the entries are merged rather than read off
+   * the first one.
+   */
+  function styleOf(testID: string): Record<string, unknown> {
+    const node = document.querySelector(`[data-testid="${testID}"]`);
+    expect(node).not.toBeNull();
+    const raw = JSON.parse(node?.getAttribute("data-style") ?? "{}") as unknown;
+    const entries = Array.isArray(raw) ? raw : [raw];
+    return Object.assign(
+      {},
+      ...entries.filter(
+        (entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null,
+      ),
+    );
+  }
+
+  /**
+   * Header and body styles for one breakpoint.
+   *
+   * They are read in two passes because both render into the same root: a second
+   * render replaces the first, so the header's styles have to be captured before
+   * the row is rendered over it.
+   */
+  function bothSides(compact: boolean): {
+    header: Record<string, Record<string, unknown>>;
+    body: Record<string, Record<string, unknown>>;
+    columns: ReturnType<typeof columnLayout>;
+  } {
+    const columns = columnLayout(compact);
+    render(<LedgerColumnHeader compact={compact} theme={THEME} />);
+    const headerRaw = {
+      row: styleOf("ledger-column-header"),
+      rail: styleOf("column-header-rail"),
+      time: styleOf("column-header-time"),
+      type: styleOf("column-header-type"),
+      context: styleOf("column-header-context"),
+      stats: styleOf("column-header-stats"),
+    };
+    const header: Record<string, Record<string, unknown>> = headerRaw;
+    render(
+      <TrajectoryCellRow
+        cell={cell({ kind: "tool" })}
+        compact={compact}
+        theme={THEME}
+        testID="body"
+      />,
+    );
+    const body: Record<string, Record<string, unknown>> = {
+      row: styleOf("body"),
+      rail: styleOf("kind-rail-tool"),
+      time: styleOf("col-time"),
+      type: styleOf("col-type"),
+      context: styleOf("col-context"),
+      stats: styleOf("col-stats"),
+    };
+    return { header, body, columns };
+  }
+
+  it("gives each header cell the same width as its body column (wide)", () => {
+    const { header, body, columns } = bothSides(false);
+    expect(header.time.width).toBe(columns.time);
+    expect(body.time.width).toBe(columns.time);
+    expect(header.type.width).toBe(columns.type);
+    expect(body.type.width).toBe(columns.type);
+    expect(header.stats.width).toBe(columns.stats);
+    expect(body.stats.width).toBe(columns.stats);
+  });
+
+  it("gives each header cell the same width as its body column (compact)", () => {
+    const { header, body, columns } = bothSides(true);
+    expect(header.time.width).toBe(columns.time);
+    expect(body.time.width).toBe(columns.time);
+    expect(header.stats.width).toBe(columns.stats);
+    expect(body.stats.width).toBe(columns.stats);
+  });
+
+  it("reserves the kind rail's width in the header so TIME is not offset", () => {
+    // A body row's first flex child is the kind rail. Without a matching spacer
+    // the header would sit rail+gap to the left of every column it labels --
+    // exactly the 11px QC r18 measured.
+    for (const compact of [false, true]) {
+      const { header, body, columns } = bothSides(compact);
+      expect(header.rail.width).toBe(columns.rail);
+      expect(body.rail.width).toBe(columns.rail);
+      // Both rows share one gap and one left padding, so nothing else shifts.
+      expect(header.row.gap).toBe(columns.gap);
+      expect(body.row.gap).toBe(columns.gap);
+      expect(header.row.paddingLeft).toBe(columns.padLeft);
+      expect(body.row.paddingLeft).toBe(columns.padLeft);
+    }
+  });
+
+  it("lets the CONTEXT column flex in both header and body", () => {
+    for (const compact of [false, true]) {
+      const { header, body } = bothSides(compact);
+      expect(header.context.flex).toBe(1);
+      expect(body.context.flex).toBe(1);
+    }
   });
 });
