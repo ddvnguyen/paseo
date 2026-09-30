@@ -97,6 +97,16 @@ export interface TrajectoryCellProps {
   resultPreviewMarkdown?: string;
   /** Tool call id used to link message source blocks to tool records. */
   callId?: string;
+  /**
+   * Message total-so-far and the slice THIS record contributed. The daemon
+   * re-emits one assistant message across many stream chunks, so a record
+   * carries its own delta rather than the whole message. Absent when the length
+   * is unknown or the record has no source identity.
+   */
+  textLength?: number;
+  deltaChars?: number;
+  /** Offset into the message text at which this record's delta starts. */
+  deltaStart?: number;
   /** Tool-only result failure state. */
   isError?: boolean;
   /** Own duration in seconds, or `null` when no duration is known. */

@@ -6,7 +6,7 @@ import type { PluginAgentPanelProps, PluginWorkspacePanelProps } from "@getpaseo
 import { usePaseo } from "@getpaseo/plugin/client";
 import type { TrajectoryCellProps } from "../shared/dsh/record.js";
 import { LedgerScreen } from "./ledger-screen.js";
-import { TrajectoryInspector } from "./trajectory-inspector.js";
+import { DOCK_WIDTH, TrajectoryInspector } from "./trajectory-inspector.js";
 import { useTrajectoryDelta } from "./use-trajectory-delta.js";
 import {
   foldRowTextKey,
@@ -119,11 +119,14 @@ function LiveLedger(props: { agentId: string; compact: boolean; theme: PluginThe
 
   return (
     <View style={panelStyles(theme)} testID="trajectory-panel">
-      <View style={captionRowStyles()}>
-        <Text style={captionStyles(theme)} testID="trajectory-panel-agent">
-          trajectory · {agentId}
-        </Text>
-        {delta.status === "error" ? (
+      {/* No caption row: the dialog goes flush and the host owns the padding.
+          The retry affordance stays, but only while the ledger is in its error
+          state — dropping it with the caption would have left no way back. */}
+      {delta.status === "error" ? (
+        <View style={captionRowStyles()}>
+          <Text style={captionStyles(theme)} testID="trajectory-panel-error">
+            trajectory unavailable — showing last known rows
+          </Text>
           <Pressable
             accessibilityRole="button"
             onPress={delta.refresh}
@@ -131,8 +134,8 @@ function LiveLedger(props: { agentId: string; compact: boolean; theme: PluginThe
           >
             <Text style={retryStyles(theme)}>retry</Text>
           </Pressable>
-        ) : null}
-      </View>
+        </View>
+      ) : null}
       <View style={bodyStyles()}>
         <View style={ledgerStyles()}>
           <LedgerScreen
@@ -243,9 +246,10 @@ function ledgerStyles(): ViewStyle {
   };
 }
 
+/** Reserves exactly the inspector's dock width; shares DOCK_WIDTH with it. */
 function dockSpacerStyles(): ViewStyle {
   return {
-    width: 320,
+    width: DOCK_WIDTH,
   };
 }
 

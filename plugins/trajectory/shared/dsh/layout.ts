@@ -84,6 +84,26 @@ export interface TrajectoryFoldRow {
   turnId: string | null;
   /** Step number within the turn, when the provider reports one. */
   step: number | null;
+  /**
+   * Cumulative character count of the message as of THIS event. The daemon
+   * re-emits `assistant/message` on every stream chunk with a growing
+   * `textLength`, so this is the total-so-far, not this row's contribution.
+   */
+  textLength?: number | null;
+  /**
+   * Characters THIS event contributed: `textLength` minus the value carried by
+   * the previous row with the same `sourceMessageId`. The first row of a
+   * message counts from zero, so its delta is the whole opening chunk.
+   * Null when the length is unknown or the row carries no source identity —
+   * in which case the row keeps its plain length label and nothing is invented.
+   */
+  deltaChars?: number | null;
+  /**
+   * Cumulative length BEFORE this event, i.e. the offset the delta starts at.
+   * With `deltaChars` this gives the added slice of a resolved text as
+   * `resolvedText.slice(deltaStart, deltaStart + deltaChars)`.
+   */
+  deltaStart?: number;
 }
 
 /** Snapshot slice the trajectory view folds (paseo shape). */
@@ -109,6 +129,22 @@ export function durationSeconds(later: number | null, earlier: number | null): n
  * identity existed, or from a producer that sent none, simply has no key — and a
  * single helper keeps that rule in one place for both cell kinds.
  */
+/** Copy the per-row delta facts onto a cell, omitting them when unknown. */
+function deltaFields(row: TrajectoryFoldRow): {
+  textLength?: number;
+  deltaChars?: number;
+  deltaStart?: number;
+} {
+  if (row.textLength === undefined || row.textLength === null) return {};
+  if (row.deltaChars === undefined || row.deltaChars === null)
+    return { textLength: row.textLength };
+  return {
+    textLength: row.textLength,
+    deltaChars: row.deltaChars,
+    deltaStart: row.deltaStart ?? 0,
+  };
+}
+
 function sourceIdentity(row: TrajectoryFoldRow): { sourceMessageId?: string } {
   if (row.sourceMessageId === undefined || row.sourceMessageId === null) return {};
   return { sourceMessageId: row.sourceMessageId };
@@ -333,6 +369,9 @@ export function deriveTrajectoryLayout(
           text: row.label,
           sourceSeq: row.seq,
           ...sourceIdentity(row),
+          ...(row.textLength === undefined || row.textLength === null
+            ? {}
+            : { textLength: row.textLength }),
           opensTurn: true,
           timeSeconds: 0,
           startedAt: absTime,
@@ -347,6 +386,7 @@ export function deriveTrajectoryLayout(
         sourceSeq: row.seq,
         ...sourceIdentity(row),
         text: row.label,
+        ...deltaFields(row),
         recordId: `assistant\u0000${row.turnId ?? ""}\u0000${row.step ?? 0}`,
         timeSeconds: rowEndSeconds(row, absTime),
         startedAt: absTime,
