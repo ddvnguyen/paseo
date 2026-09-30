@@ -136,4 +136,156 @@ describe("eventsToFoldRows", () => {
     ]);
     expect(empty[0].sourceMessageId).toBeUndefined();
   });
+
+  // --- T3-B: per-row message delta ---------------------------------------
+  //
+  // The daemon re-emits one assistant message on every stream chunk with the
+  // same sourceMessageId and a growing textLength. Each row must therefore
+  // carry only what it added, never the cumulative total.
+
+  it("reports each assistant chunk as its own delta of the message total", () => {
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "assistant/message",
+        data: { sourceMessageId: "m-1", textLength: 1 },
+      }),
+      event({
+        seq: 2,
+        type: "assistant/message",
+        data: { sourceMessageId: "m-1", textLength: 68 },
+      }),
+      event({
+        seq: 3,
+        type: "assistant/message",
+        data: { sourceMessageId: "m-1", textLength: 90 },
+      }),
+    ]);
+    expect(rows.map((row) => row.deltaChars)).toEqual([1, 67, 22]);
+    // The cumulative total travels alongside so the slice offset is derivable.
+    expect(rows.map((row) => row.textLength)).toEqual([1, 68, 90]);
+    expect(rows.map((row) => row.deltaStart)).toEqual([0, 1, 68]);
+  });
+
+  it("keeps the deltas of two interleaved messages separate", () => {
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "assistant/message",
+        data: { sourceMessageId: "m-1", textLength: 10 },
+      }),
+      event({ seq: 2, type: "assistant/message", data: { sourceMessageId: "m-2", textLength: 5 } }),
+      event({
+        seq: 3,
+        type: "assistant/message",
+        data: { sourceMessageId: "m-1", textLength: 14 },
+      }),
+      event({ seq: 4, type: "assistant/message", data: { sourceMessageId: "m-2", textLength: 6 } }),
+    ]);
+    expect(rows.map((row) => row.deltaChars)).toEqual([10, 5, 4, 1]);
+  });
+
+  it("reports no delta when the message carries no source identity", () => {
+    const rows = eventsToFoldRows([
+      event({ seq: 1, type: "assistant/message", data: { textLength: 40 } }),
+    ]);
+    expect(rows[0].deltaChars).toBeUndefined();
+    expect(rows[0].textLength).toBeUndefined();
+    // The length label still stands, so the row is not blank.
+    expect(rows[0].label).toBe("assistant message (40 chars)");
+  });
+
+  it("reports no delta when the length is unknown", () => {
+    const rows = eventsToFoldRows([
+      event({ seq: 1, type: "assistant/message", data: { sourceMessageId: "m-1" } }),
+    ]);
+    expect(rows[0].deltaChars).toBeUndefined();
+  });
+
+  it("refuses a negative delta when a producer's total shrinks mid-message", () => {
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "assistant/message",
+        data: { sourceMessageId: "m-1", textLength: 50 },
+      }),
+      event({ seq: 2, type: "assistant/message", data: { sourceMessageId: "m-1", textLength: 5 } }),
+    ]);
+    expect(rows[0].deltaChars).toBe(50);
+    // A shrinking total means the stream restarted; report nothing rather than
+    // a negative size, and let the label stand.
+    expect(rows[1].deltaChars).toBeUndefined();
+  });
+
+  it("gives a user row its prompt length with no delta", () => {
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "user/message",
+        data: { sourceMessageId: "u-1", textLength: 18 },
+      }),
+    ]);
+    expect(rows[0].kind).toBe("user");
+    expect(rows[0].textLength).toBe(18);
+    expect(rows[0].deltaChars).toBeUndefined();
+  });
+
+  // --- T3-D: derived round + system-prompt rows ---------------------------
+
+  it("turns a derived round event into an llm row stating the claim", () => {
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "round/begin",
+        turn: "t1",
+        data: { derived: true, ordinal: 2, consumedResults: 3 },
+      }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe("llm");
+    expect(rows[0].label).toBe("llm round 2 · consumed 3 results");
+    expect(rows[0].derived).toBe(true);
+    expect(rows[0].durationMs).toBeNull();
+  });
+
+  it("says so plainly when a round has no ordinal or no results", () => {
+    const rows = eventsToFoldRows([event({ seq: 1, type: "round/begin", turn: "t1", data: {} })]);
+    expect(rows[0].label).toBe("llm round · consumed 0 results");
+    expect(rows[0].derived).toBeUndefined();
+  });
+
+  it("turns a system/attach event into a size-and-hash row with no turn", () => {
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "system/attach",
+        turn: null,
+        data: { derived: true, charsLength: 1234, hash12: "abcdef123456" },
+      }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe("systemPrompt");
+    expect(rows[0].label).toBe("system prompt · 1,234 chars · hash abcdef123456…");
+    expect(rows[0].turnId).toBeNull();
+    expect(rows[0].derived).toBe(true);
+  });
+
+  it("reports an unknown prompt size as an em dash rather than zero", () => {
+    const rows = eventsToFoldRows([
+      event({ seq: 1, type: "system/attach", turn: null, data: { hash12: "abc" } }),
+    ]);
+    expect(rows[0].label).toBe("system prompt · — chars · hash abc…");
+  });
+
+  it("never renders prompt text even if one somehow reached the event", () => {
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "system/attach",
+        turn: null,
+        data: { charsLength: 12, hash12: "abc", systemPrompt: "SECRET PROMPT" },
+      }),
+    ]);
+    expect(rows[0].label).not.toContain("SECRET");
+  });
 });

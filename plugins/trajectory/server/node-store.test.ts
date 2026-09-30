@@ -102,6 +102,24 @@ describe("node store (db-assigned seq)", () => {
       second.close();
     }
   });
+
+  test("hasToolPhase answers from the rows, so replay dedupe survives a restart", () => {
+    const store = createNodeStore(":memory:");
+    store.append({
+      time: new Date(0).toISOString(),
+      type: "tool/call",
+      turn: "t1",
+      step: null,
+      agentId: "agent-1",
+      data: { callId: "c1", name: "shell" },
+    });
+    expect(store.hasToolPhase?.("agent-1", "c1", "call")).toBe(true);
+    // The other phase of the same call, another agent, and an unknown call all
+    // have to report false — otherwise the backfill would be skipped wrongly.
+    expect(store.hasToolPhase?.("agent-1", "c1", "result")).toBe(false);
+    expect(store.hasToolPhase?.("agent-2", "c1", "call")).toBe(false);
+    expect(store.hasToolPhase?.("agent-1", "nope", "call")).toBe(false);
+  });
 });
 
 const fileDir = mkdtempSync(join(tmpdir(), "trajectory-store-test-"));

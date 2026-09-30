@@ -55,7 +55,7 @@ export interface TrajectoryFoldRow {
   seq: number;
   /** Absolute epoch ms when the row happened, when known. */
   timeMs: number | null;
-  kind: "system" | "user" | "message" | "tool";
+  kind: "system" | "user" | "message" | "tool" | "llm" | "systemPrompt";
   /** Short single-line summary (tool rows: `name · args`). */
   label: string;
   /** Own duration ms, null while in-flight / unknown. */
@@ -84,6 +84,32 @@ export interface TrajectoryFoldRow {
   turnId: string | null;
   /** Step number within the turn, when the provider reports one. */
   step: number | null;
+  /**
+   * True when the recorder derived this row rather than observing it (an LLM
+   * round boundary, the system prompt). Kept on the row so a reader can tell an
+   * inferred fact from an observed one instead of taking both at face value.
+   */
+  derived?: boolean;
+  /**
+   * Cumulative character count of the message as of THIS event. The daemon
+   * re-emits `assistant/message` on every stream chunk with a growing
+   * `textLength`, so this is the total-so-far, not this row's contribution.
+   */
+  textLength?: number | null;
+  /**
+   * Characters THIS event contributed: `textLength` minus the value carried by
+   * the previous row with the same `sourceMessageId`. The first row of a
+   * message counts from zero, so its delta is the whole opening chunk.
+   * Null when the length is unknown or the row carries no source identity —
+   * in which case the row keeps its plain length label and nothing is invented.
+   */
+  deltaChars?: number | null;
+  /**
+   * Cumulative length BEFORE this event, i.e. the offset the delta starts at.
+   * With `deltaChars` this gives the added slice of a resolved text as
+   * `resolvedText.slice(deltaStart, deltaStart + deltaChars)`.
+   */
+  deltaStart?: number;
 }
 
 /** Snapshot slice the trajectory view folds (paseo shape). */
@@ -109,6 +135,22 @@ export function durationSeconds(later: number | null, earlier: number | null): n
  * identity existed, or from a producer that sent none, simply has no key — and a
  * single helper keeps that rule in one place for both cell kinds.
  */
+/** Copy the per-row delta facts onto a cell, omitting them when unknown. */
+function deltaFields(row: TrajectoryFoldRow): {
+  textLength?: number;
+  deltaChars?: number;
+  deltaStart?: number;
+} {
+  if (row.textLength === undefined || row.textLength === null) return {};
+  if (row.deltaChars === undefined || row.deltaChars === null)
+    return { textLength: row.textLength };
+  return {
+    textLength: row.textLength,
+    deltaChars: row.deltaChars,
+    deltaStart: row.deltaStart ?? 0,
+  };
+}
+
 function sourceIdentity(row: TrajectoryFoldRow): { sourceMessageId?: string } {
   if (row.sourceMessageId === undefined || row.sourceMessageId === null) return {};
   return { sourceMessageId: row.sourceMessageId };
@@ -280,10 +322,12 @@ export function deriveTrajectoryLayout(
   const { rows, turnNumbers: explicitNumbers } = input;
   const numbers = turnNumbersFor(rows, explicitNumbers);
 
-  const turns = new Map<number, TurnBucket>();
+  // Keyed by the model's own turn number; the key `null` is the unnumbered
+  // preamble bucket that holds rows recorded with no turn (the system prompt).
+  const turns = new Map<number | null, TurnBucket>();
   let index = 0;
 
-  const bucket = (turn: number): TurnBucket => {
+  const bucket = (turn: number | null): TurnBucket => {
     let entry = turns.get(turn);
     if (entry === undefined) {
       entry = { groups: [] };
@@ -292,7 +336,7 @@ export function deriveTrajectoryLayout(
     return entry;
   };
 
-  const pushMessage = (turn: number, laid: LaidCell): void => {
+  const pushMessage = (turn: number | null, laid: LaidCell): void => {
     const groups = bucket(turn).groups;
     const last = groups.at(-1);
     if (last?.title === "Message") {
@@ -302,8 +346,9 @@ export function deriveTrajectoryLayout(
     groups.push({ title: "Message", laid: [laid] });
   };
 
-  const pushStep = (turn: number, step: number | null, laid: LaidCell): void => {
-    if (step === null) {
+  const pushStep = (turn: number | null, step: number | null, laid: LaidCell): void => {
+    // A null turn means the unnumbered preamble bucket; steps never live there.
+    if (step === null || turn === null) {
       pushMessage(turn, laid);
       return;
     }
@@ -333,6 +378,9 @@ export function deriveTrajectoryLayout(
           text: row.label,
           sourceSeq: row.seq,
           ...sourceIdentity(row),
+          ...(row.textLength === undefined || row.textLength === null
+            ? {}
+            : { textLength: row.textLength }),
           opensTurn: true,
           timeSeconds: 0,
           startedAt: absTime,
@@ -341,57 +389,114 @@ export function deriveTrajectoryLayout(
       continue;
     }
     if (row.kind === "message") {
-      const cell: TrajectoryCellProps = {
-        index,
-        kind: "message",
-        sourceSeq: row.seq,
-        ...sourceIdentity(row),
-        text: row.label,
-        recordId: `assistant\u0000${row.turnId ?? ""}\u0000${row.step ?? 0}`,
-        timeSeconds: rowEndSeconds(row, absTime),
-        startedAt: absTime,
-      };
-      attachUsage(cell, row.usage);
-      cell.assistantMetrics = {
-        timingRecorded: row.durationMs !== null,
-        stepStartTime: absTime,
-        firstTokenTime: null, // observer-only: no TTFT
-        completedTime: rowEndTimeMs(row, absTime),
-        usageProvided: row.usage !== undefined,
-        outputTokens: row.usage?.output ?? null,
-      };
       if (displayTurn === null) continue;
-      pushStep(displayTurn, row.step, { absTime, cell });
+      pushStep(displayTurn, row.step, {
+        absTime,
+        cell: assistantMessageCell(row, index, absTime),
+      });
       continue;
     }
     if (row.kind === "tool") {
-      const { toolName, preview } = toolLabelParts(row);
-      const cell: TrajectoryCellProps = {
-        index,
-        kind: "tool",
-        sourceSeq: row.seq,
-        text: toolName,
-        ...(preview === undefined ? {} : { previewMarkdown: preview }),
-        callId: row.callId,
-        ...(row.isError === true ? { isError: true } : {}),
-        ...(row.outputChars !== undefined && row.outputChars !== null
-          ? { result: `${row.outputChars} chars` }
-          : {}),
-        // In-flight rows keep timeSeconds null and render the dsh em dash.
-        timeSeconds: rowEndSeconds(row, absTime),
-        startedAt: absTime,
-      };
       if (displayTurn === null) continue;
-      pushStep(displayTurn, row.step, { absTime, toolName, callId: row.callId, cell });
+      const { toolName, preview } = toolLabelParts(row);
+      pushStep(displayTurn, row.step, {
+        absTime,
+        toolName,
+        callId: row.callId,
+        cell: {
+          index,
+          kind: "tool",
+          sourceSeq: row.seq,
+          text: toolName,
+          ...(preview === undefined ? {} : { previewMarkdown: preview }),
+          callId: row.callId,
+          ...(row.isError === true ? { isError: true } : {}),
+          ...(row.outputChars !== undefined && row.outputChars !== null
+            ? { result: `${row.outputChars} chars` }
+            : {}),
+          // In-flight rows keep timeSeconds null and render the dsh em dash.
+          timeSeconds: rowEndSeconds(row, absTime),
+          startedAt: absTime,
+        },
+      });
       continue;
     }
-    // 'system': the gap map drops system-prompt snapshots; the kind stays
-    // reachable for the RN renderer via fixtures only.
+    const derived = derivedCell(row, index, absTime);
+    if (derived !== null) {
+      // A derived round belongs to its turn; the system prompt has no turn and
+      // goes to the unnumbered preamble bucket ahead of Turn 1. Both are
+      // rendered — there is a recorded fact to show in each case.
+      if (derived.cell.kind === "systemPrompt") pushMessage(null, derived.placed);
+      else if (displayTurn !== null) pushStep(displayTurn, null, derived.placed);
+      continue;
+    }
+    // 'system' remains the ported dsh kind: the gap map drops system-prompt
+    // snapshots, and it stays reachable for the RN renderer via fixtures only.
+    // The recorded system prompt arrives as 'systemPrompt' above.
   }
 
   return [...turns.entries()]
     .map(([turn, entry]) => toTurnModel(turn, entry))
     .sort((left, right) => firstCellIndex(left) - firstCellIndex(right));
+}
+
+/**
+ * The assistant-message cell: usage buckets and the assistant metrics the
+ * details panel reads. Split out of the fold so the fold's own complexity does
+ * not grow with every field a message row carries.
+ */
+function assistantMessageCell(
+  row: TrajectoryFoldRow,
+  index: number,
+  absTime: number | null,
+): TrajectoryCellProps {
+  const cell: TrajectoryCellProps = {
+    index,
+    kind: "message",
+    sourceSeq: row.seq,
+    ...sourceIdentity(row),
+    text: row.label,
+    ...deltaFields(row),
+    recordId: `assistant\u0000${row.turnId ?? ""}\u0000${row.step ?? 0}`,
+    timeSeconds: rowEndSeconds(row, absTime),
+    startedAt: absTime,
+  };
+  attachUsage(cell, row.usage);
+  cell.assistantMetrics = {
+    timingRecorded: row.durationMs !== null,
+    stepStartTime: absTime,
+    firstTokenTime: null, // observer-only: no TTFT
+    completedTime: rowEndTimeMs(row, absTime),
+    usageProvided: row.usage !== undefined,
+    outputTokens: row.usage?.output ?? null,
+  };
+  return cell;
+}
+
+/**
+ * A cell for a row the recorder derived rather than observed.
+ *
+ * Kept out of the main fold so that fold's complexity does not grow with every
+ * derived row type: one branch here, one call site above. Returns null for an
+ * ordinary row.
+ */
+function derivedCell(
+  row: TrajectoryFoldRow,
+  index: number,
+  absTime: number | null,
+): { cell: TrajectoryCellProps; placed: LaidCell } | null {
+  if (row.kind !== "llm" && row.kind !== "systemPrompt") return null;
+  const cell: TrajectoryCellProps = {
+    index,
+    kind: row.kind,
+    sourceSeq: row.seq,
+    text: row.label,
+    // A derived boundary has no own duration: it is an inferred moment between
+    // two real records, so there is nothing to measure.
+    timeSeconds: null,
+    startedAt: absTime,
+  };
+  return { cell, placed: { absTime, cell } };
 }
 
 /** Epoch-ms when a row with a known own-duration ends; null when unknown. */

@@ -129,18 +129,24 @@ describe("ledger screen", () => {
     expect(document.querySelector('[data-testid="ledger-list"] [data-testid^="cell-"]')).toBeNull();
   });
 
-  it("unfolds a turn on press and shows Message group + folded Step headers", () => {
+  it("unfolds a turn on press and puts every cell directly under its header", () => {
     render();
     const header = document.querySelector('[data-testid="turn-header-1"]') as HTMLButtonElement;
     act(() => header.click());
-    // User cell from the Message group is visible; Step 1 stays folded.
-    expect(document.querySelectorAll('[data-testid^="cell-"]').length).toBeGreaterThan(0);
-    const stepHeader = document.querySelector(
-      '[data-testid="step-header-Step 1"]',
-    ) as HTMLButtonElement;
-    expect(stepHeader).not.toBeNull();
-    // No tool cells while the step is folded.
-    expect(document.querySelector('[data-testid="chars-text"]')).toBeNull();
+    const open = document.querySelectorAll('[data-testid^="cell-"]').length;
+    expect(open).toBeGreaterThan(0);
+    // No step grouping: tool rows are visible with the rest, and there is no
+    // step header anywhere in the list.
+    expect(document.querySelector('[data-testid="chars-text"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid^="step-header"]')).toBeNull();
+  });
+
+  it("renders the sticky column header above the ledger", () => {
+    render();
+    expect(container.querySelector('[data-testid="ledger-column-header"]')).not.toBeNull();
+    for (const name of ["time", "type", "context", "stats"]) {
+      expect(container.querySelector(`[data-testid="column-header-${name}"]`)).not.toBeNull();
+    }
   });
 
   it("the Turns toggle exposes tool rows with characters and durations, then collapses", () => {
@@ -157,7 +163,7 @@ describe("ledger screen", () => {
     const chars = [...document.querySelectorAll('[data-testid="chars-text"]')].map(
       (node) => node.textContent,
     );
-    expect(chars).toContain("characters: 1,520");
+    expect(chars).toContain("1,520 chars");
     // Everything is open now, so the same toggle closes it again.
     act(() =>
       (document.querySelector('[data-testid="toggle-turns"]') as HTMLButtonElement).click(),
@@ -179,7 +185,7 @@ describe("ledger screen", () => {
     expect(document.querySelector('[data-testid="kind-tag-user"]')?.textContent).toBe("U");
     expect(document.querySelectorAll('[data-testid="turn-rule"]').length).toBe(wideRules);
   });
-  // --- dsh toolbar parity (C4) -------------------------------------------
+  // --- toolbar parity ----------------------------------------------------
 
   function press(testID: string): void {
     act(() => (container.querySelector(`[data-testid="${testID}"]`) as HTMLButtonElement).click());
@@ -199,11 +205,12 @@ describe("ledger screen", () => {
     });
   }
 
-  it("renders the dsh toolbar: Duration, Turns, Calls and a search box", () => {
+  it("renders the toolbar: Duration, Turns and a search box, and no Calls toggle", () => {
     render();
-    for (const id of ["toggle-duration", "toggle-turns", "toggle-calls", "ledger-search"]) {
+    for (const id of ["toggle-duration", "toggle-turns", "ledger-search"]) {
       expect(container.querySelector(`[data-testid="${id}"]`)).not.toBeNull();
     }
+    expect(container.querySelector('[data-testid="toggle-calls"]')).toBeNull();
   });
 
   it("the Turns toggle opens every turn and closes them again", () => {
@@ -218,21 +225,16 @@ describe("ledger screen", () => {
     expect(cells()).toHaveLength(0);
   });
 
-  it("the Calls toggle folds tool groups while leaving Message rows visible", () => {
+  it("keeps tool rows visible alongside message rows once a turn is open", () => {
+    // Steps were removed, so there is no second fold level hiding tool work
+    // behind a collapsed group: opening a turn reveals all of its cells.
     function toolRows(): Element[] {
       return [...container.querySelectorAll('[data-testid="chars-text"]')];
     }
     render();
     press("toggle-turns");
     expect(toolRows().length).toBeGreaterThan(0);
-
-    press("toggle-calls");
-    // Tool rows live in Step groups, so they fold; Message-group rows do not.
-    expect(toolRows()).toHaveLength(0);
     expect(cells().length).toBeGreaterThan(0);
-
-    press("toggle-calls");
-    expect(toolRows().length).toBeGreaterThan(0);
   });
 
   it("search filters rows to the matching record", () => {

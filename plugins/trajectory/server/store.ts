@@ -24,5 +24,15 @@ export interface TrajectoryStore {
   listByAgent(agentId: string, opts: ListByAgentOptions): TrajectoryEvent[];
   /** Newest seq for an agent, or 0 when it has no rows (pagination cursor). */
   headSeq(agentId: string): number;
+  /**
+   * Whether the ledger already holds a tool call/result for this call.
+   *
+   * The recorder's in-memory dedupe set only survives inside one process run,
+   * so a restart or a re-attach would happily re-write a replayed call. This is
+   * the durable half: it answers from the rows themselves, which is what makes
+   * replay-safe dedupe possible at all. Optional because a store without it (an
+   * in-memory fake, a test double) simply gets in-memory-only dedupe.
+   */
+  hasToolPhase?(agentId: string, callId: string, phase: "call" | "result"): boolean;
   close(): void;
 }

@@ -3,34 +3,29 @@ import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from "react-na
 import type { TextStyle, ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { deriveTrajectoryLayout } from "../shared/dsh/layout.js";
-import type {
-  TrajectoryFoldRow,
-  TrajectoryGroupModel,
-  TrajectoryTurnModel,
-} from "../shared/dsh/layout.js";
+import type { TrajectoryFoldRow, TrajectoryTurnModel } from "../shared/dsh/layout.js";
 import { groupTrajectoryVirtualRows } from "../shared/dsh/virtual-rows.js";
 import { TrajectorySearchIndex } from "../shared/dsh/search-index.js";
 import { trajectoryRecordId, type TrajectoryCellProps } from "../shared/dsh/record.js";
-import { TrajectoryCellRow } from "./ledger-cells.js";
-import { TrajectoryTimelineStrip } from "./trajectory-timeline.js";
+import { LedgerColumnHeader, TrajectoryCellRow } from "./ledger-cells.js";
+import { TrajectoryTimelineStrip, type TimelinePlatform } from "./trajectory-timeline.js";
 
 /**
- * Trajectory ledger screen (T2.2): FlatList over the ported virtual-row
- * projection of the ported layout fold. Turn/step headers fold and unfold;
- * a heavier rule separates turns; tail-follow engages only when the list is
- * at the bottom. `compact` (phone) collapses kind tags to icons and tightens
- * paddings. Data comes from `rows` (fixtures in T2.2; trajectory.list/changes
- * via useRpc in T2.4).
+ * Trajectory ledger screen: FlatList over the ported virtual-row projection of
+ * the ported layout fold, laid out as a four-column virtual table (TIME | TYPE |
+ * CONTEXT | STATS) under a sticky column header. Turn headers fold and unfold,
+ * cells sit directly under them, and a heavier rule separates turns; tail-follow
+ * engages only when the list is at the bottom. `compact` (phone) collapses kind
+ * tags to icons and tightens paddings. Data comes from `rows` via
+ * useTrajectoryDelta.
  */
 
 interface FoldState {
   /** Unfolded turn numbers (default: all folded to headers). */
   openTurns: ReadonlySet<number>;
-  /** Unfolded `turnNumber:stepTitle` keys (default: open with their turn). */
-  openSteps: ReadonlySet<string>;
 }
 
-const INITIAL_FOLD: FoldState = { openTurns: new Set(), openSteps: new Set() };
+const INITIAL_FOLD: FoldState = { openTurns: new Set() };
 
 export function LedgerScreen(props: {
   rows: readonly TrajectoryFoldRow[];
@@ -46,6 +41,18 @@ export function LedgerScreen(props: {
   textFor?: (cell: TrajectoryCellProps) => string | undefined;
   /** Reports the cells actually on screen so only those are resolved. */
   onVisibleCells?: (cells: readonly TrajectoryCellProps[]) => void;
+  /**
+   * Source seq of the open inspector's row. Optional: the strip outlines the
+   * matching bar when it is given, and highlights nothing when it is not.
+   */
+  selectedSeq?: number | null;
+  /** Called when a timeline bar is pressed, with that record's source seq. */
+  onSelectSpan?: (sourceSeq: number) => void;
+  /**
+   * Which surface this is, from the host's layout contract. Drives whether the
+   * strip's tooltip is hover-driven or tap-driven; omitted means tap-only.
+   */
+  platform?: TimelinePlatform;
   testID?: string;
 }) {
   const {
@@ -57,6 +64,9 @@ export function LedgerScreen(props: {
     onCellPress,
     textFor,
     onVisibleCells,
+    selectedSeq,
+    onSelectSpan,
+    platform,
     testID,
   } = props;
   const [fold, setFold] = useState<FoldState>(INITIAL_FOLD);
@@ -73,7 +83,7 @@ export function LedgerScreen(props: {
   // Everything open, as a fold state. Shared by the "unfold all" action and by an
   // active search, which must not leave a match stranded behind a collapsed header.
   const allOpen = useMemo<FoldState>(
-    () => ({ openTurns: new Set(turnNumbers1ToN(turns)), openSteps: new Set(allStepKeys(turns)) }),
+    () => ({ openTurns: new Set(turnNumbers1ToN(turns)) }),
     [turns],
   );
 
@@ -89,8 +99,8 @@ export function LedgerScreen(props: {
     return index.search(query);
   }, [turns, query]);
 
-  // A match inside a collapsed turn or step would be unreachable, so an active
-  // search forces the fold open rather than hiding results behind a header.
+  // A match inside a collapsed turn would be unreachable, so an active search
+  // forces the fold open rather than hiding results behind a header.
   const effectiveFold = matches === null ? fold : allOpen;
   const visibleTurns = useMemo(
     () => (matches === null ? turns : filterTurnsByMatch(turns, matches)),
@@ -126,9 +136,7 @@ export function LedgerScreen(props: {
     for (const record of records) {
       if (record.__kind !== "cell") {
         const key = chromeKey(record);
-        let height = 10;
-        if (record.__kind === "turn-header") height = 28;
-        else if (record.__kind === "step-header") height = 22;
+        const height = record.__kind === "turn-header" ? 28 : 10;
         out.push({ kind: "chrome", key, height, record });
         continue;
       }
@@ -148,27 +156,9 @@ export function LedgerScreen(props: {
   const toggleTurn = useCallback((turn: number) => {
     setFold((previous) => {
       const openTurns = new Set(previous.openTurns);
-      const openSteps = new Set(previous.openSteps);
-      if (openTurns.has(turn)) {
-        openTurns.delete(turn);
-        const prefix = `step-${turn}-`;
-        for (const key of openSteps) {
-          if (key.startsWith(prefix)) openSteps.delete(key);
-        }
-      } else {
-        openTurns.add(turn);
-      }
-      return { openTurns, openSteps };
-    });
-  }, []);
-
-  const toggleStep = useCallback((turn: number, title: string) => {
-    setFold((previous) => {
-      const openSteps = new Set(previous.openSteps);
-      const key = `step-${turn}-${title}`;
-      if (openSteps.has(key)) openSteps.delete(key);
-      else openSteps.add(key);
-      return { ...previous, openSteps };
+      if (openTurns.has(turn)) openTurns.delete(turn);
+      else openTurns.add(turn);
+      return { openTurns };
     });
   }, []);
 
@@ -176,8 +166,6 @@ export function LedgerScreen(props: {
   // open" or "everything closed", matching the dsh aria-pressed contract. A mixed
   // state reports closed, so a press always moves toward fully open.
   const allTurnsOpen = turnNumbers1ToN(turns).every((turn) => fold.openTurns.has(turn));
-  const stepKeys = useMemo(() => allStepKeys(turns), [turns]);
-  const allStepsOpen = stepKeys.length > 0 && stepKeys.every((key) => fold.openSteps.has(key));
 
   const toggleAllTurns = useCallback(() => {
     setFold((previous) => {
@@ -185,27 +173,9 @@ export function LedgerScreen(props: {
       if (turnNumbers1ToN(turns).every((turn) => openTurns.has(turn))) {
         return INITIAL_FOLD;
       }
-      return {
-        openTurns: new Set(turnNumbers1ToN(turns)),
-        openSteps: new Set([...previous.openSteps, ...stepKeys]),
-      };
+      return { openTurns: new Set(turnNumbers1ToN(turns)) };
     });
-  }, [turns, stepKeys]);
-
-  const toggleAllSteps = useCallback(() => {
-    setFold((previous) => {
-      const openSteps = new Set(previous.openSteps);
-      const everyStepOpen = stepKeys.length > 0 && stepKeys.every((key) => openSteps.has(key));
-      if (everyStepOpen) {
-        return { ...previous, openSteps: new Set() };
-      }
-      // Opening a step whose turn is shut would be invisible, so open the turns too.
-      return {
-        openTurns: new Set([...previous.openTurns, ...turnNumbers1ToN(turns)]),
-        openSteps: new Set([...openSteps, ...stepKeys]),
-      };
-    });
-  }, [turns, stepKeys]);
+  }, [turns]);
 
   const onQueryChange = useCallback((value: string) => setQuery(value), []);
   const onToggleDuration = useCallback(() => setActualDuration((value) => !value), []);
@@ -213,7 +183,6 @@ export function LedgerScreen(props: {
   const handlers = useMemo(
     () => ({
       toggleTurn,
-      toggleStep,
       pressCell:
         onCellPress === undefined
           ? undefined
@@ -221,7 +190,7 @@ export function LedgerScreen(props: {
               onCellPress(cell);
             },
     }),
-    [toggleTurn, toggleStep, onCellPress],
+    [toggleTurn, onCellPress],
   );
 
   const renderItem = useCallback(
@@ -287,18 +256,20 @@ export function LedgerScreen(props: {
         theme={theme}
         actualDuration={actualDuration}
         allTurnsOpen={allTurnsOpen}
-        allStepsOpen={allStepsOpen}
         query={query}
         onToggleDuration={onToggleDuration}
         onToggleTurns={toggleAllTurns}
-        onToggleCalls={toggleAllSteps}
         onQueryChange={onQueryChange}
       />
+      <LedgerColumnHeader compact={compact} theme={theme} />
       <TrajectoryTimelineStrip
         turns={visibleTurns}
         actualDuration={actualDuration}
         compact={compact}
         theme={theme}
+        selectedSeq={selectedSeq}
+        onSelectSpan={onSelectSpan}
+        platform={platform}
       />
       <FlatList
         ref={listRef}
@@ -317,7 +288,7 @@ export function LedgerScreen(props: {
 }
 
 /**
- * dsh-parity toolbar: Duration / Turns / Calls toggles plus a search box.
+ * Toolbar: Duration / Turns toggles plus a search box.
  * Look follows TrajectoryToolbar.module.css — 20px chips, 3px radius, transparent
  * until pressed — mapped onto plugin theme tokens.
  *
@@ -330,11 +301,9 @@ function Toolbar(props: {
   theme: PluginTheme;
   actualDuration: boolean;
   allTurnsOpen: boolean;
-  allStepsOpen: boolean;
   query: string;
   onToggleDuration: () => void;
   onToggleTurns: () => void;
-  onToggleCalls: () => void;
   onQueryChange: (value: string) => void;
 }) {
   const {
@@ -342,11 +311,9 @@ function Toolbar(props: {
     theme,
     actualDuration,
     allTurnsOpen,
-    allStepsOpen,
     query,
     onToggleDuration,
     onToggleTurns,
-    onToggleCalls,
     onQueryChange,
   } = props;
   const styles = useMemo(() => toolbarStyles(theme, compact), [theme, compact]);
@@ -368,14 +335,6 @@ function Toolbar(props: {
           onPress={onToggleTurns}
           styles={styles}
           testID="toggle-turns"
-        />
-        <ToolbarToggle
-          label="Calls"
-          icon={allStepsOpen ? "⊟" : "⊞"}
-          pressed={!allStepsOpen}
-          onPress={onToggleCalls}
-          styles={styles}
-          testID="toggle-calls"
         />
       </View>
       <View style={styles.search}>
@@ -500,7 +459,6 @@ function TurnHeaderRow(props: {
     think?: number;
   };
   open: boolean;
-  hasSteps: boolean;
   compact: boolean;
   theme: PluginTheme;
   onToggle: () => void;
@@ -546,66 +504,12 @@ function turnHeaderStyles(theme: PluginTheme) {
   });
 }
 
-function StepHeaderRow(props: {
-  turn: number;
-  title: string;
-  description?: string;
-  open: boolean;
-  compact: boolean;
-  theme: PluginTheme;
-  onToggle: () => void;
-}) {
-  const { title, description, open, theme, onToggle } = props;
-  const styles = useMemo(() => stepHeaderStyles(theme), [theme]);
-  return (
-    <Pressable accessibilityRole="button" onPress={onToggle} testID={`step-header-${title}`}>
-      <View style={styles.header}>
-        <Text style={styles.chevron}>{open ? "▾" : "▸"}</Text>
-        <Text style={styles.title}>{title}</Text>
-        {description === undefined ? null : (
-          <Text style={styles.description} numberOfLines={1} testID="group-description">
-            {description}
-          </Text>
-        )}
-      </View>
-    </Pressable>
-  );
-}
-
-function stepHeaderStyles(theme: PluginTheme) {
-  return StyleSheet.create({
-    header: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-      paddingLeft: 16,
-      paddingVertical: 2,
-    },
-    chevron: { color: theme.colors.foregroundMuted, fontSize: 11 },
-    title: {
-      color: theme.colors.foregroundMuted,
-      fontSize: 11,
-      fontWeight: "600",
-    },
-    description: {
-      // The fold's wall span + tool histogram: supporting detail, so it is
-      // muted and clipped rather than styled as a second title. C2b pairing —
-      // flexShrink alone would not truncate this on web.
-      flexShrink: 1,
-      minWidth: 0,
-      color: theme.colors.foregroundMuted,
-      fontSize: 10,
-    } satisfies TextStyle,
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Expansion: turns -> lead records (headers, cells, turn rules)
 // ---------------------------------------------------------------------------
 
 interface RowHandlers {
   toggleTurn(turn: number): void;
-  toggleStep(turn: number, title: string): void;
   pressCell?: (cell: TrajectoryCellProps) => void;
 }
 
@@ -624,14 +528,11 @@ const VirtualLedgerRow = memo(function VirtualLedgerRow(props: {
 }) {
   const { row, compact, theme, handlers, textFor } = props;
   // Bound per-record callbacks: Pressable.onPress passes the press event as
-  // the first argument, so the turn/step identity must be bound here rather
-  // than in the JSX (and hooks must be unconditional across row kinds).
+  // the first argument, so the turn identity must be bound here rather than in
+  // the JSX (and hooks must be unconditional across row kinds).
   const chrome = row.kind === "chrome" ? row.record : null;
   const toggleTurn = useCallback(() => {
     if (chrome?.__kind === "turn-header") handlers.toggleTurn(chrome.turn);
-  }, [chrome, handlers]);
-  const toggleStep = useCallback(() => {
-    if (chrome?.__kind === "step-header") handlers.toggleStep(chrome.turn, chrome.title);
   }, [chrome, handlers]);
   if (row.kind === "chrome") {
     const record = row.record;
@@ -642,23 +543,9 @@ const VirtualLedgerRow = memo(function VirtualLedgerRow(props: {
           title={record.title}
           usage={record.usage}
           open={record.open}
-          hasSteps={record.hasSteps}
           compact={compact}
           theme={theme}
           onToggle={toggleTurn}
-        />
-      );
-    }
-    if (record.__kind === "step-header") {
-      return (
-        <StepHeaderRow
-          turn={record.turn}
-          title={record.title}
-          description={record.description}
-          open={record.open}
-          compact={compact}
-          theme={theme}
-          onToggle={toggleStep}
         />
       );
     }
@@ -688,9 +575,7 @@ type LeadRecord =
       title: string;
       usage?: TrajectoryTurnModel["usage"];
       open: boolean;
-      hasSteps: boolean;
     }
-  | { __kind: "step-header"; turn: number; title: string; description?: string; open: boolean }
   | { __kind: "turn-rule"; turn: number }
   | { __kind: "cell"; cell: TrajectoryCellProps };
 
@@ -698,15 +583,6 @@ type LeadRecord =
 /** Turn numbers are positional (1..N) throughout the fold, as expandTurns uses. */
 function turnNumbers1ToN(turns: readonly TrajectoryTurnModel[]): number[] {
   return turns.map((_, index) => index + 1);
-}
-
-/** `turnNumber:stepTitle` keys for every Step group, matching expandTurns. */
-function allStepKeys(turns: readonly TrajectoryTurnModel[]): string[] {
-  return turns.flatMap((turn, index) =>
-    turn.groups
-      .filter((group) => group.title.startsWith("Step "))
-      .map((group) => `step-${index + 1}-${group.title}`),
-  );
 }
 
 /**
@@ -735,54 +611,34 @@ function expandTurns(
   hideEmptyTurns = false,
 ): LeadRecord[] {
   const records: LeadRecord[] = [];
-  turns.forEach((turn, index) => {
-    const turnNumber = index + 1;
+  // Only buckets that carry a real turn number consume one. The unnumbered
+  // preamble bucket (the system prompt, recorded with turn=null) is labelled
+  // "Setup" and stays out of the count, so Turn 1 is still the first real turn
+  // rather than being pushed down by a row that belongs to no turn.
+  let numbered = 0;
+  turns.forEach((turn) => {
+    const isNumbered = turn.turn !== null;
+    const turnNumber = isNumbered ? ++numbered : 0;
     const open = fold.openTurns.has(turnNumber);
-    const hasSteps = turn.groups.some((group) => group.title.startsWith("Step "));
     // Under an active search a turn with no match is noise; drop its header and
     // rule so results read as one list, while positional numbering is untouched.
     if (hideEmptyTurns && turn.groups.length === 0) return;
-    if (index > 0) records.push({ __kind: "turn-rule", turn: turnNumber });
+    if (records.length > 0) records.push({ __kind: "turn-rule", turn: turnNumber });
     records.push({
       __kind: "turn-header",
       turn: turnNumber,
-      title: `Turn ${turnNumber}`,
+      title: isNumbered ? `Turn ${turnNumber}` : "Setup",
       ...(turn.usage === undefined ? {} : { usage: turn.usage }),
       open,
-      hasSteps,
     });
     if (!open) return;
+    // No step grouping in the UI: every cell sits directly under its turn
+    // header, so the ledger reads as one table.
     for (const group of turn.groups) {
-      appendGroup(records, turnNumber, group, fold);
+      for (const cell of group.cells) records.push(cellRecord(cell));
     }
   });
   return records;
-}
-
-function appendGroup(
-  records: LeadRecord[],
-  turn: number,
-  group: TrajectoryGroupModel,
-  fold: FoldState,
-): void {
-  if (group.title === "Message") {
-    for (const cell of group.cells) records.push(cellRecord(cell));
-    return;
-  }
-  const key = `step-${turn}-${group.title}`;
-  const open = fold.openSteps.has(key);
-  // The fold already computed the wall span + tool histogram for this group;
-  // it was simply never rendered.
-  records.push({
-    __kind: "step-header",
-    turn,
-    title: group.title,
-    ...(group.description === undefined ? {} : { description: group.description }),
-    open,
-  });
-  if (open) {
-    for (const cell of group.cells) records.push(cellRecord(cell));
-  }
 }
 
 function cellRecord(cell: TrajectoryCellProps): LeadRecord {
@@ -792,7 +648,6 @@ function cellRecord(cell: TrajectoryCellProps): LeadRecord {
 /** Flat, readable row keys (RN keys must be strings without NUL). */
 function chromeKey(record: LeadRecord): string {
   if (record.__kind === "turn-header") return `turn-${record.turn}`;
-  if (record.__kind === "step-header") return `step-${record.turn}-${record.title}`;
   if (record.__kind === "turn-rule") return `rule-${record.turn}`;
   // Cell records never reach here — they are filtered before chrome keys are
   // built — but the function stays total rather than reading `.turn` off a

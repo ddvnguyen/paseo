@@ -58,11 +58,45 @@ function userRow(event: TrajectoryEvent): TrajectoryFoldRow {
     durationMs: null,
     turnId: event.turn,
     step: null,
+    // A user message is recorded once, so its length is the whole prompt. The
+    // STATS column shows it directly; there is no delta to compute.
+    textLength: numericLength(event.data.textLength),
     ...timelineSeqOf(event),
   };
 }
 
-function messageRow(event: TrajectoryEvent): TrajectoryFoldRow {
+/** `textLength` when the producer sent a real number, else null. Never coerced. */
+function numericLength(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * One `assistant/message` row, carrying THIS event's contribution rather than
+ * the message total.
+ *
+ * The daemon re-emits an assistant message on every stream chunk with the same
+ * `sourceMessageId` and a growing `textLength` — a single message can arrive as
+ * over a hundred rows. Rendering the cumulative label would repeat the whole
+ * message on every one of those rows, so each row instead carries the slice it
+ * added. `cumulative` is the length seen on the previous row for this message,
+ * which is what the row's delta is measured from.
+ */
+function messageRow(event: TrajectoryEvent, cumulative: Map<string, number>): TrajectoryFoldRow {
+  const identity = timelineSeqOf(event);
+  const total = numericLength(event.data.textLength);
+  const sourceMessageId = identity.sourceMessageId;
+  let textLength: number | null = null;
+  let deltaChars: number | null = null;
+  let deltaStart: number | undefined;
+  if (total !== null && sourceMessageId !== undefined) {
+    const previous = cumulative.get(sourceMessageId) ?? 0;
+    // A shrinking total would mean the producer reset mid-message; report no
+    // delta rather than a negative one, and let the label stand.
+    deltaChars = total >= previous ? total - previous : null;
+    deltaStart = previous;
+    textLength = total;
+    cumulative.set(sourceMessageId, total);
+  }
   return {
     seq: event.seq,
     timeMs: timeOf(event),
@@ -71,7 +105,10 @@ function messageRow(event: TrajectoryEvent): TrajectoryFoldRow {
     durationMs: null,
     turnId: event.turn,
     step: event.step,
-    ...timelineSeqOf(event),
+    ...(textLength === null ? {} : { textLength }),
+    ...(deltaChars === null ? {} : { deltaChars }),
+    ...(deltaStart === undefined ? {} : { deltaStart }),
+    ...identity,
   };
 }
 
@@ -144,6 +181,55 @@ function applyTurnUsage(
   rows[index] = { ...row, usage: buckets };
 }
 
+/**
+ * A derived LLM-round row.
+ *
+ * The recorder emits this when tool results are waiting and the agent's next
+ * action begins, so the label states the falsifiable claim rather than
+ * pretending to know the provider's internals: "these N results were consumed
+ * before this round".
+ */
+function roundRow(event: TrajectoryEvent): TrajectoryFoldRow {
+  const consumed = numericLength(event.data.consumedResults) ?? 0;
+  const ordinal = numericLength(event.data.ordinal);
+  return {
+    seq: event.seq,
+    timeMs: timeOf(event),
+    kind: "llm",
+    label:
+      ordinal === null
+        ? `llm round · consumed ${consumed} results`
+        : `llm round ${ordinal} · consumed ${consumed} results`,
+    durationMs: null,
+    turnId: event.turn,
+    step: null,
+    ...(typeof event.data.derived === "boolean" ? { derived: true } : {}),
+  };
+}
+
+/**
+ * The caller system prompt, as a size and a hash. The prompt text is never in
+ * the ledger, so there is nothing to leak into this row either.
+ */
+function systemPromptRow(event: TrajectoryEvent): TrajectoryFoldRow {
+  const chars = numericLength(event.data.charsLength);
+  const hash = typeof event.data.hash12 === "string" ? event.data.hash12 : null;
+  const parts = [
+    `system prompt · ${chars === null ? "— chars" : `${chars.toLocaleString("en-US")} chars`}`,
+  ];
+  if (hash !== null) parts.push(`hash ${hash}…`);
+  return {
+    seq: event.seq,
+    timeMs: timeOf(event),
+    kind: "systemPrompt",
+    label: parts.join(" · "),
+    durationMs: null,
+    turnId: null,
+    step: null,
+    ...(typeof event.data.derived === "boolean" ? { derived: true } : {}),
+  };
+}
+
 export function eventsToFoldRows(events: readonly TrajectoryEvent[]): TrajectoryFoldRow[] {
   const rows: TrajectoryFoldRow[] = [];
   const openCalls = new Map<string, OpenToolCall>();
@@ -151,6 +237,12 @@ export function eventsToFoldRows(events: readonly TrajectoryEvent[]): Trajectory
   const lastMessageRowByTurn = new Map<string, number>();
   /** callId -> its call event, for the in-flight sweep. */
   const callEvents = new Map<string, TrajectoryEvent>();
+  /**
+   * sourceMessageId -> the cumulative `textLength` of its most recent row.
+   * Ascending seq makes this a single forward pass, which is the only place a
+   * per-row delta can be measured without re-reading the stream.
+   */
+  const messageCumulative = new Map<string, number>();
 
   for (const event of events) {
     switch (event.type) {
@@ -160,7 +252,7 @@ export function eventsToFoldRows(events: readonly TrajectoryEvent[]): Trajectory
       }
       case "assistant/message": {
         if (event.turn !== null) lastMessageRowByTurn.set(event.turn, rows.length);
-        rows.push(messageRow(event));
+        rows.push(messageRow(event, messageCumulative));
         break;
       }
       case "tool/call": {
@@ -180,6 +272,14 @@ export function eventsToFoldRows(events: readonly TrajectoryEvent[]): Trajectory
         }
         const row = toolRow(event, call);
         if (row !== null) rows.push(row);
+        break;
+      }
+      case "round/begin": {
+        rows.push(roundRow(event));
+        break;
+      }
+      case "system/attach": {
+        rows.push(systemPromptRow(event));
         break;
       }
       case "turn/end": {

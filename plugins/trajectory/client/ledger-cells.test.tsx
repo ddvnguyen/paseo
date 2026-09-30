@@ -48,8 +48,13 @@ import {
   CharsText,
   DurationText,
   KindTag,
+  LedgerColumnHeader,
+  TimeText,
   TokenText,
   TrajectoryCellRow,
+  cellContext,
+  columnLayout,
+  formatClockTime,
   kindRailColor,
 } from "./ledger-cells.js";
 import type { TrajectoryCellProps } from "../shared/dsh/record.js";
@@ -116,7 +121,7 @@ describe("ledger cells", () => {
   it("renders token columns with cache and the em dash form when unreported", () => {
     render(<TokenText input={1234} cacheRead={567} output={89} theme={THEME} />);
     expect(document.querySelector('[data-testid="token-text"]')?.textContent).toBe(
-      "token: In 1,234(567) / out 89",
+      "In 1,234(567) / out 89",
     );
     render(<TokenText theme={THEME} />);
     expect(document.querySelector('[data-testid="token-text"]')?.textContent).toBe("token: —");
@@ -124,11 +129,9 @@ describe("ledger cells", () => {
 
   it("renders characters count and the em dash when unknown", () => {
     render(<CharsText outputChars={1520} theme={THEME} />);
-    expect(document.querySelector('[data-testid="chars-text"]')?.textContent).toBe(
-      "characters: 1,520",
-    );
+    expect(document.querySelector('[data-testid="chars-text"]')?.textContent).toBe("1,520 chars");
     render(<CharsText outputChars={null} theme={THEME} />);
-    expect(document.querySelector('[data-testid="chars-text"]')?.textContent).toBe("characters: —");
+    expect(document.querySelector('[data-testid="chars-text"]')?.textContent).toBe("chars: —");
   });
 
   it("renders a cell row with tag, label, metrics, and error tint", () => {
@@ -184,7 +187,7 @@ describe("ledger cells", () => {
     expect(merged.backgroundColor).toBe(THEME.colors.accent);
   });
 
-  it("marks a settled non-error tool result with the success glyph", () => {
+  it("puts a tool row's result size and runtime in the STATS column", () => {
     render(
       <TrajectoryCellRow
         cell={cell({ kind: "tool", result: "1520" })}
@@ -192,36 +195,57 @@ describe("ledger cells", () => {
         theme={THEME}
       />,
     );
-    const glyph = document.querySelector('[data-testid="tool-success"]');
-    expect(glyph?.textContent).toBe("✓");
-    const style = JSON.parse(glyph?.getAttribute("data-style") ?? "{}");
-    expect(style.color).toBe(THEME.colors.statusSuccess);
+    expect(document.querySelector('[data-testid="chars-text"]')?.textContent).toBe("1,520 chars");
+    expect(document.querySelector('[data-testid="duration-text"]')?.textContent).toBe("1,500 ms");
   });
 
-  it("omits the success glyph for in-flight and failed tool rows", () => {
-    render(<TrajectoryCellRow cell={cell({ kind: "tool" })} compact={false} theme={THEME} />);
-    expect(document.querySelector('[data-testid="tool-success"]')).toBeNull();
-
+  it("reports the em dash for a tool row whose size and runtime are unknown", () => {
     render(
       <TrajectoryCellRow
-        cell={cell({ kind: "tool", result: "boom", isError: true })}
+        cell={cell({ kind: "tool", timeSeconds: null })}
         compact={false}
         theme={THEME}
       />,
     );
-    expect(document.querySelector('[data-testid="tool-success"]')).toBeNull();
+    expect(document.querySelector('[data-testid="chars-text"]')?.textContent).toBe("chars: —");
+    expect(document.querySelector('[data-testid="duration-text"]')?.textContent).toBe("—");
   });
 
-  it("omits the success glyph for non-tool rows", () => {
+  it("puts a user row's prompt characters in the STATS column", () => {
     render(
       <TrajectoryCellRow
-        cell={cell({ kind: "message", result: "hello" })}
+        cell={cell({ kind: "user", text: "user message (18 chars)", textLength: 18 })}
         compact={false}
         theme={THEME}
       />,
     );
-    expect(document.querySelector('[data-testid="tool-success"]')).toBeNull();
+    expect(document.querySelector('[data-testid="stats-text"]')?.textContent).toBe("18 chars");
   });
+
+  it("puts a message row's token buckets in the STATS column", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({ kind: "message", input: 1234, cacheRead: 567, output: 89 })}
+        compact={false}
+        theme={THEME}
+      />,
+    );
+    expect(document.querySelector('[data-testid="token-text"]')?.textContent).toBe(
+      "In 1,234(567) / out 89",
+    );
+  });
+
+  it("reports no prompt size for a user row recorded without one", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({ kind: "user", text: "user message" })}
+        compact={false}
+        theme={THEME}
+      />,
+    );
+    expect(document.querySelector('[data-testid="stats-text"]')?.textContent).toBe("chars: —");
+  });
+
   it("shows resolved text in place of the length label", () => {
     render(
       <TrajectoryCellRow
@@ -231,7 +255,7 @@ describe("ledger cells", () => {
         resolvedText="run the test suite"
       />,
     );
-    expect(document.querySelector('[data-testid="cell-text"]')?.textContent).toBe(
+    expect(document.querySelector('[data-testid="col-context"]')?.textContent).toBe(
       "run the test suite",
     );
   });
@@ -244,7 +268,7 @@ describe("ledger cells", () => {
         theme={THEME}
       />,
     );
-    expect(document.querySelector('[data-testid="cell-text"]')?.textContent).toBe(
+    expect(document.querySelector('[data-testid="col-context"]')?.textContent).toBe(
       "user message (18 chars)",
     );
   });
@@ -258,7 +282,7 @@ describe("ledger cells", () => {
         resolvedText=""
       />,
     );
-    expect(document.querySelector('[data-testid="cell-text"]')?.textContent).toBe(
+    expect(document.querySelector('[data-testid="col-context"]')?.textContent).toBe(
       "user message (18 chars)",
     );
   });
@@ -272,8 +296,189 @@ describe("ledger cells", () => {
         resolvedText="a very long prompt that will certainly overflow one line"
       />,
     );
-    expect(document.querySelector('[data-testid="cell-text"]')?.getAttribute("data-lines")).toBe(
+    expect(document.querySelector('[data-testid="col-context"]')?.getAttribute("data-lines")).toBe(
       "1",
     );
+  });
+
+  // --- T3-B: the virtual table -------------------------------------------
+
+  it("renders the four sticky column headers", () => {
+    render(<LedgerColumnHeader compact={false} theme={THEME} />);
+    for (const name of ["time", "type", "context", "stats"]) {
+      expect(document.querySelector(`[data-testid="column-header-${name}"]`)?.textContent).toBe(
+        name.toUpperCase(),
+      );
+    }
+  });
+
+  it("keeps one column layout for the header and every row", () => {
+    // The header and the rows read the same widths; that shared object is the
+    // only thing keeping the columns aligned.
+    const wide = columnLayout(false);
+    const compactColumns = columnLayout(true);
+    expect(wide.time).toBeGreaterThan(0);
+    expect(wide.type).toBeGreaterThan(0);
+    expect(wide.stats).toBeGreaterThan(0);
+    // Compact must still fit its three fixed columns inside a phone width.
+    expect(compactColumns.time + compactColumns.type + compactColumns.stats).toBeLessThan(390);
+    expect(compactColumns.stats).toBeLessThan(wide.stats);
+  });
+
+  it("renders the row time as HH:MM:SS and the em dash when unknown", () => {
+    // 2024-01-02T03:04:05Z read back in the runner's own zone.
+    const expected = new Date(Date.UTC(2024, 0, 2, 3, 4, 5)).toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    expect(formatClockTime(Date.UTC(2024, 0, 2, 3, 4, 5))).toBe(
+      expected.match(/(\d{1,2}:\d{2}:\d{2})/)?.[1] ?? "—",
+    );
+    expect(formatClockTime(null)).toBe("—");
+    expect(formatClockTime(Number.NaN)).toBe("—");
+    render(<TimeText startedAt={undefined} theme={THEME} />);
+    expect(document.querySelector('[data-testid="time-text"]')?.textContent).toBe("—");
+  });
+
+  it("shows only the characters a message row added, never the whole message", () => {
+    const message = cell({ kind: "message", deltaChars: 67, deltaStart: 1, textLength: 68 });
+    const context = cellContext(message, false, "x" + "y".repeat(67));
+    expect(context.startsWith("+67 chars")).toBe(true);
+    // The cumulative label must not appear: one message spans many rows.
+    expect(context).not.toContain("assistant message");
+  });
+
+  it("shows the delta slice of resolved text, not the full text", () => {
+    const resolvedText = "0123456789";
+    // This row added "234" (from offset 2, length 3).
+    const context = cellContext(
+      cell({ kind: "message", deltaChars: 3, deltaStart: 2, textLength: 5 }),
+      false,
+      resolvedText,
+    );
+    expect(context).toBe("+3 chars · 234");
+  });
+
+  it("falls back to the bare delta count when the text is unresolved", () => {
+    const context = cellContext(
+      cell({ kind: "message", deltaChars: 12, deltaStart: 4, textLength: 16 }),
+      false,
+      undefined,
+    );
+    expect(context).toBe("+12 chars");
+  });
+
+  it("shows the first line only of a multi-line delta", () => {
+    const context = cellContext(
+      cell({ kind: "message", deltaChars: 10, deltaStart: 0, textLength: 10 }),
+      false,
+      "first\nsecond",
+    );
+    expect(context).toBe("+10 chars · first");
+  });
+
+  it("keeps the tool CONTEXT as name · argSummary", () => {
+    const context = cellContext(
+      cell({ kind: "tool", text: "shell", previewMarkdown: "npm test" }),
+      false,
+      undefined,
+    );
+    expect(context).toBe("shell · npm test");
+  });
+
+  it("falls back to the length label for a message row with no delta", () => {
+    // No delta means the length is unknown: the row says so rather than
+    // inventing a size.
+    const context = cellContext(
+      cell({ kind: "message", text: "assistant message (68 chars)" }),
+      false,
+      undefined,
+    );
+    expect(context).toBe("assistant message (68 chars)");
+  });
+
+  // --- T3-D: derived round + system prompt --------------------------------
+
+  it("gives every kind, including the derived ones, a colour from the token set", () => {
+    const tokens = new Set(Object.values(THEME.colors));
+    for (const kind of [
+      "system",
+      "user",
+      "context",
+      "compacted",
+      "message",
+      "tool",
+      "subtool",
+      "llm",
+      "systemPrompt",
+    ] as const) {
+      expect(tokens.has(kindRailColor(THEME, kind, false))).toBe(true);
+    }
+  });
+
+  it("keeps the derived round visually distinct from user, message, tool and error", () => {
+    // The round is the one kind that borrows a colour rather than owning one,
+    // so the collisions below are exactly what must NOT happen.
+    const round = kindRailColor(THEME, "llm", false);
+    for (const other of ["user", "message", "tool", "system"] as const) {
+      expect(round).not.toBe(kindRailColor(THEME, other, false));
+    }
+    expect(round).not.toBe(THEME.colors.statusDanger);
+    // An error still wins over the round's own colour.
+    expect(kindRailColor(THEME, "llm", true)).toBe(THEME.colors.statusDanger);
+  });
+
+  it("renders a derived round row with its label and result count", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({ kind: "llm", text: "llm round 1 · consumed 2 results" })}
+        compact={false}
+        theme={THEME}
+      />,
+    );
+    expect(document.querySelector('[data-testid="kind-tag-llm"]')?.textContent).toBe("llm");
+    expect(document.querySelector('[data-testid="col-context"]')?.textContent).toBe(
+      "llm round 1 · consumed 2 results",
+    );
+    expect(document.querySelector('[data-testid="stats-text"]')?.textContent).toBe("2 results");
+  });
+
+  it("reports an unrecognised round with an em dash rather than a zero", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({ kind: "llm", text: "llm round" })}
+        compact={false}
+        theme={THEME}
+      />,
+    );
+    expect(document.querySelector('[data-testid="stats-text"]')?.textContent).toBe("results: —");
+  });
+
+  it("renders the system prompt row with its size-and-hash label", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({
+          kind: "systemPrompt",
+          text: "system prompt · 1,234 chars · hash abcdef123456…",
+        })}
+        compact={false}
+        theme={THEME}
+      />,
+    );
+    expect(document.querySelector('[data-testid="kind-tag-systemPrompt"]')?.textContent).toBe(
+      "systemPrompt",
+    );
+    expect(document.querySelector('[data-testid="col-context"]')?.textContent).toBe(
+      "system prompt · 1,234 chars · hash abcdef123456…",
+    );
+  });
+
+  it("collapses both derived kinds to a single-character tag on compact", () => {
+    render(<KindTag kind="llm" compact theme={THEME} />);
+    expect(document.querySelector('[data-testid="kind-tag-llm"]')?.textContent).toBe("L");
+    render(<KindTag kind="systemPrompt" compact theme={THEME} />);
+    expect(document.querySelector('[data-testid="kind-tag-systemPrompt"]')?.textContent).toBe("P");
   });
 });

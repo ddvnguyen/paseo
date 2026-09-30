@@ -16,6 +16,15 @@ export const TRAJECTORY_EVENT_TYPES = [
   "user/message",
   "tool/call",
   "tool/result",
+  // Derived by the recorder, never received from a provider: no real LLM-round
+  // event reaches plugins (the opencode step-start is dropped upstream and
+  // usage_updated is not in the wire union), so the recorder infers the round
+  // boundary from the one signal every provider does emit -- an action arriving
+  // after tool results. `data.derived` is always true on these rows.
+  "round/begin",
+  // Derived from `before("agent.create")`'s caller systemPrompt. Length and a
+  // short hash only; the prompt text is never stored (d-893c722f28).
+  "system/attach",
 ] as const;
 
 export type TrajectoryEventType = (typeof TRAJECTORY_EVENT_TYPES)[number];

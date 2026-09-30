@@ -103,14 +103,13 @@ describe("trajectory inspector", () => {
     expect(container.textContent).toBe("");
   });
 
-  it("shows tool-row facts: seq, turn, step, duration, output, status, call", () => {
+  it("shows tool-row facts: seq, turn, duration, output, status, call", () => {
     render(TOOL_ROW);
     expect(text("inspector-label")).toBe("shell · npm test");
     expect(text("inspector-seq")).toBe("#2");
     expect(text("inspector-turn")).toBe("t1");
-    expect(text("inspector-step")).toBe("Step 1");
     expect(text("inspector-duration")).toBe("2,400 ms");
-    expect(text("inspector-output")).toContain("characters: 1,520");
+    expect(text("inspector-output")).toContain("1,520 chars");
     // Fixture carries no failure flag: status is unknown, not "ok".
     expect(text("inspector-error")).toBe("—");
     expect(text("inspector-call")).toBe("c1");
@@ -139,7 +138,7 @@ describe("trajectory inspector", () => {
       usage: { input: 1200, cacheRead: 300, cacheWrite: null, output: 84, think: null },
     };
     render(message);
-    expect(text("inspector-tokens")).toBe("token: In 1,200(300) / out 84");
+    expect(text("inspector-tokens")).toBe("In 1,200(300) / out 84");
     // No tool-only fields on message rows.
     expect(document.querySelector('[data-testid="inspector-output"]')).toBeNull();
     expect(document.querySelector('[data-testid="inspector-call"]')).toBeNull();

@@ -68,6 +68,14 @@ export function createNodeStore(path: string): TrajectoryStore {
     `INSERT INTO trajectory_events (time, type, turn, step, agent_id, data)
      VALUES (?, ?, ?, ?, ?, ?)`,
   );
+  // callId lives inside the JSON `data` blob, so the lookup goes through
+  // json_extract. It is scoped to one agent and one row type, and stops at the
+  // first hit (LIMIT 1) because the answer is only ever "is there one".
+  const hasToolPhase = db.prepare(
+    `SELECT 1 AS found FROM trajectory_events
+     WHERE agent_id = ? AND type = ? AND json_extract(data, '$.callId') = ?
+     LIMIT 1`,
+  );
 
   return {
     append(input: TrajectoryEventInput): TrajectoryEvent {
@@ -111,6 +119,15 @@ export function createNodeStore(path: string): TrajectoryStore {
       );
       const rows = stmt.all(...(params as never[])) as unknown as RawRow[];
       return rows.map(toEvent);
+    },
+
+    hasToolPhase(agentId: string, callId: string, phase: "call" | "result"): boolean {
+      const row = hasToolPhase.get(
+        agentId,
+        phase === "call" ? "tool/call" : "tool/result",
+        callId,
+      ) as { found?: number } | undefined;
+      return row !== undefined && row.found !== undefined;
     },
 
     headSeq(agentId: string): number {

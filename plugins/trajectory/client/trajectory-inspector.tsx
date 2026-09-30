@@ -1,3 +1,4 @@
+import { useCallback, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { TextStyle, ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -8,11 +9,19 @@ import { CharsText, KindTag, TokenText } from "./ledger-cells.js";
 /**
  * Row inspector (T2.3, dsh details-panel parity, observer-only).
  *
- * Pure and props-driven: `row: null` renders nothing, so the inspector is
- * closed by default and the parent owns selection state. Unknown values
- * render the dsh em dash; in-flight rows (null duration) show "—".
- * Wide docks a 320pt panel on the right edge; compact covers the ledger
- * with a full overlay (tags already collapse to icons underneath).
+ * `row: null` renders nothing, so the inspector is closed by default and the
+ * parent owns selection state. Unknown values render the dsh em dash; in-flight
+ * rows (null duration) show "—".
+ *
+ * Wide docks a 40%-width panel on the right edge — a share of the dialog, not a
+ * fixed pixel width, so it stays proportionate from a laptop to a 4K display.
+ * Compact covers the ledger with a full overlay (tags already collapse to icons
+ * underneath). The caller reserves the matching width in its layout row, so the
+ * two must stay in step.
+ *
+ * Message text is a DELTA summary by default. One assistant message arrives as
+ * many ledger rows, so opening the inspector on any of them must not dump the
+ * whole message; the full resolved text sits behind one button.
  */
 export function TrajectoryInspector(props: {
   row: TrajectoryFoldRow | null;
@@ -49,19 +58,15 @@ export function TrajectoryInspector(props: {
       <Field label="turn" theme={theme} testID="inspector-turn">
         <Text style={valueStyles(theme)}>{row.turnId ?? "—"}</Text>
       </Field>
-      <Field label="step" theme={theme} testID="inspector-step">
-        <Text style={valueStyles(theme)}>
-          {row.step === null || row.step === undefined ? "—" : `Step ${row.step}`}
-        </Text>
-      </Field>
       <Field label="duration" theme={theme} testID="inspector-duration">
         <Text style={valueStyles(theme)}>{formatDurationMillis(row.durationMs)}</Text>
       </Field>
       {resolvedText !== undefined && resolvedText.length > 0 ? (
-        <Field label="text" theme={theme} testID="inspector-text">
-          {/* Not numberOfLines: the inspector is where the full payload is read. */}
-          <Text style={valueStyles(theme)}>{resolvedText}</Text>
-        </Field>
+        <MessageTextSection
+          theme={theme}
+          deltaChars={row.kind === "message" ? (row.deltaChars ?? undefined) : undefined}
+          resolvedText={resolvedText}
+        />
       ) : null}
       {row.kind === "tool" ? (
         <>
@@ -91,6 +96,71 @@ export function TrajectoryInspector(props: {
       ) : null}
     </View>
   );
+}
+
+/**
+ * The message text block: a delta summary, with the full text one press away.
+ *
+ * `deltaChars` is what THIS ledger row contributed. With it the section leads
+ * with the size of the addition; without it (a user row, or a message recorded
+ * before deltas existed) it shows the resolved text's length so the section
+ * still says something true.
+ */
+function MessageTextSection(props: {
+  theme: PluginTheme;
+  deltaChars: number | undefined;
+  resolvedText: string;
+}) {
+  const { theme, deltaChars, resolvedText } = props;
+  const [showFull, setShowFull] = useState(false);
+  const styles = useMemo(() => messageSectionStyles(theme), [theme]);
+  // Bound and pre-built: a fresh object/closure per render would be a new prop
+  // identity on every render of the section.
+  const toggleState = useMemo(() => ({ expanded: showFull }), [showFull]);
+  const togglePress = useCallback(() => setShowFull((value) => !value), []);
+  const summary =
+    deltaChars === undefined
+      ? `${resolvedText.length.toLocaleString("en-US")} chars total`
+      : `+${deltaChars.toLocaleString("en-US")} chars this row · ${resolvedText.length.toLocaleString("en-US")} chars total`;
+  return (
+    <Field label="text" theme={theme} testID="inspector-text">
+      <Text style={styles.summary} testID="inspector-text-summary">
+        {summary}
+      </Text>
+      {showFull ? (
+        /* Not numberOfLines: this is the one place the full payload is read. */
+        <Text style={valueStyles(theme)} testID="inspector-text-full">
+          {resolvedText}
+        </Text>
+      ) : null}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={toggleState}
+        onPress={togglePress}
+        style={styles.toggle}
+        testID="inspector-text-toggle"
+      >
+        <Text style={styles.toggleLabel}>{showFull ? "hide full text" : "show full text"}</Text>
+      </Pressable>
+    </Field>
+  );
+}
+
+function messageSectionStyles(theme: PluginTheme) {
+  return {
+    summary: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 11,
+    } satisfies TextStyle,
+    toggle: {
+      alignSelf: "flex-start" as const,
+      paddingVertical: 2,
+    },
+    toggleLabel: {
+      color: theme.colors.accent,
+      fontSize: 11,
+    } satisfies TextStyle,
+  };
 }
 
 function errorLabel(isError: boolean | undefined): string {
@@ -126,13 +196,19 @@ function overlayStyles(theme: PluginTheme): ViewStyle {
   };
 }
 
+/**
+ * Dock width as a share of the dialog. Exported so the panel's layout spacer
+ * reserves exactly the same width; two literals would drift.
+ */
+export const DOCK_WIDTH = "40%";
+
 function dockedStyles(theme: PluginTheme): ViewStyle {
   return {
     position: "absolute",
     top: 0,
     bottom: 0,
     right: 0,
-    width: 320,
+    width: DOCK_WIDTH,
     backgroundColor: theme.colors.surface0,
     borderLeftWidth: StyleSheet.hairlineWidth,
     borderLeftColor: theme.colors.border,

@@ -17,7 +17,18 @@ export type TrajectoryCellKind =
   | "compacted"
   | "message"
   | "tool"
-  | "subtool";
+  | "subtool"
+  /**
+   * A derived LLM round: tool results were handed to a model, which then chose
+   * the next action. No provider emits this event, so the recorder infers it —
+   * see the recorder's round-marker rule for why the inference is sound.
+   */
+  | "llm"
+  /**
+   * The caller system prompt, as size and hash only. Never the text; the
+   * ledger is length-only by rule.
+   */
+  | "systemPrompt";
 
 /** Recorded inputs needed to derive assistant TTFT and decode throughput. */
 export interface AssistantMetricDetail {
@@ -97,6 +108,16 @@ export interface TrajectoryCellProps {
   resultPreviewMarkdown?: string;
   /** Tool call id used to link message source blocks to tool records. */
   callId?: string;
+  /**
+   * Message total-so-far and the slice THIS record contributed. The daemon
+   * re-emits one assistant message across many stream chunks, so a record
+   * carries its own delta rather than the whole message. Absent when the length
+   * is unknown or the record has no source identity.
+   */
+  textLength?: number;
+  deltaChars?: number;
+  /** Offset into the message text at which this record's delta starts. */
+  deltaStart?: number;
   /** Tool-only result failure state. */
   isError?: boolean;
   /** Own duration in seconds, or `null` when no duration is known. */

@@ -141,7 +141,7 @@ async function expand(): Promise<void> {
 
 function cellText(index: number): string | null {
   return (
-    container.querySelector(`[data-testid="cell-${index}"] [data-testid="cell-text"]`)
+    container.querySelector(`[data-testid="cell-${index}"] [data-testid="col-context"]`)
       ?.textContent ?? null
   );
 }

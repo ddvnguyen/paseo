@@ -21,7 +21,27 @@ export interface TrajectoryTimeRange {
 
 /** One ledger record projected into the active timeline domain. */
 export interface TrajectoryTimelineSpan extends TrajectoryTimeRange {
+  /** The ledger cell this span projects (`cell.index`). */
   index: number;
+  /**
+   * The cell's source event seq (`cell.sourceSeq`), carried so a span can be
+   * matched against the ledger's selection.
+   *
+   * `index` and `sourceSeq` are different identities: `index` is assigned while
+   * folding and is positional, while the ledger selects by `sourceSeq` because
+   * that is the row identity that survives a live append. A strip that only knew
+   * `index` could not tell which span is selected without rebuilding the fold's
+   * cell indexes, so the bridge travels with the span. Absent on records the
+   * producer gave no seq for — those spans are not selectable, only hoverable.
+   */
+  sourceSeq?: number;
+  /**
+   * The record's own duration in ms, or null when unknown (in-flight). Carried
+   * because a span's `start`/`end` are positions in the *active projection* —
+   * in `sequence` mode they are ordinal indices with no time in them at all —
+   * so the tooltip's duration cannot be recovered from the span's own geometry.
+   */
+  durationMs: number | null;
   isError: boolean;
   kind: TrajectoryCellKind;
   label: string;
@@ -57,6 +77,11 @@ function laneFor(kind: TrajectoryCellKind): number {
 
 function finite(value: number | null | undefined): value is number {
   return value !== null && value !== undefined && Number.isFinite(value);
+}
+
+/** The record's own duration in ms; null while in-flight or unknown. */
+function ownDurationMs(cell: TrajectoryCellProps): number | null {
+  return finite(cell.timeSeconds) ? Math.max(0, cell.timeSeconds * 1_000) : null;
 }
 
 function cellRange(cell: TrajectoryCellProps): TrajectoryTimeRange | null {
@@ -96,19 +121,21 @@ export function deriveTrajectoryTimeline(
         time: spans.length,
       });
     }
-    spans.push(
-      ...cells.map(
-        (cell, offset): TrajectoryTimelineSpan => ({
-          start: spans.length + offset,
-          end: spans.length + offset + 1,
-          index: cell.index,
-          isError: cell.isError === true,
-          kind: cell.kind,
-          label: cell.text,
-          lane: laneFor(cell.kind),
-        }),
-      ),
-    );
+    const base = spans.length;
+    for (const [offset, cell] of cells.entries()) {
+      const span: TrajectoryTimelineSpan = {
+        start: base + offset,
+        end: base + offset + 1,
+        index: cell.index,
+        durationMs: ownDurationMs(cell),
+        isError: cell.isError === true,
+        kind: cell.kind,
+        label: cell.text,
+        lane: laneFor(cell.kind),
+      };
+      if (cell.sourceSeq !== undefined) span.sourceSeq = cell.sourceSeq;
+      spans.push(span);
+    }
   }
 
   if (spans.length === 0) return null;
@@ -136,6 +163,8 @@ function deriveTimedTimeline(
               {
                 ...range,
                 index: cell.index,
+                ...(cell.sourceSeq === undefined ? {} : { sourceSeq: cell.sourceSeq }),
+                durationMs: ownDurationMs(cell),
                 isError: cell.isError === true,
                 kind: cell.kind,
                 label: cell.text,
