@@ -50,6 +50,74 @@ export function toScheduleCommandError(code: string, action: string, error: unkn
   };
 }
 
+/**
+ * Refuse to send a workspace-reuse clear to a daemon that cannot read it.
+ *
+ * Clearing reuse is a `null` in `newAgentConfig.workspaceId`. A daemon that predates
+ * the field rejects the whole update with a Zod message ("expected string, received
+ * null") that says nothing about which flag caused it, so the user would see a
+ * schema error for something they typed as `--no-workspace-id`. The capability check
+ * happens here, once, before the request goes out.
+ *
+ * COMPAT(scheduleWorkspaceReuseClear): added in v0.8.0, remove after 2027-09-30.
+ */
+export function assertDaemonSupportsWorkspaceReuseClear(client: ScheduleDaemonClient): void {
+  const features = client.getLastServerInfoMessage?.()?.features;
+  // A client that has not seen server_info yet cannot rule the daemon out, so the
+  // request goes out and the daemon has the final say.
+  if (!features) return;
+  if (features.scheduleWorkspaceReuseClear === true) return;
+  throw {
+    code: "DAEMON_TOO_OLD",
+    message:
+      "This daemon is too old to clear workspace reuse. Update the Paseo daemon, then retry.",
+  } satisfies CommandError;
+}
+
+/**
+ * Translate a daemon that rejected the null clear anyway. Reached when server_info
+ * had not arrived, so the capability check could not rule the daemon out first.
+ *
+ * COMPAT(scheduleWorkspaceReuseClear): added in v0.8.0, remove after 2027-09-30.
+ */
+export function isWorkspaceReuseClearRejection(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("workspaceId") && /expected string, received null|received null/.test(message)
+  );
+}
+
+/**
+ * Warn when another schedule already names the same workspace. Two schedules sharing
+ * one workspace run concurrently with no exclusion, so their agents can interleave in
+ * the same directory. Best effort: a list failure is not worth failing the command
+ * over, and the daemon does not serialise runs across schedules.
+ */
+export async function warnOnSharedWorkspace(
+  client: ScheduleDaemonClient,
+  workspaceId: string | undefined,
+  currentScheduleId?: string,
+): Promise<void> {
+  if (!workspaceId) return;
+  try {
+    const payload = await client.scheduleList();
+    if (payload.error || !payload.schedules) return;
+    const sharing = payload.schedules.filter(
+      (schedule) =>
+        schedule.id !== currentScheduleId &&
+        schedule.target.type === "new-agent" &&
+        schedule.target.config.workspaceId === workspaceId,
+    );
+    if (sharing.length === 0) return;
+    process.stderr.write(
+      `Warning: ${sharing.length} other schedule(s) already use workspace ${workspaceId}. ` +
+        `Their runs are not serialised against yours and can interleave in the same directory.\n`,
+    );
+  } catch {
+    // Advisory only. Never block a schedule change on a failed best-effort check.
+  }
+}
+
 export async function requireNewAgentSchedule(
   client: ScheduleDaemonClient,
   id: string,

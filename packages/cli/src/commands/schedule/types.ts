@@ -173,5 +173,13 @@ export interface ScheduleDaemonClient {
   scheduleDelete(input: { id: string }): Promise<ScheduleDeletePayload>;
   scheduleRunOnce(input: { id: string }): Promise<ScheduleRunOncePayload>;
   scheduleUpdate(input: UpdateScheduleInput): Promise<ScheduleUpdatePayload>;
+  /**
+   * Present so the CLI can gate features on daemon capabilities. Optional because
+   * the schedule commands only need it for the gates, and a client that predates
+   * server_info has nothing to gate on.
+   */
+  getLastServerInfoMessage?: () => {
+    features?: { scheduleWorkspaceReuseClear?: boolean } | null;
+  } | null;
   close(): Promise<void>;
 }

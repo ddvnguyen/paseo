@@ -6,6 +6,7 @@ import {
   parseScheduleCreateInput,
   toScheduleCommandError,
   toScheduleRow,
+  warnOnSharedWorkspace,
   type ScheduleCommandOptions,
   type ScheduleRow,
 } from "./shared.js";
@@ -53,6 +54,10 @@ export async function runCreateCommand(
   });
   const { client } = await connectScheduleClient(options.daemonTarget);
   try {
+    await warnOnSharedWorkspace(
+      client,
+      input.target.type === "new-agent" ? input.target.config.workspaceId : undefined,
+    );
     const payload = await client.scheduleCreate(input);
     if (payload.error || !payload.schedule) {
       throw new Error(payload.error ?? "Schedule creation failed");

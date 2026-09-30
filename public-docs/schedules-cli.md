@@ -114,9 +114,15 @@ paseo schedule update <id> --workspace-id wks_def456
 paseo schedule update <id> --no-workspace-id
 ```
 
-`--no-workspace-id` only drops the shared workspace. Archiving stays off, so the runs that follow each get a workspace of their own that is never archived; clear that separately if you want them retired.
+`--no-workspace-id` only drops the shared workspace, so archiving stays off and the runs that follow each get a workspace of their own that is never archived. There is no flag to turn archiving back on for an existing schedule.
 
-The daemon re-checks reuse on every run rather than trusting the stored config. A run falls back to its own workspace, and logs a warning, when the workspace was archived, when it does not exist, or when its directory differs from `--cwd`. The schedule keeps running either way.
+The daemon re-checks reuse on every run rather than trusting the stored config, and refuses reuse — falling back to a workspace of that run's own, archived when the run ends — when the workspace is archived, when it does not exist, or when its directory differs from `--cwd`. A refused run logs a warning once per schedule, and the schedule keeps running.
+
+Clearing reuse needs a daemon that understands it. Against an older daemon the command fails and asks you to update rather than sending a request it would reject.
+
+### Sharing one workspace between schedules
+
+Two schedules can name the same workspace, and `paseo schedule create` / `update` warn when another schedule already uses it. Nothing serialises the two: their runs are independent, so agents from both can be working in the same directory at once, and a run that finishes does not wait for the other. Two schedules that write to the same files will collide. Give each schedule its own workspace, or use one schedule with a longer cadence.
 
 ## Cadence
 
