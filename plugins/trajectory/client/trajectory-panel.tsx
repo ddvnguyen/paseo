@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { TextStyle, ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -9,7 +9,7 @@ import { LedgerScreen } from "./ledger-screen.js";
 import { DOCK_WIDTH, TrajectoryInspector } from "./trajectory-inspector.js";
 import { useTrajectoryDelta } from "./use-trajectory-delta.js";
 import {
-  foldRowTextKey,
+  foldRowTextKeys,
   textKey,
   useTrajectoryText,
   type TimelineRefetch,
@@ -108,8 +108,8 @@ function LiveLedger(props: {
     async () => paseo.agents.ref(agentId).timeline.refetch(),
     [paseo, agentId],
   );
-  const text = useTrajectoryText(agentId, visibleCells, refetchTimeline);
-  const textFor = text.textFor;
+  const resolver = useTrajectoryText(agentId, visibleCells, refetchTimeline);
+  const textFor = resolver.textFor;
   /**
    * FlatList re-fires viewability on every scroll tick, and each call hands over
    * a fresh array. Publishing that straight into state would loop — the state
@@ -129,7 +129,25 @@ function LiveLedger(props: {
   }, []);
   const selectedRow =
     selectedSeq === null ? null : (delta.rows.find((row) => row.seq === selectedSeq) ?? null);
-  const selectedKey = selectedSeq === null ? null : foldRowTextKey(selectedRow ?? {});
+  /**
+   * Compose the selected row's text. A merged response row spans several stream
+   * events and can carry several message ids, so its body is the distinct texts
+   * joined in seq order -- not the first chunk, which is all a single key gives.
+   * Rows whose segments have not resolved yet fall through to the length summary
+   * rather than showing a partial body.
+   */
+  const selectedText = useMemo(() => {
+    if (selectedRow === null) return undefined;
+    const keys = foldRowTextKeys(selectedRow);
+    if (keys.length === 0) return undefined;
+    const parts: string[] = [];
+    for (const key of keys) {
+      const segment = resolver.cache.get(key);
+      if (segment === undefined) return undefined;
+      parts.push(segment);
+    }
+    return parts.join("");
+  }, [selectedRow, resolver.cache]);
 
   if (delta.status === "loading") {
     return (
@@ -176,7 +194,7 @@ function LiveLedger(props: {
           row={selectedRow}
           compact={compact}
           theme={theme}
-          resolvedText={selectedKey === null ? undefined : text.cache.get(selectedKey)}
+          resolvedText={selectedText}
           onClose={onCloseInspector}
         />
       </View>

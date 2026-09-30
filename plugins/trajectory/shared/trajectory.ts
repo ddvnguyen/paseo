@@ -25,6 +25,12 @@ export const TRAJECTORY_EVENT_TYPES = [
   // Derived from `before("agent.create")`'s caller systemPrompt. Length and a
   // short hash only; the prompt text is never stored (d-893c722f28).
   "system/attach",
+  // A provider's reasoning/thinking text. This one is OBSERVED, not derived:
+  // `reasoning` is a member of the AgentTimelineItem union (protocol
+  // agent-types.ts:374) and opencode translates its reasoning parts into real
+  // timeline events (providers/opencode-agent.ts:2787, :2918), so the recorder
+  // sees them. Length only, like every other message row.
+  "thinking/message",
 ] as const;
 
 export type TrajectoryEventType = (typeof TRAJECTORY_EVENT_TYPES)[number];

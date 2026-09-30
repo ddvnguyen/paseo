@@ -28,7 +28,9 @@ export type TrajectoryCellKind =
    * The caller system prompt, as size and hash only. Never the text; the
    * ledger is length-only by rule.
    */
-  | "systemPrompt";
+  | "systemPrompt"
+  /** Provider reasoning/thinking text, length only. */
+  | "thinking";
 
 /** Recorded inputs needed to derive assistant TTFT and decode throughput. */
 export interface AssistantMetricDetail {
@@ -118,6 +120,14 @@ export interface TrajectoryCellProps {
   deltaChars?: number;
   /** Offset into the message text at which this record's delta starts. */
   deltaStart?: number;
+  /**
+   * Every source message id folded into this record, in seq order. A merged
+   * response row spans several; a single-segment row has exactly one. Used to
+   * fetch and compose the text for the detail view.
+   */
+  sourceMessageIds?: string[];
+  /** How many stream events this record merged; 1 when it is a single row. */
+  segments?: number;
   /** Tool-only result failure state. */
   isError?: boolean;
   /** Own duration in seconds, or `null` when no duration is known. */

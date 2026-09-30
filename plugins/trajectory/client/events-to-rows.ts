@@ -65,6 +65,77 @@ function userRow(event: TrajectoryEvent): TrajectoryFoldRow {
   };
 }
 
+/**
+ * Fold a contiguous run of assistant message rows into ONE row.
+ *
+ * Owner item 11: a single agent response streams in as many `assistant/message`
+ * events, each carrying a growing `textLength`. Rendering one row per event
+ * produced a flood of "+67 chars" rows with mid-word fragments. A run is the
+ * maximal stretch of consecutive message rows with no tool, user, system, llm
+ * or round marker between them -- anything else ends it, because the LLM-round
+ * marker and a tool call are exactly the boundaries where the model did
+ * something new.
+ *
+ * The merged row keeps:
+ * - seq / sourceMessageId of the FIRST segment, so selection, the timeline-strip
+ *   outline and the ledger key stay stable and unique across live appends;
+ * - timeMs of the first segment and a duration spanning to the last, so the row
+ *   covers the whole response;
+ * - textLength of the LAST segment, which is the final cumulative length (the
+ *   sum of the deltas equals it);
+ * - usage from the LAST segment that carried one, because the provider reports
+ *   the turn's totals once and they do not sum across segments.
+ *
+ * Segments that contributed nothing (a +0 re-emission) merge away, and
+ * `segments` records how many rows actually stood behind the one row shown.
+ */
+function mergeMessageRuns(rows: TrajectoryFoldRow[]): TrajectoryFoldRow[] {
+  const out: TrajectoryFoldRow[] = [];
+  for (const row of rows) {
+    const previous = out.at(-1);
+    const continues =
+      previous !== undefined &&
+      previous.kind === "message" &&
+      row.kind === "message" &&
+      previous.turnId === row.turnId;
+    if (!continues || previous === undefined) {
+      out.push(row);
+      continue;
+    }
+    const merged: TrajectoryFoldRow = { ...previous };
+    // DISTINCT ids in seq order: one message re-emitted across many chunks is
+    // one id, and the detail view should fetch that text once, not per chunk.
+    const identities = [
+      ...new Set([
+        ...(previous.sourceMessageIds ?? [previous.sourceMessageId ?? ""]),
+        ...(row.sourceMessageId == null ? [] : [row.sourceMessageId]),
+      ]),
+    ].filter((id) => id.length > 0);
+    merged.sourceMessageIds = identities;
+    merged.segments = (previous.segments ?? 1) + 1;
+    // The last segment's cumulative length IS the response total.
+    if (row.textLength !== undefined && row.textLength !== null) {
+      merged.textLength = row.textLength;
+      merged.label = lengthLabel("assistant message", row.textLength);
+    }
+    // A row that only re-stated what was already there contributes no time.
+    if (row.timeMs !== null && previous.timeMs !== null) {
+      merged.durationMs = Math.max(0, row.timeMs - previous.timeMs);
+    } else if (row.timeMs !== null) {
+      merged.timeMs = row.timeMs;
+    }
+    if (row.usage !== undefined) {
+      merged.usage = row.usage;
+    }
+    // Keep the FIRST delta offset so the composed preview starts at the
+    // beginning of the response.
+    merged.deltaStart = previous.deltaStart ?? 0;
+    merged.deltaChars = previous.deltaChars;
+    out[out.length - 1] = merged;
+  }
+  return out;
+}
+
 /** `textLength` when the producer sent a real number, else null. Never coerced. */
 function numericLength(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -105,6 +176,10 @@ function messageRow(event: TrajectoryEvent, cumulative: Map<string, number>): Tr
     durationMs: null,
     turnId: event.turn,
     step: event.step,
+    segments: 1,
+    // Always populated when an id exists, merged or not, so a consumer reads one
+    // field rather than branching on whether the row ever merged.
+    ...(sourceMessageId === undefined ? {} : { sourceMessageIds: [sourceMessageId] }),
     ...(textLength === null ? {} : { textLength }),
     ...(deltaChars === null ? {} : { deltaChars }),
     ...(deltaStart === undefined ? {} : { deltaStart }),
@@ -230,6 +305,28 @@ function systemPromptRow(event: TrajectoryEvent): TrajectoryFoldRow {
   };
 }
 
+/**
+ * Provider reasoning, as a length.
+ *
+ * The row never carries text: reasoning reaches the recorder without a message
+ * id, so there is no source key to fetch the body with later. Recording the
+ * size is the honest maximum -- see the recorder's note on the missing key.
+ */
+function thinkingRow(event: TrajectoryEvent): TrajectoryFoldRow {
+  const chars = numericLength(event.data.textLength);
+  return {
+    seq: event.seq,
+    timeMs: timeOf(event),
+    kind: "thinking",
+    label:
+      chars === null ? "reasoning · — chars" : `reasoning · ${chars.toLocaleString("en-US")} chars`,
+    durationMs: null,
+    turnId: event.turn,
+    step: null,
+    textLength: chars,
+  };
+}
+
 export function eventsToFoldRows(events: readonly TrajectoryEvent[]): TrajectoryFoldRow[] {
   const rows: TrajectoryFoldRow[] = [];
   const openCalls = new Map<string, OpenToolCall>();
@@ -274,6 +371,10 @@ export function eventsToFoldRows(events: readonly TrajectoryEvent[]): Trajectory
         if (row !== null) rows.push(row);
         break;
       }
+      case "thinking/message": {
+        rows.push(thinkingRow(event));
+        break;
+      }
       case "round/begin": {
         rows.push(roundRow(event));
         break;
@@ -301,5 +402,5 @@ export function eventsToFoldRows(events: readonly TrajectoryEvent[]): Trajectory
     rows.push(row);
   }
 
-  return rows;
+  return mergeMessageRuns(rows);
 }

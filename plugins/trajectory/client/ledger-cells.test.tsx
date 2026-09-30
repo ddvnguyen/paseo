@@ -554,4 +554,63 @@ describe("ledger cells", () => {
     expect(style.borderBottomWidth).toBe(1);
     expect(style.borderBottomColor).toBe(THEME.colors.border);
   });
+
+  // --- T3 item 11: merged responses + thinking ---------------------------
+
+  it("shows a merged response's own first line, not any one segment's slice", () => {
+    const merged = cell({
+      index: 4,
+      kind: "message",
+      text: "assistant message (90 chars)",
+      segments: 3,
+      deltaChars: 1,
+      deltaStart: 0,
+      textLength: 90,
+    });
+    // The composed text resolves to the whole response, so CONTEXT is its head.
+    expect(cellContext(merged, false, "The full response starts here")).toBe(
+      "The full response starts here",
+    );
+    // Unresolved, the row stands on its label rather than a mid-word slice.
+    expect(cellContext(merged, false, undefined)).toBe("assistant message (90 chars)");
+  });
+
+  it("keeps the delta slice for a single-segment message", () => {
+    const single = cell({
+      kind: "message",
+      segments: 1,
+      deltaChars: 12,
+      deltaStart: 4,
+      textLength: 16,
+    });
+    expect(cellContext(single, false, "0123456789abcdef")).toBe("+12 chars · 456789abcdef");
+  });
+
+  it("renders a thinking row as muted reasoning with a length", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({ index: 2, kind: "thinking", text: "reasoning · 512 chars", textLength: 512 })}
+        compact={false}
+        theme={THEME}
+      />,
+    );
+    expect(document.querySelector('[data-testid="kind-tag-thinking"]')?.textContent).toBe(
+      "thinking",
+    );
+    expect(document.querySelector('[data-testid="col-context"]')?.textContent).toBe(
+      "reasoning · 512 chars",
+    );
+  });
+
+  it("collapses a thinking row to R on compact and gives it the muted accent", () => {
+    render(<KindTag kind="thinking" compact theme={THEME} />);
+    expect(document.querySelector('[data-testid="kind-tag-thinking"]')?.textContent).toBe("R");
+    expect(kindRailColor(THEME, "thinking", false)).toBe(THEME.colors.foregroundMuted);
+  });
+
+  it("reports an unknown reasoning length as an em dash", () => {
+    expect(cellContext(cell({ kind: "thinking", text: "reasoning" }), false, undefined)).toBe(
+      "reasoning · — chars",
+    );
+  });
 });

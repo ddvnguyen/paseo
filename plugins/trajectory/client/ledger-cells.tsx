@@ -56,6 +56,9 @@ const KIND_SURFACE: Record<TrajectoryCellProps["kind"], SurfaceToken> = {
   system: "surface2",
   llm: "surface2",
   systemPrompt: "surface1",
+  // Thinking sits with the other inferred/systemic rows; the rail and the tag
+  // carry the distinction, not the tint.
+  thinking: "surface0",
   context: "transparent",
   compacted: "transparent",
   subtool: "transparent",
@@ -107,6 +110,9 @@ export function kindAccentColor(
   // failure, so it takes the foreground and separates by weight instead.
   if (kind === "llm") return theme.colors.foreground;
   if (kind === "systemPrompt") return theme.colors.foreground;
+  // Reasoning is muted like system content: it is supporting material, not
+  // something the reader is meant to act on.
+  if (kind === "thinking") return theme.colors.foregroundMuted;
   // system and anything unknown read as muted.
   return theme.colors.foregroundMuted;
 }
@@ -131,6 +137,7 @@ const KIND_ICON: Record<TrajectoryCellProps["kind"], string> = {
   subtool: "↳",
   llm: "L",
   systemPrompt: "P",
+  thinking: "R",
 };
 
 export function KindTag(props: {
@@ -333,21 +340,51 @@ export function cellContext(
   compact: boolean,
   resolvedText: string | undefined,
 ): string {
-  const isTool = cell.kind === "tool" || cell.kind === "subtool";
-  if (isTool) {
-    if (cell.previewMarkdown === undefined) return cell.text;
-    return `${cell.text} · ${compact ? "" : firstLine(cell.previewMarkdown)}`;
-  }
-  if (cell.kind === "message" && cell.deltaChars !== undefined) {
-    const added =
-      resolvedText === undefined || resolvedText.length === 0
-        ? undefined
-        : resolvedText.slice(cell.deltaStart ?? 0, (cell.deltaStart ?? 0) + cell.deltaChars);
-    const head = added === undefined ? "" : firstLine(added);
-    return head === "" ? `+${cell.deltaChars} chars` : `+${cell.deltaChars} chars · ${head}`;
+  if (cell.kind === "thinking") return thinkingContext(cell);
+  if (cell.kind === "tool" || cell.kind === "subtool") return toolContext(cell, compact);
+  if (cell.kind === "message") {
+    if ((cell.segments ?? 1) > 1) return mergedContext(cell, resolvedText);
+    return messageDeltaContext(cell, resolvedText);
   }
   if (resolvedText !== undefined && resolvedText.length > 0) return firstLine(resolvedText);
   return cell.text;
+}
+
+/** Reasoning is a length, never a body: it arrives with no source key to fetch. */
+function thinkingContext(cell: TrajectoryCellProps): string {
+  return cell.textLength === undefined
+    ? "reasoning · — chars"
+    : `reasoning · ${cell.textLength.toLocaleString("en-US")} chars`;
+}
+
+function toolContext(cell: TrajectoryCellProps, compact: boolean): string {
+  if (cell.previewMarkdown === undefined) return cell.text;
+  return `${cell.text} · ${compact ? "" : firstLine(cell.previewMarkdown)}`;
+}
+
+/**
+ * A merged response row's CONTEXT is the response's own first line, not any one
+ * segment's delta slice -- that is the whole point of merging: the row speaks
+ * for the response rather than for the chunk it happened to end on.
+ */
+function mergedContext(cell: TrajectoryCellProps, resolvedText: string | undefined): string {
+  if (resolvedText !== undefined && resolvedText.length > 0) return firstLine(resolvedText);
+  return cell.text;
+}
+
+/** An unmerged message row still shows only what its own delta added. */
+function messageDeltaContext(cell: TrajectoryCellProps, resolvedText: string | undefined): string {
+  if (cell.deltaChars === undefined) {
+    if (resolvedText !== undefined && resolvedText.length > 0) return firstLine(resolvedText);
+    return cell.text;
+  }
+  const start = cell.deltaStart ?? 0;
+  const added =
+    resolvedText === undefined || resolvedText.length === 0
+      ? undefined
+      : resolvedText.slice(start, start + cell.deltaChars);
+  const head = added === undefined ? "" : firstLine(added);
+  return head === "" ? `+${cell.deltaChars} chars` : `+${cell.deltaChars} chars · ${head}`;
 }
 
 /** One ledger row: TIME | TYPE | CONTEXT | STATS, the four widths shared. */
@@ -396,7 +433,11 @@ export function TrajectoryCellRow(props: {
       <View style={styles.type}>
         <KindTag kind={cell.kind} compact={compact} theme={theme} error={cell.isError === true} />
       </View>
-      <Text style={styles.context} numberOfLines={1} testID="col-context">
+      <Text
+        style={cell.kind === "thinking" ? styles.contextItalic : styles.context}
+        numberOfLines={1}
+        testID="col-context"
+      >
         {cellContext(cell, compact, resolvedText)}
       </Text>
       <View style={styles.stats} testID="col-stats">
@@ -445,6 +486,8 @@ function StatsCell(props: { cell: TrajectoryCellProps; theme: PluginTheme }) {
     );
   }
   if (cell.kind === "message") {
+    // Merged rows still report tokens; the totals ride on the last segment that
+    // carried usage, which is what the fold propagated.
     return (
       <TokenText
         input={cell.input}
@@ -511,6 +554,14 @@ function cellStyles(
       minWidth: 0,
       color: theme.colors.foreground,
       fontSize: 12,
+    },
+    // Reasoning reads as supporting material: italic, and muted via the rail.
+    contextItalic: {
+      flex: 1,
+      minWidth: 0,
+      color: theme.colors.foregroundMuted,
+      fontSize: 12,
+      fontStyle: "italic",
     },
     stats: {
       width: columns.stats,

@@ -42,6 +42,37 @@ export function foldRowTextKey(row: {
   return null;
 }
 
+/**
+ * Every text key a row needs, in seq order.
+ *
+ * A merged response row folded several stream events into one, and those events
+ * can carry more than one message id. The detail view fetches each distinct one
+ * and joins them, so the composed text is the response rather than its first
+ * chunk. A row with no ids resolves nothing and keeps its length summary.
+ */
+export function foldRowTextKeys(row: {
+  sourceMessageId?: string | null;
+  sourceMessageIds?: string[];
+  callId?: string | undefined;
+}): string[] {
+  const ids = row.sourceMessageIds ?? [];
+  // Distinct, in order: one message re-emitted across many stream events is one
+  // id, and its text is fetched once and composed once.
+  const keys: string[] = [
+    ...new Set(
+      ids
+        .filter((id): id is string => typeof id === "string" && id.length > 0)
+        .map((id) => `m:${id}`),
+    ),
+  ];
+  if (keys.length > 0) return keys;
+  if (typeof row.sourceMessageId === "string" && row.sourceMessageId.length > 0) {
+    return [`m:${row.sourceMessageId}`];
+  }
+  if (typeof row.callId === "string" && row.callId.length > 0) return [`c:${row.callId}`];
+  return [];
+}
+
 /** Timeline item -> the text a row would show, or null when it carries none. */
 function itemText(item: TimelineEntryLike["item"]): string | null {
   if (!item || (item.type !== "user_message" && item.type !== "assistant_message")) return null;

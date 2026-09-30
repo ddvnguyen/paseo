@@ -65,6 +65,7 @@ export function TrajectoryInspector(props: {
         <MessageTextSection
           theme={theme}
           deltaChars={row.kind === "message" ? (row.deltaChars ?? undefined) : undefined}
+          segments={row.segments}
           resolvedText={resolvedText}
         />
       ) : null}
@@ -109,19 +110,19 @@ export function TrajectoryInspector(props: {
 function MessageTextSection(props: {
   theme: PluginTheme;
   deltaChars: number | undefined;
+  /** How many stream events this row merged; 1 when it is a single row. */
+  segments: number | undefined;
   resolvedText: string;
 }) {
-  const { theme, deltaChars, resolvedText } = props;
+  const { theme, deltaChars, segments, resolvedText } = props;
   const [showFull, setShowFull] = useState(false);
   const styles = useMemo(() => messageSectionStyles(theme), [theme]);
   // Bound and pre-built: a fresh object/closure per render would be a new prop
   // identity on every render of the section.
   const toggleState = useMemo(() => ({ expanded: showFull }), [showFull]);
   const togglePress = useCallback(() => setShowFull((value) => !value), []);
-  const summary =
-    deltaChars === undefined
-      ? `${resolvedText.length.toLocaleString("en-US")} chars total`
-      : `+${deltaChars.toLocaleString("en-US")} chars this row · ${resolvedText.length.toLocaleString("en-US")} chars total`;
+  const total = `${resolvedText.length.toLocaleString("en-US")} chars total`;
+  const summary = messageSummary({ total, deltaChars, segments });
   return (
     <Field label="text" theme={theme} testID="inspector-text">
       <Text style={styles.summary} testID="inspector-text-summary">
@@ -144,6 +145,22 @@ function MessageTextSection(props: {
       </Pressable>
     </Field>
   );
+}
+
+/**
+ * The one line that says what this row stands for.
+ *
+ * A merged row replaces the per-chunk delta with the response total and how many
+ * stream events it folded, because that is now the fact the row represents.
+ */
+function messageSummary(input: {
+  total: string;
+  deltaChars: number | undefined;
+  segments: number | undefined;
+}): string {
+  if ((input.segments ?? 1) > 1) return `${input.total} · ${input.segments} segments merged`;
+  if (input.deltaChars === undefined) return input.total;
+  return `+${input.deltaChars.toLocaleString("en-US")} chars this row · ${input.total}`;
 }
 
 function messageSectionStyles(theme: PluginTheme) {
