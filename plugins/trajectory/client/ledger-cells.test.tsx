@@ -593,7 +593,12 @@ describe("ledger cells", () => {
   it("renders a thinking row as muted reasoning with a length", () => {
     render(
       <TrajectoryCellRow
-        cell={cell({ index: 2, kind: "thinking", text: "reasoning · 512 chars", textLength: 512 })}
+        cell={cell({
+          index: 2,
+          kind: "thinking",
+          text: "reasoning · 512 chars total",
+          textLength: 512,
+        })}
         compact={false}
         theme={THEME}
       />,
@@ -602,7 +607,7 @@ describe("ledger cells", () => {
       "thinking",
     );
     expect(document.querySelector('[data-testid="col-context"]')?.textContent).toBe(
-      "reasoning · 512 chars",
+      "reasoning · 512 chars total",
     );
   });
 
@@ -614,7 +619,7 @@ describe("ledger cells", () => {
 
   it("reports an unknown reasoning length as an em dash", () => {
     expect(cellContext(cell({ kind: "thinking", text: "reasoning" }), false, undefined)).toBe(
-      "reasoning · — chars",
+      "reasoning · — chars total",
     );
   });
 

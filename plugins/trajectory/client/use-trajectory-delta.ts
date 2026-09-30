@@ -41,6 +41,14 @@ export function useTrajectoryDelta(agentId: string): TrajectoryDelta & {
     let headSeq = 0;
     let firstPage = true;
     let frame: { cancel: () => void } | null = null;
+    // Idle poll. The original design parked on an empty page and woke only on
+    // mount, an agent change or a manual retry — which meant an ALREADY OPEN panel
+    // never learned about new events at all. QC r19 caught it exactly that way:
+    // 24 assistant chunks landed in the ledger (seq 9847-9986) and zero rows
+    // rendered, with no error anywhere, because nothing ever asked for them.
+    // A diagnostic view that only updates on reload is not a live view.
+    let idle: ReturnType<typeof setTimeout> | null = null;
+    const IDLE_MS = 1_500;
     // Epoch guards the frame gate: a flush scheduled before an error (or a
     // reload) must not clobber the newer status when its timer fires. Every
     // non-flush setDelta bumps the epoch; flush applies only on a match.
@@ -84,11 +92,18 @@ export function useTrajectoryDelta(agentId: string): TrajectoryDelta & {
           if (cancelled) return;
           headSeq = page.headSeq;
           if (page.events.length === 0) {
-            // Park until the next kick. The first page resolves the initial
-            // loading state even when the ledger is still empty.
+            // Nothing new right now. The first page resolves the initial loading
+            // state even when the ledger is still empty; every later empty page
+            // just re-arms the idle poll.
             if (firstPage) {
               firstPage = false;
               setDelta({ status: "live", rows: [], headSeq });
+            }
+            if (!cancelled && idle === null) {
+              idle = setTimeout(() => {
+                idle = null;
+                void loop();
+              }, IDLE_MS);
             }
             return;
           }
@@ -122,6 +137,8 @@ export function useTrajectoryDelta(agentId: string): TrajectoryDelta & {
       kickRef.current = null;
       frame?.cancel();
       frame = null;
+      if (idle !== null) clearTimeout(idle);
+      idle = null;
     };
   }, [agentId, list, changes]);
 

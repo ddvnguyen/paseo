@@ -93,13 +93,16 @@ function mergeMessageRuns(rows: TrajectoryFoldRow[]): TrajectoryFoldRow[] {
   const out: TrajectoryFoldRow[] = [];
   for (const row of rows) {
     const previous = out.at(-1);
-    const continues =
-      previous !== undefined &&
-      previous.kind === "message" &&
-      row.kind === "message" &&
-      previous.turnId === row.turnId;
-    if (!continues || previous === undefined) {
+    // A thinking run merges by exactly the same rule as a message run: the
+    // provider streams reasoning as suffix deltas, so 62 chunks are one thought.
+    // A run of either kind ends at anything else, which is what keeps
+    // thinking -> text as two rows rather than one.
+    if (previous === undefined || !continuesRun(previous, row)) {
       out.push(row);
+      continue;
+    }
+    if (row.kind === "thinking") {
+      out[out.length - 1] = mergeThinkingRun(previous, row);
       continue;
     }
     const merged: TrajectoryFoldRow = { ...previous };
@@ -134,6 +137,54 @@ function mergeMessageRuns(rows: TrajectoryFoldRow[]): TrajectoryFoldRow[] {
     out[out.length - 1] = merged;
   }
   return out;
+}
+
+/**
+ * Whether two adjacent rows belong to the same run.
+ *
+ * A run is contiguous rows of the SAME kind in the same turn: a message run is
+ * one agent response, a thinking run is one thought. Anything else — a tool, a
+ * user row, an llm round marker, the other kind — ends the run, which is what
+ * keeps thinking -> text as two rows rather than one.
+ */
+function continuesRun(previous: TrajectoryFoldRow, row: TrajectoryFoldRow): boolean {
+  if (previous.turnId !== row.turnId) return false;
+  if (previous.kind !== row.kind) return false;
+  return previous.kind === "message" || previous.kind === "thinking";
+}
+
+/**
+ * Collapse a contiguous run of reasoning chunks into one row.
+ *
+ * `thinking/message` carries a SUFFIX (opencode emits only what was appended to
+ * the part, opencode-agent.ts:2912-2922), so the run's total is the SUM of its
+ * segments rather than the last one's length. Reasoning has no source id, so
+ * there is nothing to compose for the detail view -- the size is the whole
+ * record, and that is already the documented limit.
+ */
+function mergeThinkingRun(previous: TrajectoryFoldRow, row: TrajectoryFoldRow): TrajectoryFoldRow {
+  const segments = (previous.segments ?? 1) + 1;
+  const before = previous.textLength;
+  const added = row.textLength;
+  // An unknown length anywhere means the total is unknown; summing around it
+  // would invent a number.
+  const total =
+    before !== undefined && before !== null && added !== undefined && added !== null
+      ? before + added
+      : null;
+  return {
+    ...previous,
+    textLength: total,
+    label:
+      total === null
+        ? "reasoning · — chars total"
+        : `reasoning · ${total.toLocaleString("en-US")} chars total`,
+    segments,
+    durationMs:
+      previous.timeMs !== null && row.timeMs !== null
+        ? Math.max(0, row.timeMs - previous.timeMs)
+        : null,
+  };
 }
 
 /** `textLength` when the producer sent a real number, else null. Never coerced. */

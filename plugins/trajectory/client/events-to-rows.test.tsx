@@ -392,4 +392,102 @@ describe("eventsToFoldRows", () => {
     ]);
     expect(rows.filter((row) => row.kind === "message")).toHaveLength(2);
   });
+
+  // --- QC r19 item 11: streamed append + thinking runs ---------------------
+
+  it("shows one merged row growing as chunks of one response append", () => {
+    // Exactly the live shape: the buffer grows one chunk at a time and is
+    // re-folded each time, which is what the delta loop does on every flush.
+    const buffer: TrajectoryEvent[] = [];
+    const fold = () => eventsToFoldRows(buffer);
+    const messages = () => fold().filter((row) => row.kind === "message");
+
+    expect(messages()).toHaveLength(0);
+    buffer.push(event({ seq: 1, type: "turn/start", data: {} }));
+    buffer.push(
+      event({ seq: 2, type: "assistant/message", data: { sourceMessageId: "m1", textLength: 1 } }),
+    );
+    expect(messages()).toHaveLength(1);
+    expect(messages()[0]?.textLength).toBe(1);
+
+    buffer.push(
+      event({ seq: 3, type: "assistant/message", data: { sourceMessageId: "m1", textLength: 68 } }),
+    );
+    expect(messages()).toHaveLength(1);
+    expect(messages()[0]?.textLength).toBe(68);
+
+    buffer.push(
+      event({ seq: 4, type: "assistant/message", data: { sourceMessageId: "m1", textLength: 90 } }),
+    );
+    expect(messages()).toHaveLength(1);
+    expect(messages()[0]?.textLength).toBe(90);
+    expect(messages()[0]?.segments).toBe(3);
+  });
+
+  it("renders a second response as a second row after a tool row", () => {
+    const buffer: TrajectoryEvent[] = [];
+    buffer.push(event({ seq: 1, type: "turn/start", data: {} }));
+    buffer.push(
+      event({ seq: 2, type: "assistant/message", data: { sourceMessageId: "m1", textLength: 10 } }),
+    );
+    buffer.push(
+      event({ seq: 3, type: "assistant/message", data: { sourceMessageId: "m1", textLength: 20 } }),
+    );
+    buffer.push(
+      event({
+        seq: 4,
+        type: "tool/result",
+        data: { callId: "c1", name: "shell", outputChars: 2, isError: false, durationMs: 5 },
+      }),
+    );
+    buffer.push(
+      event({ seq: 5, type: "assistant/message", data: { sourceMessageId: "m2", textLength: 7 } }),
+    );
+    buffer.push(
+      event({ seq: 6, type: "assistant/message", data: { sourceMessageId: "m2", textLength: 31 } }),
+    );
+    const messages = eventsToFoldRows(buffer).filter((row) => row.kind === "message");
+    expect(messages).toHaveLength(2);
+    expect(messages.map((row) => row.textLength)).toEqual([20, 31]);
+    expect(messages.map((row) => row.segments)).toEqual([2, 2]);
+  });
+
+  it("collapses a streamed reasoning run into one row with the summed total", () => {
+    // Reasoning arrives as SUFFIX deltas, so the run's total is the sum.
+    const rows = eventsToFoldRows([
+      event({ seq: 1, type: "thinking/message", turn: "t1", data: { textLength: 200 } }),
+      event({ seq: 2, type: "thinking/message", turn: "t1", data: { textLength: 150 } }),
+      event({ seq: 3, type: "thinking/message", turn: "t1", data: { textLength: 60 } }),
+    ]);
+    const thinking = rows.filter((row) => row.kind === "thinking");
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]?.textLength).toBe(410);
+    expect(thinking[0]?.segments).toBe(3);
+    expect(thinking[0]?.label).toBe("reasoning · 410 chars total");
+  });
+
+  it("keeps thinking and text as separate rows in a thinking-then-text response", () => {
+    const rows = eventsToFoldRows([
+      event({ seq: 1, type: "thinking/message", turn: "t1", data: { textLength: 100 } }),
+      event({ seq: 2, type: "thinking/message", turn: "t1", data: { textLength: 50 } }),
+      event({
+        seq: 3,
+        type: "assistant/message",
+        turn: "t1",
+        data: { sourceMessageId: "m1", textLength: 40 },
+      }),
+    ]);
+    expect(rows.map((row) => row.kind)).toEqual(["thinking", "message"]);
+  });
+
+  it("reports an unknown reasoning length as unknown rather than summing around it", () => {
+    const rows = eventsToFoldRows([
+      event({ seq: 1, type: "thinking/message", turn: "t1", data: { textLength: 200 } }),
+      event({ seq: 2, type: "thinking/message", turn: "t1", data: {} }),
+    ]);
+    const thinking = rows.filter((row) => row.kind === "thinking");
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]?.textLength).toBeNull();
+    expect(thinking[0]?.label).toBe("reasoning · — chars total");
+  });
 });

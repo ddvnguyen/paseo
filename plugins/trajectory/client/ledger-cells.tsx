@@ -387,8 +387,8 @@ export function cellContext(
 /** Reasoning is a length, never a body: it arrives with no source key to fetch. */
 function thinkingContext(cell: TrajectoryCellProps): string {
   return cell.textLength === undefined
-    ? "reasoning · — chars"
-    : `reasoning · ${cell.textLength.toLocaleString("en-US")} chars`;
+    ? "reasoning · — chars total"
+    : `reasoning · ${cell.textLength.toLocaleString("en-US")} chars total`;
 }
 
 function toolContext(cell: TrajectoryCellProps, compact: boolean): string {
@@ -503,6 +503,16 @@ function StatsCell(props: { cell: TrajectoryCellProps; theme: PluginTheme }) {
   );
   // A derived round carries no numbers of its own: its STATS column reports the
   // facts that justify it — how many tool results it stands between.
+  if (cell.kind === "thinking") {
+    // One merged reasoning run: the count of stream events it stands for, since
+    // the character total is already in CONTEXT.
+    const merged = (cell.segments ?? 1) > 1;
+    return (
+      <Text style={monoStyles(theme)} testID="stats-text" numberOfLines={1}>
+        {merged ? `${cell.segments} segments` : "—"}
+      </Text>
+    );
+  }
   if (cell.kind === "llm") {
     return (
       <Text style={monoStyles(theme)} testID="stats-text" numberOfLines={1}>
