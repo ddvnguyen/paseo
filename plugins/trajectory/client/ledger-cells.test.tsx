@@ -1,6 +1,10 @@
 /** Component tests for the ledger cell primitives (wide + compact). */
 
 // @vitest-environment jsdom
+// Expose the act() support flag before react loads, as the sibling component
+// tests do. Without it act() warns and does not flush synchronously, which only
+// shows up when a test renders twice and reads the DOM in between.
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -53,6 +57,7 @@ import {
   TokenText,
   TrajectoryCellRow,
   cellContext,
+  rowSurface,
   columnLayout,
   formatClockTime,
   kindRailColor,
@@ -480,5 +485,245 @@ describe("ledger cells", () => {
     expect(document.querySelector('[data-testid="kind-tag-llm"]')?.textContent).toBe("L");
     render(<KindTag kind="systemPrompt" compact theme={THEME} />);
     expect(document.querySelector('[data-testid="kind-tag-systemPrompt"]')?.textContent).toBe("P");
+  });
+
+  // --- T3 item 10: dividers, type tint, zebra -----------------------------
+
+  function rowStyleOf(probe: TrajectoryCellProps): Record<string, unknown> {
+    render(<TrajectoryCellRow cell={probe} compact={false} theme={THEME} testID="probe" />);
+    return JSON.parse(
+      document.querySelector('[data-testid="probe"]')?.getAttribute("data-style") ?? "{}",
+    );
+  }
+
+  it("draws a hairline divider under every row", () => {
+    for (const probe of [
+      cell(),
+      cell({ index: 2, kind: "message" }),
+      cell({ index: 3, kind: "tool" }),
+    ]) {
+      expect(rowStyleOf(probe).borderBottomWidth).toBe(1);
+      expect(rowStyleOf(probe).borderBottomColor).toBe(THEME.colors.border);
+    }
+  });
+
+  it("uses only theme surface tokens for every kind's background", () => {
+    const surfaces = new Set([
+      "transparent",
+      THEME.colors.surface0,
+      THEME.colors.surface1,
+      THEME.colors.surface2,
+    ]);
+    for (const kind of ["user", "message", "tool", "system", "llm", "systemPrompt"] as const) {
+      const background = rowStyleOf(cell({ index: 1, kind })).backgroundColor;
+      expect(surfaces.has(background as string)).toBe(true);
+    }
+  });
+
+  it("gives each kind its own base tint", () => {
+    expect(rowSurface(THEME, "user", false, 0)).toBe(THEME.colors.surface1);
+    expect(rowSurface(THEME, "message", false, 0)).toBe(THEME.colors.surface0);
+    expect(rowSurface(THEME, "tool", false, 0)).toBe("transparent");
+    expect(rowSurface(THEME, "system", false, 0)).toBe(THEME.colors.surface2);
+  });
+
+  it("steps odd rows one level darker so adjacent rows differ", () => {
+    const even = rowSurface(THEME, "message", false, 0);
+    const odd = rowSurface(THEME, "message", false, 1);
+    expect(odd).not.toBe(even);
+    // One step, not all the way down the ladder.
+    expect(even).toBe(THEME.colors.surface0);
+    expect(odd).toBe(THEME.colors.surface1);
+  });
+
+  it("caps the zebra at surface2 instead of inventing a darker colour", () => {
+    expect(rowSurface(THEME, "system", false, 1)).toBe(THEME.colors.surface2);
+    expect(rowSurface(THEME, "llm", false, 1)).toBe(THEME.colors.surface2);
+  });
+
+  it("keeps a failed row on surface1 regardless of the zebra", () => {
+    // The failure wins the background, so an error never reads as an ordinary
+    // alternate row; the rail is what distinguishes it from its neighbours.
+    expect(rowSurface(THEME, "message", true, 0)).toBe(THEME.colors.surface1);
+    expect(rowSurface(THEME, "message", true, 1)).toBe(THEME.colors.surface1);
+    expect(rowSurface(THEME, "tool", true, 1)).toBe(THEME.colors.surface1);
+  });
+
+  it("gives the sticky column header its own bottom rule", () => {
+    render(<LedgerColumnHeader compact={false} theme={THEME} />);
+    const style = JSON.parse(
+      document.querySelector('[data-testid="ledger-column-header"]')?.getAttribute("data-style") ??
+        "{}",
+    );
+    expect(style.borderBottomWidth).toBe(1);
+    expect(style.borderBottomColor).toBe(THEME.colors.border);
+  });
+
+  // --- T3 item 11: merged responses + thinking ---------------------------
+
+  it("shows a merged response's own first line, not any one segment's slice", () => {
+    const merged = cell({
+      index: 4,
+      kind: "message",
+      text: "assistant message (90 chars)",
+      segments: 3,
+      deltaChars: 1,
+      deltaStart: 0,
+      textLength: 90,
+    });
+    // The composed text resolves to the whole response, so CONTEXT is its head.
+    expect(cellContext(merged, false, "The full response starts here")).toBe(
+      "The full response starts here",
+    );
+    // Unresolved, the row stands on its label rather than a mid-word slice.
+    expect(cellContext(merged, false, undefined)).toBe("assistant message (90 chars)");
+  });
+
+  it("keeps the delta slice for a single-segment message", () => {
+    const single = cell({
+      kind: "message",
+      segments: 1,
+      deltaChars: 12,
+      deltaStart: 4,
+      textLength: 16,
+    });
+    expect(cellContext(single, false, "0123456789abcdef")).toBe("+12 chars · 456789abcdef");
+  });
+
+  it("renders a thinking row as muted reasoning with a length", () => {
+    render(
+      <TrajectoryCellRow
+        cell={cell({
+          index: 2,
+          kind: "thinking",
+          text: "reasoning · 512 chars total",
+          textLength: 512,
+        })}
+        compact={false}
+        theme={THEME}
+      />,
+    );
+    expect(document.querySelector('[data-testid="kind-tag-thinking"]')?.textContent).toBe(
+      "thinking",
+    );
+    expect(document.querySelector('[data-testid="col-context"]')?.textContent).toBe(
+      "reasoning · 512 chars total",
+    );
+  });
+
+  it("collapses a thinking row to R on compact and gives it the muted accent", () => {
+    render(<KindTag kind="thinking" compact theme={THEME} />);
+    expect(document.querySelector('[data-testid="kind-tag-thinking"]')?.textContent).toBe("R");
+    expect(kindRailColor(THEME, "thinking", false)).toBe(THEME.colors.foregroundMuted);
+  });
+
+  it("reports an unknown reasoning length as an em dash", () => {
+    expect(cellContext(cell({ kind: "thinking", text: "reasoning" }), false, undefined)).toBe(
+      "reasoning · — chars total",
+    );
+  });
+
+  // --- QC r18: the header must sit over the body columns -------------------
+
+  /**
+   * A node's style as one flat object. Composed styles arrive as an array (the
+   * kind rail is base + colour), so the entries are merged rather than read off
+   * the first one.
+   */
+  function styleOf(testID: string): Record<string, unknown> {
+    const node = document.querySelector(`[data-testid="${testID}"]`);
+    expect(node).not.toBeNull();
+    const raw = JSON.parse(node?.getAttribute("data-style") ?? "{}") as unknown;
+    const entries = Array.isArray(raw) ? raw : [raw];
+    return Object.assign(
+      {},
+      ...entries.filter(
+        (entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null,
+      ),
+    );
+  }
+
+  /**
+   * Header and body styles for one breakpoint.
+   *
+   * They are read in two passes because both render into the same root: a second
+   * render replaces the first, so the header's styles have to be captured before
+   * the row is rendered over it.
+   */
+  function bothSides(compact: boolean): {
+    header: Record<string, Record<string, unknown>>;
+    body: Record<string, Record<string, unknown>>;
+    columns: ReturnType<typeof columnLayout>;
+  } {
+    const columns = columnLayout(compact);
+    render(<LedgerColumnHeader compact={compact} theme={THEME} />);
+    const headerRaw = {
+      row: styleOf("ledger-column-header"),
+      rail: styleOf("column-header-rail"),
+      time: styleOf("column-header-time"),
+      type: styleOf("column-header-type"),
+      context: styleOf("column-header-context"),
+      stats: styleOf("column-header-stats"),
+    };
+    const header: Record<string, Record<string, unknown>> = headerRaw;
+    render(
+      <TrajectoryCellRow
+        cell={cell({ kind: "tool" })}
+        compact={compact}
+        theme={THEME}
+        testID="body"
+      />,
+    );
+    const body: Record<string, Record<string, unknown>> = {
+      row: styleOf("body"),
+      rail: styleOf("kind-rail-tool"),
+      time: styleOf("col-time"),
+      type: styleOf("col-type"),
+      context: styleOf("col-context"),
+      stats: styleOf("col-stats"),
+    };
+    return { header, body, columns };
+  }
+
+  it("gives each header cell the same width as its body column (wide)", () => {
+    const { header, body, columns } = bothSides(false);
+    expect(header.time.width).toBe(columns.time);
+    expect(body.time.width).toBe(columns.time);
+    expect(header.type.width).toBe(columns.type);
+    expect(body.type.width).toBe(columns.type);
+    expect(header.stats.width).toBe(columns.stats);
+    expect(body.stats.width).toBe(columns.stats);
+  });
+
+  it("gives each header cell the same width as its body column (compact)", () => {
+    const { header, body, columns } = bothSides(true);
+    expect(header.time.width).toBe(columns.time);
+    expect(body.time.width).toBe(columns.time);
+    expect(header.stats.width).toBe(columns.stats);
+    expect(body.stats.width).toBe(columns.stats);
+  });
+
+  it("reserves the kind rail's width in the header so TIME is not offset", () => {
+    // A body row's first flex child is the kind rail. Without a matching spacer
+    // the header would sit rail+gap to the left of every column it labels --
+    // exactly the 11px QC r18 measured.
+    for (const compact of [false, true]) {
+      const { header, body, columns } = bothSides(compact);
+      expect(header.rail.width).toBe(columns.rail);
+      expect(body.rail.width).toBe(columns.rail);
+      // Both rows share one gap and one left padding, so nothing else shifts.
+      expect(header.row.gap).toBe(columns.gap);
+      expect(body.row.gap).toBe(columns.gap);
+      expect(header.row.paddingLeft).toBe(columns.padLeft);
+      expect(body.row.paddingLeft).toBe(columns.padLeft);
+    }
+  });
+
+  it("lets the CONTEXT column flex in both header and body", () => {
+    for (const compact of [false, true]) {
+      const { header, body } = bothSides(compact);
+      expect(header.context.flex).toBe(1);
+      expect(body.context.flex).toBe(1);
+    }
   });
 });

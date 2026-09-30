@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import type { TextStyle } from "react-native";
+import type { TextStyle, ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { formatElapsedSeconds } from "../shared/dsh/record.js";
 import type { TrajectoryCellProps } from "../shared/dsh/record.js";
@@ -25,6 +25,7 @@ import type { TrajectoryCellProps } from "../shared/dsh/record.js";
  * STATS fits `token: In 1,234(56) / out 789`. CONTEXT takes the remainder.
  */
 export function columnLayout(compact: boolean): {
+  rail: number;
   time: number;
   type: number;
   stats: number;
@@ -32,8 +33,89 @@ export function columnLayout(compact: boolean): {
   padLeft: number;
 } {
   return compact
-    ? { time: 52, type: 58, stats: 84, gap: 4, padLeft: 4 }
-    : { time: 64, type: 68, stats: 150, gap: 8, padLeft: 6 };
+    ? { rail: 3, time: 52, type: 58, stats: 84, gap: 4, padLeft: 4 }
+    : { rail: 3, time: 64, type: 68, stats: 150, gap: 8, padLeft: 6 };
+}
+
+type Columns = ReturnType<typeof columnLayout>;
+
+/**
+ * The per-column layout, as ONE object shared by the sticky header and every
+ * body row.
+ *
+ * This is the single source of alignment. It previously existed only inside the
+ * row styles, so the header inherited its widths in a comment and not in fact:
+ * QC r18 measured the labels at x=7/39/70/122 against body values at
+ * x=18/96/166/1372. Both sides now build from this, so they cannot drift.
+ *
+ * `context` is the one flexible column; the other three are fixed so a long tool
+ * argument cannot shift the numbers sideways.
+ */
+function columnStyles(columns: Columns): Record<"time" | "type" | "context" | "stats", ViewStyle> {
+  return {
+    time: { width: columns.time },
+    type: { width: columns.type },
+    context: { flex: 1, minWidth: 0 },
+    stats: { width: columns.stats },
+  };
+}
+
+/**
+ * Surface ladder, lightest first. Only theme tokens are used — no manufactured
+ * or translucent colours (design.md) — so "one step darker" always means the
+ * next entry here.
+ */
+const SURFACE_LADDER = ["transparent", "surface0", "surface1", "surface2"] as const;
+type SurfaceToken = (typeof SURFACE_LADDER)[number];
+
+/**
+ * Base surface per kind. The tint says WHICH KIND a row is; the zebra below
+ * says WHICH ROW it is. The rail and the kind tag stay the precise signal for
+ * type, so these tints only have to separate broad groups.
+ */
+const KIND_SURFACE: Record<TrajectoryCellProps["kind"], SurfaceToken> = {
+  user: "surface1",
+  message: "surface0",
+  tool: "transparent",
+  system: "surface2",
+  llm: "surface2",
+  systemPrompt: "surface1",
+  // Thinking sits with the other inferred/systemic rows; the rail and the tag
+  // carry the distinction, not the tint.
+  thinking: "surface0",
+  context: "transparent",
+  compacted: "transparent",
+  subtool: "transparent",
+};
+
+/**
+ * Background for one row.
+ *
+ * Precedence, applied in this order:
+ *  1. A FAILED row is fixed at `surface1`. The failure wins the background: the
+ *     statusDanger rail already says what happened, and letting the zebra move
+ *     that surface would make the error row look like an ordinary alternate one.
+ *  2. Otherwise the row's kind picks the base from the ladder.
+ *  3. Then the ZEBRA steps the base ONE level darker for odd rows, capped at
+ *     surface2. Stepping (rather than toggling between two fixed levels) keeps
+ *     the mapping monotone and predictable: base + parity.
+ *
+ * Kinds already sitting at the cap (system, llm) do not move. The per-row
+ * divider is what separates those, which is why the divider is not optional
+ * polish here but part of this scheme.
+ */
+export function rowSurface(
+  theme: PluginTheme,
+  kind: TrajectoryCellProps["kind"],
+  isError: boolean,
+  zebraStep: 0 | 1,
+): string {
+  if (isError) return theme.colors.surface1;
+  const base = KIND_SURFACE[kind] ?? "transparent";
+  const start = SURFACE_LADDER.indexOf(base);
+  const index = Math.min(start + zebraStep, SURFACE_LADDER.length - 1);
+  const token = SURFACE_LADDER[index];
+  return token === "transparent" ? "transparent" : theme.colors[token];
 }
 
 /** Per-kind accent, mapped onto existing theme tokens. No new colors. */
@@ -52,6 +134,9 @@ export function kindAccentColor(
   // failure, so it takes the foreground and separates by weight instead.
   if (kind === "llm") return theme.colors.foreground;
   if (kind === "systemPrompt") return theme.colors.foreground;
+  // Reasoning is muted like system content: it is supporting material, not
+  // something the reader is meant to act on.
+  if (kind === "thinking") return theme.colors.foregroundMuted;
   // system and anything unknown read as muted.
   return theme.colors.foregroundMuted;
 }
@@ -76,6 +161,7 @@ const KIND_ICON: Record<TrajectoryCellProps["kind"], string> = {
   subtool: "↳",
   llm: "L",
   systemPrompt: "P",
+  thinking: "R",
 };
 
 export function KindTag(props: {
@@ -209,25 +295,25 @@ export function LedgerColumnHeader(props: { compact: boolean; theme: PluginTheme
   const styles = useMemo(() => headerStyles(theme, columns), [theme, columns]);
   return (
     <View style={styles.row} testID="ledger-column-header">
-      <Text style={styles.cell} testID="column-header-time">
+      <View style={styles.rail} testID="column-header-rail" />
+      <Text style={styles.time} testID="column-header-time">
         TIME
       </Text>
-      <Text style={styles.cell} testID="column-header-type">
+      <Text style={styles.type} testID="column-header-type">
         TYPE
       </Text>
-      <Text style={styles.cell} testID="column-header-context">
+      <Text style={styles.context} testID="column-header-context">
         CONTEXT
       </Text>
-      <Text style={styles.cell} testID="column-header-stats">
+      <Text style={styles.stats} testID="column-header-stats">
         STATS
       </Text>
     </View>
   );
 }
 
-type Columns = ReturnType<typeof columnLayout>;
-
 function headerStyles(theme: PluginTheme, columns: Columns) {
+  const shared = columnStyles(columns);
   return StyleSheet.create({
     row: {
       flexDirection: "row",
@@ -236,16 +322,28 @@ function headerStyles(theme: PluginTheme, columns: Columns) {
       paddingLeft: columns.padLeft,
       paddingRight: 8,
       paddingVertical: 3,
+      // The header sits on the last row it labels, so its rule reads as the
+      // table's top edge rather than as another row divider.
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: theme.colors.border,
       backgroundColor: theme.colors.surface1,
     },
-    cell: {
+    /**
+     * Spacer for the per-row kind rail. A body row starts with the rail as its
+     * first flex child, so a header that skipped it would sit `rail + gap` to
+     * the left of the column it labels. Reserving the width here is what puts
+     * TIME directly above TIME.
+     */
+    rail: { width: columns.rail },
+    time: { ...shared.time, color: theme.colors.foregroundMuted, fontSize: 9, fontWeight: "600" },
+    type: { ...shared.type, color: theme.colors.foregroundMuted, fontSize: 9, fontWeight: "600" },
+    context: {
+      ...shared.context,
       color: theme.colors.foregroundMuted,
       fontSize: 9,
       fontWeight: "600",
-      letterSpacing: 0.4,
     },
+    stats: { ...shared.stats, color: theme.colors.foregroundMuted, fontSize: 9, fontWeight: "600" },
   });
 }
 
@@ -276,21 +374,51 @@ export function cellContext(
   compact: boolean,
   resolvedText: string | undefined,
 ): string {
-  const isTool = cell.kind === "tool" || cell.kind === "subtool";
-  if (isTool) {
-    if (cell.previewMarkdown === undefined) return cell.text;
-    return `${cell.text} · ${compact ? "" : firstLine(cell.previewMarkdown)}`;
-  }
-  if (cell.kind === "message" && cell.deltaChars !== undefined) {
-    const added =
-      resolvedText === undefined || resolvedText.length === 0
-        ? undefined
-        : resolvedText.slice(cell.deltaStart ?? 0, (cell.deltaStart ?? 0) + cell.deltaChars);
-    const head = added === undefined ? "" : firstLine(added);
-    return head === "" ? `+${cell.deltaChars} chars` : `+${cell.deltaChars} chars · ${head}`;
+  if (cell.kind === "thinking") return thinkingContext(cell);
+  if (cell.kind === "tool" || cell.kind === "subtool") return toolContext(cell, compact);
+  if (cell.kind === "message") {
+    if ((cell.segments ?? 1) > 1) return mergedContext(cell, resolvedText);
+    return messageDeltaContext(cell, resolvedText);
   }
   if (resolvedText !== undefined && resolvedText.length > 0) return firstLine(resolvedText);
   return cell.text;
+}
+
+/** Reasoning is a length, never a body: it arrives with no source key to fetch. */
+function thinkingContext(cell: TrajectoryCellProps): string {
+  return cell.textLength === undefined
+    ? "reasoning · — chars total"
+    : `reasoning · ${cell.textLength.toLocaleString("en-US")} chars total`;
+}
+
+function toolContext(cell: TrajectoryCellProps, compact: boolean): string {
+  if (cell.previewMarkdown === undefined) return cell.text;
+  return `${cell.text} · ${compact ? "" : firstLine(cell.previewMarkdown)}`;
+}
+
+/**
+ * A merged response row's CONTEXT is the response's own first line, not any one
+ * segment's delta slice -- that is the whole point of merging: the row speaks
+ * for the response rather than for the chunk it happened to end on.
+ */
+function mergedContext(cell: TrajectoryCellProps, resolvedText: string | undefined): string {
+  if (resolvedText !== undefined && resolvedText.length > 0) return firstLine(resolvedText);
+  return cell.text;
+}
+
+/** An unmerged message row still shows only what its own delta added. */
+function messageDeltaContext(cell: TrajectoryCellProps, resolvedText: string | undefined): string {
+  if (cell.deltaChars === undefined) {
+    if (resolvedText !== undefined && resolvedText.length > 0) return firstLine(resolvedText);
+    return cell.text;
+  }
+  const start = cell.deltaStart ?? 0;
+  const added =
+    resolvedText === undefined || resolvedText.length === 0
+      ? undefined
+      : resolvedText.slice(start, start + cell.deltaChars);
+  const head = added === undefined ? "" : firstLine(added);
+  return head === "" ? `+${cell.deltaChars} chars` : `+${cell.deltaChars} chars · ${head}`;
 }
 
 /** One ledger row: TIME | TYPE | CONTEXT | STATS, the four widths shared. */
@@ -309,9 +437,13 @@ export function TrajectoryCellRow(props: {
 }) {
   const { cell, compact, theme, resolvedText, onPress, testID } = props;
   const columns = columnLayout(compact);
+  // `cell.index` is assigned by the fold over every row in arrival order, so it
+  // increases monotonically down the list — which is exactly what a zebra needs.
+  // No extra prop, and it stays correct as turns stream in.
+  const zebraStep: 0 | 1 = cell.index % 2 === 1 ? 1 : 0;
   const styles = useMemo(
-    () => cellStyles(theme, cell.isError === true, columns),
-    [theme, cell.isError, columns],
+    () => cellStyles(theme, cell.isError === true, columns, zebraStep, cell.kind),
+    [theme, cell.isError, columns, zebraStep, cell.kind],
   );
   // Bound here (not inline in JSX): Pressable passes the press event as the
   // first argument, so an unbound handler would receive the event, not the cell.
@@ -332,10 +464,14 @@ export function TrajectoryCellRow(props: {
       <Text style={styles.time} testID="col-time">
         {formatClockTime(cell.startedAt)}
       </Text>
-      <View style={styles.type}>
+      <View style={styles.type} testID="col-type">
         <KindTag kind={cell.kind} compact={compact} theme={theme} error={cell.isError === true} />
       </View>
-      <Text style={styles.context} numberOfLines={1} testID="col-context">
+      <Text
+        style={cell.kind === "thinking" ? styles.contextItalic : styles.context}
+        numberOfLines={1}
+        testID="col-context"
+      >
         {cellContext(cell, compact, resolvedText)}
       </Text>
       <View style={styles.stats} testID="col-stats">
@@ -367,6 +503,16 @@ function StatsCell(props: { cell: TrajectoryCellProps; theme: PluginTheme }) {
   );
   // A derived round carries no numbers of its own: its STATS column reports the
   // facts that justify it — how many tool results it stands between.
+  if (cell.kind === "thinking") {
+    // One merged reasoning run: the count of stream events it stands for, since
+    // the character total is already in CONTEXT.
+    const merged = (cell.segments ?? 1) > 1;
+    return (
+      <Text style={monoStyles(theme)} testID="stats-text" numberOfLines={1}>
+        {merged ? `${cell.segments} segments` : "—"}
+      </Text>
+    );
+  }
   if (cell.kind === "llm") {
     return (
       <Text style={monoStyles(theme)} testID="stats-text" numberOfLines={1}>
@@ -384,6 +530,8 @@ function StatsCell(props: { cell: TrajectoryCellProps; theme: PluginTheme }) {
     );
   }
   if (cell.kind === "message") {
+    // Merged rows still report tokens; the totals ride on the last segment that
+    // carried usage, which is what the fold propagated.
     return (
       <TokenText
         input={cell.input}
@@ -408,7 +556,14 @@ function StatsCell(props: { cell: TrajectoryCellProps; theme: PluginTheme }) {
   return <DurationText timeSeconds={cell.timeSeconds} theme={theme} />;
 }
 
-function cellStyles(theme: PluginTheme, error: boolean, columns: Columns) {
+function cellStyles(
+  theme: PluginTheme,
+  error: boolean,
+  columns: Columns,
+  zebraStep: 0 | 1,
+  kind: TrajectoryCellProps["kind"],
+) {
+  const shared = columnStyles(columns);
   return StyleSheet.create({
     row: {
       flexDirection: "row",
@@ -418,33 +573,32 @@ function cellStyles(theme: PluginTheme, error: boolean, columns: Columns) {
       paddingLeft: columns.padLeft,
       paddingRight: 8,
       paddingVertical: 2,
-      backgroundColor: error ? theme.colors.surface1 : "transparent",
+      // The hairline is the visual line break between rows (owner item 10); the
+      // background carries type + order on top of it.
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: theme.colors.border,
+      backgroundColor: rowSurface(theme, kind, error, zebraStep),
     },
     rail: {
-      width: 3,
+      width: columns.rail,
       alignSelf: "stretch",
       borderRadius: 1,
     },
     time: {
-      width: columns.time,
+      ...shared.time,
       color: theme.colors.foregroundMuted,
       fontSize: 11,
       fontVariant: ["tabular-nums"],
     },
-    type: {
-      width: columns.type,
-      flexDirection: "row",
-    },
-    context: {
-      flex: 1,
-      minWidth: 0,
-      color: theme.colors.foreground,
+    type: { ...shared.type, flexDirection: "row" },
+    context: { ...shared.context, color: theme.colors.foreground, fontSize: 12 },
+    // Reasoning reads as supporting material: italic, and muted via the rail.
+    contextItalic: {
+      ...shared.context,
+      color: theme.colors.foregroundMuted,
       fontSize: 12,
+      fontStyle: "italic",
     },
-    stats: {
-      width: columns.stats,
-      flexDirection: "row",
-      justifyContent: "flex-end",
-    },
+    stats: { ...shared.stats, flexDirection: "row", justifyContent: "flex-end" },
   });
 }

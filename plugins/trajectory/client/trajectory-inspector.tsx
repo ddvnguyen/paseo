@@ -48,7 +48,14 @@ export function TrajectoryInspector(props: {
         <Text numberOfLines={2} style={titleStyles(theme)} testID="inspector-label">
           {row.label}
         </Text>
-        <Pressable accessibilityRole="button" onPress={onClose} testID="inspector-close">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="close"
+          hitSlop={CLOSE_HIT_SLOP}
+          onPress={onClose}
+          style={closeButtonStyles(theme)}
+          testID="inspector-close"
+        >
           <Text style={closeStyles(theme)}>close</Text>
         </Pressable>
       </View>
@@ -65,6 +72,7 @@ export function TrajectoryInspector(props: {
         <MessageTextSection
           theme={theme}
           deltaChars={row.kind === "message" ? (row.deltaChars ?? undefined) : undefined}
+          segments={row.segments}
           resolvedText={resolvedText}
         />
       ) : null}
@@ -109,19 +117,19 @@ export function TrajectoryInspector(props: {
 function MessageTextSection(props: {
   theme: PluginTheme;
   deltaChars: number | undefined;
+  /** How many stream events this row merged; 1 when it is a single row. */
+  segments: number | undefined;
   resolvedText: string;
 }) {
-  const { theme, deltaChars, resolvedText } = props;
+  const { theme, deltaChars, segments, resolvedText } = props;
   const [showFull, setShowFull] = useState(false);
   const styles = useMemo(() => messageSectionStyles(theme), [theme]);
   // Bound and pre-built: a fresh object/closure per render would be a new prop
   // identity on every render of the section.
   const toggleState = useMemo(() => ({ expanded: showFull }), [showFull]);
   const togglePress = useCallback(() => setShowFull((value) => !value), []);
-  const summary =
-    deltaChars === undefined
-      ? `${resolvedText.length.toLocaleString("en-US")} chars total`
-      : `+${deltaChars.toLocaleString("en-US")} chars this row · ${resolvedText.length.toLocaleString("en-US")} chars total`;
+  const total = `${resolvedText.length.toLocaleString("en-US")} chars total`;
+  const summary = messageSummary({ total, deltaChars, segments });
   return (
     <Field label="text" theme={theme} testID="inspector-text">
       <Text style={styles.summary} testID="inspector-text-summary">
@@ -144,6 +152,22 @@ function MessageTextSection(props: {
       </Pressable>
     </Field>
   );
+}
+
+/**
+ * The one line that says what this row stands for.
+ *
+ * A merged row replaces the per-chunk delta with the response total and how many
+ * stream events it folded, because that is now the fact the row represents.
+ */
+function messageSummary(input: {
+  total: string;
+  deltaChars: number | undefined;
+  segments: number | undefined;
+}): string {
+  if ((input.segments ?? 1) > 1) return `${input.total} · ${input.segments} segments merged`;
+  if (input.deltaChars === undefined) return input.total;
+  return `+${input.deltaChars.toLocaleString("en-US")} chars this row · ${input.total}`;
 }
 
 function messageSectionStyles(theme: PluginTheme) {
@@ -234,6 +258,38 @@ function titleStyles(theme: PluginTheme): TextStyle {
     color: theme.colors.foreground,
     fontSize: 13,
     fontWeight: "600",
+  };
+}
+
+/**
+ * Minimum comfortable target, matching the host sheet's own floor for its close
+ * control.
+ */
+const CLOSE_TARGET = 44;
+/** Keeps the painted button small while the target stays CLOSE_TARGET. */
+const CLOSE_PAINTED = 32;
+const CLOSE_HIT_SLOP = (CLOSE_TARGET - CLOSE_PAINTED) / 2;
+
+/**
+ * A text button's box is whatever the glyph measures, so the padding pins it to
+ * a known size. Without it the hit area equals the text (QC r18 measured a
+ * 32x32 border box and nothing larger), and `hitSlop` on top of an unpinned box
+ * cannot be reasoned about: the same number that takes a 32px box to 44px leaves
+ * a 14px-tall text row well short.
+ *
+ * `hitSlop` grows the touch/hit rect without changing layout or painting, which
+ * is the whole point -- the button stays visually compact in the header.
+ */
+function closeButtonStyles(_theme: PluginTheme): ViewStyle {
+  const side = (CLOSE_PAINTED - 24) / 2;
+  return {
+    paddingVertical: Math.max(0, side),
+    paddingHorizontal: Math.max(0, side),
+    borderRadius: 4,
+    justifyContent: "center",
+    alignItems: "center",
+    // Painted on the header's own surface, so the larger target stays invisible.
+    backgroundColor: "transparent",
   };
 }
 

@@ -366,4 +366,36 @@ describe("recorder", () => {
       },
     });
   }
+
+  test("records provider reasoning as its own row, length only", () => {
+    const { store, recorder } = harness();
+    recorder.turnStarted({ agentId: "agent-1", turnId: "t1" });
+    recorder.timelineItem({
+      agentId: "agent-1",
+      turnId: "t1",
+      // `reasoning` IS in the AgentTimelineItem union (protocol agent-types.ts:374)
+      // and opencode translates reasoning parts into timeline events.
+      item: { type: "reasoning" as const, text: "considering the options" },
+    });
+    const rows = allEvents(store).filter((event) => event.type === "thinking/message");
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row?.data.textLength).toBe("considering the options".length);
+    expect(row?.turn).toBe("t1");
+    // The text itself is never stored: reasoning carries no message id, so there
+    // is no key to fetch it by later and the length is the honest maximum.
+    expect(JSON.stringify(rows[0].data)).not.toContain("considering");
+  });
+
+  test("records a reasoning item with no text as a null length, not zero", () => {
+    const { store, recorder } = harness();
+    recorder.turnStarted({ agentId: "agent-1", turnId: "t1" });
+    recorder.timelineItem({
+      agentId: "agent-1",
+      turnId: "t1",
+      item: { type: "reasoning" as const, text: "" },
+    });
+    const row = allEvents(store).find((event) => event.type === "thinking/message");
+    expect(row?.data.textLength).toBe(0);
+  });
 });

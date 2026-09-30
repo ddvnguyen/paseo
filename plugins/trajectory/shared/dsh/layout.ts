@@ -55,7 +55,7 @@ export interface TrajectoryFoldRow {
   seq: number;
   /** Absolute epoch ms when the row happened, when known. */
   timeMs: number | null;
-  kind: "system" | "user" | "message" | "tool" | "llm" | "systemPrompt";
+  kind: "system" | "user" | "message" | "tool" | "llm" | "systemPrompt" | "thinking";
   /** Short single-line summary (tool rows: `name · args`). */
   label: string;
   /** Own duration ms, null while in-flight / unknown. */
@@ -80,6 +80,18 @@ export interface TrajectoryFoldRow {
     output: number | null;
     think: number | null;
   };
+  /**
+   * The source identities folded into this row, in seq order.
+   *
+   * A single agent response arrives as many `assistant/message` events and is
+   * merged into one row, so a merged row can span more than one message id.
+   * Per-segment ids are kept here so the detail view can fetch and compose each
+   * one; `sourceMessageId` stays the FIRST segment's, which is the stable
+   * selection identity the timeline strip and the ledger highlight against.
+   */
+  sourceMessageIds?: string[];
+  /** How many events this row merged; 1 for an unmerged row. */
+  segments?: number;
   /** Turn id string from the ledger; null rows fold into the enclosing turn. */
   turnId: string | null;
   /** Step number within the turn, when the provider reports one. */
@@ -154,6 +166,18 @@ function deltaFields(row: TrajectoryFoldRow): {
 function sourceIdentity(row: TrajectoryFoldRow): { sourceMessageId?: string } {
   if (row.sourceMessageId === undefined || row.sourceMessageId === null) return {};
   return { sourceMessageId: row.sourceMessageId };
+}
+
+/** Merged-response facts, so the detail view can compose what one row folded. */
+function mergedIdentity(row: TrajectoryFoldRow): {
+  sourceMessageIds?: string[];
+  segments?: number;
+} {
+  const ids = row.sourceMessageIds ?? [];
+  return {
+    ...(ids.length === 0 ? {} : { sourceMessageIds: ids }),
+    ...(row.segments === undefined ? {} : { segments: row.segments }),
+  };
 }
 
 export function finiteTime(time: number | null | undefined): number | null {
@@ -421,7 +445,7 @@ export function deriveTrajectoryLayout(
       });
       continue;
     }
-    const derived = derivedCell(row, index, absTime);
+    const derived = plainCell(row, index, absTime);
     if (derived !== null) {
       // A derived round belongs to its turn; the system prompt has no turn and
       // goes to the unnumbered preamble bucket ahead of Turn 1. Both are
@@ -455,9 +479,24 @@ function assistantMessageCell(
     kind: "message",
     sourceSeq: row.seq,
     ...sourceIdentity(row),
+    ...mergedIdentity(row),
     text: row.label,
     ...deltaFields(row),
-    recordId: `assistant\u0000${row.turnId ?? ""}\u0000${row.step ?? 0}`,
+    // Unique per RECORDED ROW, not per (turn, step).
+    //
+    // This used to be `assistant\0${turnId}\0${step}`, which is unique only
+    // inside one turn. Providers reuse their turn ids across sessions -- QC r20
+    // measured `opencode-turn-0` used by two different turns, and b1b's ledger
+    // has 95 assistant rows sharing just 34 of those ids. Everything downstream
+    // keys on the record id: the virtualizer's dedupe in ledger-screen DROPS the
+    // later row outright (so the newest message cells rendered no DOM at all),
+    // and the search index OVERWRITES the earlier row's text (so it stopped being
+    // findable). Both symptoms, one cause.
+    //
+    // `seq` is the ledger's own DB-assigned id: unique, monotonic, stable across
+    // a live append. A merged response keeps the first segment's seq, which is
+    // exactly the identity selection and the timeline outline already use.
+    recordId: `assistant\u0000${row.seq}`,
     timeSeconds: rowEndSeconds(row, absTime),
     startedAt: absTime,
   };
@@ -474,18 +513,19 @@ function assistantMessageCell(
 }
 
 /**
- * A cell for a row the recorder derived rather than observed.
+ * A cell for the simple row kinds: the two the recorder DERIVES (an LLM round
+ * boundary, the system prompt) and provider reasoning, which is OBSERVED.
  *
- * Kept out of the main fold so that fold's complexity does not grow with every
- * derived row type: one branch here, one call site above. Returns null for an
- * ordinary row.
+ * They share one shape -- a label, no usage, no metrics, no own duration -- so
+ * they build here instead of growing the fold's branch count. Returns null for
+ * an ordinary row.
  */
-function derivedCell(
+function plainCell(
   row: TrajectoryFoldRow,
   index: number,
   absTime: number | null,
 ): { cell: TrajectoryCellProps; placed: LaidCell } | null {
-  if (row.kind !== "llm" && row.kind !== "systemPrompt") return null;
+  if (row.kind !== "llm" && row.kind !== "systemPrompt" && row.kind !== "thinking") return null;
   const cell: TrajectoryCellProps = {
     index,
     kind: row.kind,

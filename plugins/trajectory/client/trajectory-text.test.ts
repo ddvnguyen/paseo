@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TrajectoryCellProps } from "../shared/dsh/record.js";
 import {
+  foldRowTextKeys,
   resolveVisibleText,
   textKey,
   type TextCache,
@@ -162,5 +163,27 @@ describe("resolveVisibleText", () => {
     });
 
     expect(cache.size).toBe(0);
+  });
+
+  // --- merged response keys (owner item 11) -------------------------------
+
+  it("collects every distinct key a merged response row needs", () => {
+    const keys = foldRowTextKeys({
+      sourceMessageId: "m-1",
+      sourceMessageIds: ["m-1", "m-2", "m-1"],
+    });
+    // Distinct and in order: the body is fetched once per real message and
+    // composed in sequence, not once per stream chunk.
+    expect(keys).toEqual(["m:m-1", "m:m-2"]);
+  });
+
+  it("falls back to a single key when the row carries no id list", () => {
+    expect(foldRowTextKeys({ sourceMessageId: "m-1" })).toEqual(["m:m-1"]);
+    expect(foldRowTextKeys({ callId: "c-1" })).toEqual(["c:c-1"]);
+  });
+
+  it("resolves nothing for a row with no source identity", () => {
+    expect(foldRowTextKeys({})).toEqual([]);
+    expect(foldRowTextKeys({ sourceMessageId: null })).toEqual([]);
   });
 });

@@ -414,6 +414,26 @@ export function createRecorder(options: {
         return;
       }
 
+      if (item.type === "reasoning") {
+        // Provider reasoning DOES reach plugins: `reasoning` is in the
+        // AgentTimelineItem union (protocol agent-types.ts:374) and opencode
+        // translates reasoning parts into timeline events
+        // (providers/opencode-agent.ts:2787 -> :2918). Unlike assistant text it
+        // carries NO message id, so there is no source key to fetch the text
+        // with later -- the length is recorded and nothing else is claimed.
+        const turnId = resolveTurnForTool(agentId, input.turnId);
+        append({
+          type: "thinking/message",
+          turn: turnId,
+          step: null,
+          agentId,
+          data: {
+            textLength: typeof item.text === "string" ? item.text.length : null,
+          },
+        });
+        return;
+      }
+
       if (item.type === "user_message") {
         append({
           type: "user/message",
