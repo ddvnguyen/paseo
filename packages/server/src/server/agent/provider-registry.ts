@@ -25,6 +25,7 @@ import {
   resolveDefaultAgentCreateConfig,
 } from "./create-agent-mode.js";
 import { normalizeAgentModelDefinition } from "./agent-sdk-types.js";
+import { applyProviderContextCap } from "./provider-model-context-cap.js";
 import { runProviderRefreshActivity } from "./provider-refresh-deadline.js";
 import type { WorkspaceGitService } from "../workspace-git-service.js";
 import type { ManagedProcessRegistry } from "../managed-processes/managed-processes.js";
@@ -142,6 +143,7 @@ interface ResolvedProvider {
   additionalModels: ProviderProfileModel[];
   profileModelsAreAdditive: boolean;
   enabled: boolean;
+  maxContextTokens: number | undefined;
   derivedFromProviderId: string | null;
   providerParams?: unknown;
   createBaseClient: (logger: Logger) => AgentClient;
@@ -360,45 +362,55 @@ function mapStreamEvent(provider: AgentProvider, event: AgentStreamEvent): Agent
   };
 }
 
-function mapModel(
-  provider: AgentProvider,
+/**
+ * Binds a model to its serving provider and enforces the provider's
+ * `maxContextTokens` ceiling. Every model leaving the registry is produced by
+ * one of these, so the ceiling cannot be bypassed by choosing a different
+ * configuration path.
+ */
+type ProviderModelMapper = (
   model: AgentModelDefinition | ProviderProfileModel,
-): AgentModelDefinition {
-  return normalizeAgentModelDefinition({ ...model, provider });
+) => AgentModelDefinition;
+
+function createProviderModelMapper(
+  provider: AgentProvider,
+  maxContextTokens: number | undefined,
+): ProviderModelMapper {
+  return (model) =>
+    applyProviderContextCap(
+      normalizeAgentModelDefinition({ ...model, provider }),
+      maxContextTokens,
+    );
 }
 
 function resolveConfiguredModels(
-  provider: AgentProvider,
+  mapModel: ProviderModelMapper,
   client: AgentClient,
   models: ProviderProfileModel[],
 ): AgentModelDefinition[] {
   return models.map((model) => {
-    const mapped = mapModel(provider, model);
+    const mapped = mapModel(model);
     return client.resolveConfiguredModel?.(mapped) ?? mapped;
   });
 }
 
 function mergeModels(
-  provider: AgentProvider,
+  mapModel: ProviderModelMapper,
   profileModels: ProviderProfileModel[],
   additionalModels: ProviderProfileModel[],
   runtimeModels: AgentModelDefinition[],
   options?: { profileModelsAreAdditive?: boolean },
 ): AgentModelDefinition[] {
-  const baseModels = runtimeModels.map((model) => mapModel(provider, model));
+  const baseModels = runtimeModels.map(mapModel);
   if (profileModels.length > 0 && options?.profileModelsAreAdditive !== true) {
-    return mergeModelAdditions(
-      provider,
-      profileModels.map((model) => mapModel(provider, model)),
-      additionalModels,
-    );
+    return mergeModelAdditions(mapModel, profileModels.map(mapModel), additionalModels);
   }
 
-  return mergeModelAdditions(provider, baseModels, [...profileModels, ...additionalModels]);
+  return mergeModelAdditions(mapModel, baseModels, [...profileModels, ...additionalModels]);
 }
 
 function mergeModelAdditions(
-  provider: AgentProvider,
+  mapModel: ProviderModelMapper,
   baseModels: AgentModelDefinition[],
   modelAdditions: Array<ProviderProfileModel | AgentModelDefinition>,
 ): AgentModelDefinition[] {
@@ -410,7 +422,7 @@ function mergeModelAdditions(
   let hasAdditionalDefault = false;
 
   for (const model of modelAdditions) {
-    const additionalModel = mapModel(provider, model);
+    const additionalModel = mapModel(model);
     hasAdditionalDefault ||= additionalModel.isDefault === true;
 
     const existingIndex = mergedModels.findIndex((candidate) => candidate.id === model.id);
@@ -481,6 +493,7 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
 function wrapClientProvider(
   provider: AgentProvider,
   inner: AgentClient,
+  mapModel: ProviderModelMapper,
   profileModels: ProviderProfileModel[],
   additionalModels: ProviderProfileModel[],
   profileModelsAreAdditive: boolean,
@@ -525,7 +538,7 @@ function wrapClientProvider(
       const catalog = await inner.fetchCatalog(options, context);
       return {
         ...catalog,
-        models: mergeModels(provider, profileModels, additionalModels, catalog.models, {
+        models: mergeModels(mapModel, profileModels, additionalModels, catalog.models, {
           profileModelsAreAdditive,
         }),
         modes: catalog.modes,
@@ -588,16 +601,15 @@ function createRegistryEntry(
   resolved: ResolvedProvider,
 ): ProviderDefinition {
   const modelClient = resolved.createBaseClient(logger);
-  const profileModels = resolveConfiguredModels(provider, modelClient, resolved.profileModels);
+  const mapModel = createProviderModelMapper(provider, resolved.maxContextTokens);
+  const profileModels = resolveConfiguredModels(mapModel, modelClient, resolved.profileModels);
   const additionalModels = resolveConfiguredModels(
-    provider,
+    mapModel,
     modelClient,
     resolved.additionalModels,
   );
   const hasReplacementModels = profileModels.length > 0 && !resolved.profileModelsAreAdditive;
-  const replacementModels = hasReplacementModels
-    ? profileModels.map((model) => mapModel(provider, model))
-    : [];
+  const replacementModels = hasReplacementModels ? profileModels.map(mapModel) : [];
 
   const decorateModes = (modes: AgentMode[]): AgentMode[] =>
     modes.map((mode) => {
@@ -649,7 +661,7 @@ function createRegistryEntry(
         // Replacement models skip runtime model discovery, but additionalModels
         // must still be merged on top. If modes are dynamic, probe for modes via
         // the single catalog API; otherwise use static/empty modes with no runtime.
-        const models = mergeModelAdditions(provider, replacementModels, additionalModels);
+        const models = mergeModelAdditions(mapModel, replacementModels, additionalModels);
         if (hasStaticModes) {
           const defaultModeId = await runProviderRefreshActivity(
             context,
@@ -676,7 +688,7 @@ function createRegistryEntry(
       const catalog = await catalogClient.fetchCatalog(options, context);
       return {
         ...catalog,
-        models: mergeModels(provider, profileModels, additionalModels, catalog.models, {
+        models: mergeModels(mapModel, profileModels, additionalModels, catalog.models, {
           profileModelsAreAdditive: resolved.profileModelsAreAdditive,
         }),
         modes: decorateModes(catalog.modes),
@@ -691,8 +703,9 @@ function createResolvedProviderClient(
   resolved: ResolvedProvider,
 ): AgentClient {
   const inner = resolved.createBaseClient(logger);
-  const profileModels = resolveConfiguredModels(provider, inner, resolved.profileModels);
-  const additionalModels = resolveConfiguredModels(provider, inner, resolved.additionalModels);
+  const mapModel = createProviderModelMapper(provider, resolved.maxContextTokens);
+  const profileModels = resolveConfiguredModels(mapModel, inner, resolved.profileModels);
+  const additionalModels = resolveConfiguredModels(mapModel, inner, resolved.additionalModels);
   const hasModelOverrides = profileModels.length > 0 || additionalModels.length > 0;
   if (inner.provider === provider && !hasModelOverrides) {
     return inner;
@@ -700,6 +713,7 @@ function createResolvedProviderClient(
   return wrapClientProvider(
     provider,
     inner,
+    mapModel,
     profileModels,
     additionalModels,
     resolved.profileModelsAreAdditive,
@@ -736,6 +750,7 @@ function buildResolvedBuiltinProviders(
       additionalModels: override?.additionalModels ?? [],
       profileModelsAreAdditive: false,
       enabled: override?.enabled ?? definition.enabledByDefault ?? true,
+      maxContextTokens: override?.maxContextTokens,
       derivedFromProviderId: null,
       providerParams: override?.params,
       createBaseClient: (logger) =>
@@ -791,6 +806,7 @@ function addDerivedProviders(
         additionalModels: override.additionalModels ?? [],
         profileModelsAreAdditive: false,
         enabled: override.enabled !== false,
+        maxContextTokens: override.maxContextTokens,
         derivedFromProviderId: null,
         providerParams: override.params,
         createBaseClient: (logger) => {
@@ -850,6 +866,7 @@ function addDerivedProviders(
       additionalModels: override.additionalModels ?? [],
       profileModelsAreAdditive: false,
       enabled: override.enabled !== false,
+      maxContextTokens: override.maxContextTokens ?? baseProvider.maxContextTokens,
       derivedFromProviderId: baseProviderId,
       providerParams,
       createBaseClient: (logger) =>

@@ -52,6 +52,7 @@ import {
   type ProviderSelectionModelRow,
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
+import { formatProviderModelPrefix } from "@/provider-selection/provider-model-prefix";
 import { useProviderSettingsStore } from "@/stores/provider-settings-store";
 import { useCurrentOverlayLayer } from "@/lib/overlay-root";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
@@ -800,9 +801,16 @@ function ModelRow({
         <View style={styles.browserRowContent}>
           <View style={styles.browserRowLeading}>{leadingSlot}</View>
           <View style={[styles.browserRowText, description && styles.browserRowTextInline]}>
-            <Text numberOfLines={1} style={styles.browserRowLabel}>
-              {row.modelLabel}
-            </Text>
+            <View style={styles.browserRowTitle}>
+              {row.modelPrefix ? (
+                <Text numberOfLines={1} style={styles.browserRowPrefix}>
+                  {formatProviderModelPrefix(row.modelPrefix)}
+                </Text>
+              ) : null}
+              <Text numberOfLines={1} style={styles.browserRowLabel}>
+                {row.modelLabel}
+              </Text>
+            </View>
             {description ? (
               <Text numberOfLines={1} style={styles.browserRowDescription}>
                 {description}
@@ -1623,10 +1631,26 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "baseline",
     gap: theme.spacing[2],
   },
+  browserRowTitle: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: theme.spacing[1],
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  // A bracketed qualifier, not a pill: a bordered shell here competes with the
+  // model label and widens the row's leading rail.
+  browserRowPrefix: {
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.normal,
+    color: theme.colors.foregroundMuted,
+    flexShrink: 0,
+  },
   browserRowLabel: {
     fontSize: theme.fontSize.base,
     color: theme.colors.foreground,
-    flexShrink: 0,
+    flexShrink: 1,
+    minWidth: 0,
   },
   browserRowLabelMuted: {
     fontSize: theme.fontSize.base,

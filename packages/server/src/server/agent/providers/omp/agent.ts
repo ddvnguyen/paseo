@@ -58,6 +58,7 @@ import {
 import {
   formatOmpVersionSupport,
   mergeOmpRuntimeSettings,
+  applyOmpAgentDirEnv,
   resolveOmpDiagnosticPaths,
   resolveOmpLaunchMode,
   resolveOmpProviderParams,
@@ -2218,14 +2219,17 @@ export class OmpAgentClient implements AgentClient {
     const { runtimeProviderParams, modelRoleParams } = resolveOmpProviderParams(
       options.providerParams,
     );
-    const runtimeSettings = mergeOmpRuntimeSettings(
-      {
-        command: {
-          mode: "replace",
-          argv: ["omp"],
+    const runtimeSettings = applyOmpAgentDirEnv(
+      mergeOmpRuntimeSettings(
+        {
+          command: {
+            mode: "replace",
+            argv: ["omp"],
+          },
         },
-      },
-      options.runtimeSettings,
+        options.runtimeSettings,
+      ),
+      runtimeProviderParams.agentDir,
     );
     this.logger = options.logger;
     this.runtimeSettings = runtimeSettings;

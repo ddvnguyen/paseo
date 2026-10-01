@@ -37,6 +37,8 @@ import { filterSelectableModels } from "@/provider-selection/model-catalog";
 import { useExcludedModelIdsByProvider } from "@/stores/disabled-models-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
+import { useDaemonConfig } from "@/hooks/use-daemon-config";
+import { buildProviderModelPrefixes } from "@/provider-selection/provider-model-prefix";
 import { resolveProviderDefinition } from "@/utils/provider-definitions";
 import { mergeProviderPreferences, useFormPreferences } from "@/hooks/use-form-preferences";
 import { Combobox, ComboboxItem, type ComboboxOption } from "@/components/ui/combobox";
@@ -306,6 +308,7 @@ function resolveAgentProfileEditorActions(
 function buildFallbackModelSelectorProviders(
   provider: string,
   modelOptions: AgentControlOption[] | undefined,
+  modelPrefix: string | undefined,
 ): ProviderSelectorProvider[] {
   if (!modelOptions || modelOptions.length === 0) {
     return [];
@@ -322,6 +325,7 @@ function buildFallbackModelSelectorProviders(
           providerLabel: provider,
           modelId: option.id,
           modelLabel: option.label,
+          ...(modelPrefix ? { modelPrefix } : {}),
         })),
       },
     },
@@ -615,9 +619,19 @@ function ControlledAgentControls({
     () => toComboboxOptions(providerOptions),
     [providerOptions],
   );
+  const { config: fallbackDaemonConfig } = useDaemonConfig(modelSelectorServerId);
+  const fallbackModelPrefixes = useMemo(
+    () => buildProviderModelPrefixes(fallbackDaemonConfig),
+    [fallbackDaemonConfig],
+  );
   const fallbackModelSelectorProviders = useMemo(
-    () => buildFallbackModelSelectorProviders(provider, modelOptions),
-    [modelOptions, provider],
+    () =>
+      buildFallbackModelSelectorProviders(
+        provider,
+        modelOptions,
+        fallbackModelPrefixes.get(provider),
+      ),
+    [fallbackModelPrefixes, modelOptions, provider],
   );
   const effectiveModelSelectorProviders = modelSelectorProviders ?? fallbackModelSelectorProviders;
   const comboboxThinkingOptions = useMemo<ComboboxOption[]>(
@@ -1567,6 +1581,11 @@ export const AgentControls = memo(function AgentControls({
   // Disabled models stay hidden from new selection (C2); the running model
   // keeps displaying via the C1 raw-id fallback.
   const excludedByProvider = useExcludedModelIdsByProvider(serverId);
+  const { config: daemonConfig } = useDaemonConfig(serverId);
+  const modelPrefixesByProvider = useMemo(
+    () => buildProviderModelPrefixes(daemonConfig),
+    [daemonConfig],
+  );
   const models = filterSelectableModels(
     snapshotSelectedEntry?.models ?? null,
     snapshotSelectedEntry ? excludedByProvider.get(snapshotSelectedEntry.provider) : undefined,
@@ -1584,14 +1603,25 @@ export const AgentControls = memo(function AgentControls({
   );
   const agentModelSelectorProviders = useMemo(() => {
     if (snapshotSelectedEntry) {
-      return buildSelectableProviderSelectorProviders([snapshotSelectedEntry], excludedByProvider);
+      return buildSelectableProviderSelectorProviders(
+        [snapshotSelectedEntry],
+        excludedByProvider,
+        modelPrefixesByProvider,
+      );
     }
     return buildProviderSelectorProviders({
       providerDefinitions: agentProviderDefinitions,
       modelsByProvider: agentProviderModels,
       excludedByProvider,
+      modelPrefixesByProvider,
     });
-  }, [agentProviderDefinitions, agentProviderModels, excludedByProvider, snapshotSelectedEntry]);
+  }, [
+    agentProviderDefinitions,
+    agentProviderModels,
+    excludedByProvider,
+    modelPrefixesByProvider,
+    snapshotSelectedEntry,
+  ]);
 
   const modelSelection = resolveAgentModelSelection({
     models,

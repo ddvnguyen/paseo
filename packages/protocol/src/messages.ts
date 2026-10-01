@@ -141,6 +141,9 @@ const MutableDaemonProviderConfigSchema = z
     paseoTools: ProviderPaseoToolsPolicySchema.optional(),
     enabled: z.boolean().optional(),
     additionalModels: z.array(MutableDaemonProviderModelSchema).optional(),
+    // Read-only for the client: pickers derive their `[Tag]` decoration from the
+    // config entry, so the model catalog stays free of display policy.
+    modelPrefix: z.string().optional(),
   })
   .passthrough();
 

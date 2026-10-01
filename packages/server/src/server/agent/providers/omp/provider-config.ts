@@ -17,6 +17,14 @@ export { OMP_MODES };
 export const OmpProviderParamsSchema = z
   .object({
     sessionDir: z.string().min(1).optional(),
+    /**
+     * OMP agent directory. This is where `models.yml` lives, and that file is
+     * the only place OMP reads a model provider's `baseUrl` and `apiKey` from —
+     * there is no env var for either. Point a provider profile at its own
+     * directory to give opencode-go and opencode-zen an endpoint and key
+     * without touching the default profile.
+     */
+    agentDir: z.string().min(1).optional(),
     rpcTimeoutMs: z.number().int().positive().optional(),
     smolModel: z.string().min(1).optional(),
     slowModel: z.string().min(1).optional(),
@@ -26,6 +34,7 @@ export const OmpProviderParamsSchema = z
 
 export interface OmpRuntimeProviderParams {
   sessionDir: string;
+  agentDir: string | undefined;
   readyTimeoutMs: number;
   rpcTimeoutMs: number;
 }
@@ -138,6 +147,7 @@ export function resolveOmpProviderParams(providerParams: unknown): {
   return {
     runtimeProviderParams: {
       sessionDir: params.sessionDir ?? OMP_SESSION_DIR,
+      agentDir: params.agentDir,
       readyTimeoutMs: configuredRpcTimeoutMs ?? DEFAULT_OMP_READY_TIMEOUT_MS,
       rpcTimeoutMs: configuredRpcTimeoutMs ?? DEFAULT_OMP_RPC_TIMEOUT_MS,
     },
@@ -161,5 +171,24 @@ export function mergeOmpRuntimeSettings(
       base?.disallowedTools || override?.disallowedTools
         ? [...(base?.disallowedTools ?? []), ...(override?.disallowedTools ?? [])]
         : undefined,
+  };
+}
+
+/**
+ * `params.agentDir` reaches OMP as `PI_CODING_AGENT_DIR`, which is the variable
+ * OMP resolves its agent directory (and therefore `models.yml`) from. An
+ * explicit `env.PI_CODING_AGENT_DIR` in the provider override still wins — a
+ * user who set it meant it.
+ */
+export function applyOmpAgentDirEnv(
+  runtimeSettings: ProviderRuntimeSettings | undefined,
+  agentDir: string | undefined,
+): ProviderRuntimeSettings | undefined {
+  if (!agentDir || runtimeSettings?.env?.PI_CODING_AGENT_DIR) {
+    return runtimeSettings;
+  }
+  return {
+    ...runtimeSettings,
+    env: { ...runtimeSettings?.env, PI_CODING_AGENT_DIR: agentDir },
   };
 }

@@ -404,7 +404,7 @@ Custom OMP profiles should extend `omp`. They inherit the OMP adapter's `rpc-ui`
 }
 ```
 
-`params.sessionDir` is used only for importing sessions that were started outside Paseo. If `command` or XDG env vars move OMP's state directory, set `params.sessionDir` to the resulting OMP JSONL session directory; launching and resuming still go through the configured command. OMP waits 20 seconds for its initial `ready` frame and 60 seconds for later control-plane RPCs by default. `params.rpcTimeoutMs` overrides both deadlines.
+`params.sessionDir` is used only for importing sessions that were started outside Paseo. If `command` or XDG env vars move OMP's state directory, set `params.sessionDir` to the resulting OMP JSONL session directory; launching and resuming still go through the configured command. `params.agentDir` is covered in [OMP API endpoints](#omp-api-endpoints). OMP waits 20 seconds for its initial `ready` frame and 60 seconds for later control-plane RPCs by default. `params.rpcTimeoutMs` overrides both deadlines.
 
 For other providers that keep Pi's `--mode rpc` API but write sessions somewhere else, extend `pi`, replace the command, and provide the JSONL session directory:
 
@@ -709,13 +709,55 @@ Every entry under `agents.providers` accepts these fields:
 | `label`            | `string`                  | Yes (custom only) | Display name in the UI                                             |
 | `description`      | `string`                  | No                | Short description shown in the UI                                  |
 | `command`          | `string[]`                | Yes (ACP only)    | Command to spawn the agent process                                 |
+| `params.agentDir`  | `string`                  | OMP only          | OMP agent directory holding that provider's `models.yml`           |
 | `env`              | `Record<string, string>`  | No                | Environment variables to set for the agent process                 |
 | `params`           | `Record<string, unknown>` | No                | Provider-specific options such as `supportsMcpServers: false`      |
 | `models`           | `ProviderProfileModel[]`  | No                | Static model list (overrides runtime discovery)                    |
 | `additionalModels` | `ProviderProfileModel[]`  | No                | Static model additions (merged with runtime discovery or `models`) |
 | `disallowedTools`  | `string[]`                | No                | Tool names to disable for this provider (e.g. `["WebSearch"]`)     |
+| `maxContextTokens` | `number`                  | No                | Context-window ceiling for every model this provider serves        |
+| `modelPrefix`      | `string`                  | No                | Bracketed display tag on model labels, e.g. `"Go"` renders `[Go]`  |
 | `enabled`          | `boolean`                 | No                | Set to `false` to hide the provider (default: `true`)              |
 | `order`            | `number`                  | No                | Sort order in the provider list                                    |
+
+### Context-window ceiling
+
+`maxContextTokens` caps the context size Paseo believes every model of that provider can take. Set it when the endpoint behind the provider disagrees with the upstream catalog — a gateway that only accepts 128k, a self-hosted runner with a smaller default than the published model.
+
+```json
+{
+  "agents": {
+    "providers": {
+      "omp-gateway": {
+        "extends": "omp",
+        "label": "Oh My Pi (Gateway)",
+        "maxContextTokens": 128000
+      }
+    }
+  }
+}
+```
+
+The cap is enforced once, in the provider registry, on the model definitions Paseo publishes. Runtime-discovered models, `models`, and `additionalModels` all pass through it, so the provider's own catalog cannot re-raise the number and the client never sees two different answers. Adapters keep reporting whatever their runtime says; the registry is the only place that corrects it.
+
+A model whose catalog reports no window at all is published with the ceiling as its window — a gateway that only accepts 128k has made that the model's real limit whether or not the upstream catalog admits to one. A model already reporting less than the ceiling keeps its own smaller number.
+
+### Provider display tags
+
+`modelPrefix` decorates every model label for that provider. Two providers sharing a model catalog need this: OpenCode Go and OpenCode Zen both serve `kimi-k2.5`, and without a tag the picker shows the same label twice.
+
+```json
+{
+  "agents": {
+    "providers": {
+      "omp-go": { "extends": "omp", "label": "Oh My Pi (Go)", "modelPrefix": "Go" },
+      "omp-zen": { "extends": "omp", "label": "Oh My Pi (Zen)", "modelPrefix": "[Zen]" }
+    }
+  }
+}
+```
+
+Brackets are added by the renderer, so `Go` and `[Zen]` both work. The tag renders in model-picker rows, the composer model chip, and the agent controls, all from one decorated label. Omit it — or set it to an empty string — and labels are unchanged. Searching for the tag finds the row.
 
 ### Model definition
 
@@ -766,6 +808,59 @@ Use `disallowedTools` to disable unsupported tools:
   }
 }
 ```
+
+### OMP API endpoints
+
+OMP reads a model provider's `baseUrl` and `apiKey` from `models.yml` in its agent directory (`$PI_CODING_AGENT_DIR/models.yml`, default `~/.omp/agent/models.yml`). There is no environment variable for either — `--config` overlays only carry settings, not provider routing. To point an OMP provider profile at its own OpenCode Go or OpenCode Zen endpoint, give it its own agent directory and let `params.agentDir` point at it:
+
+```json
+{
+  "agents": {
+    "providers": {
+      "omp-go": {
+        "extends": "omp",
+        "label": "Oh My Pi (Go)",
+        "command": ["omp"],
+        "params": { "agentDir": "/srv/omp-go" },
+        "env": { "OPENCODE_API_KEY": "oc_sk-..." }
+      }
+    }
+  }
+}
+```
+
+Paseo exports `params.agentDir` as `PI_CODING_AGENT_DIR` for every session and for the catalog probe, so `/srv/omp-go/models.yml` is read. Use an absolute path — OMP takes the value verbatim and does not expand `~`:
+
+```yaml
+providers:
+  opencode-go:
+    baseUrl: https://gateway.example.com/v1
+    api: openai-completions
+    auth: apiKey
+    apiKey: $OPENCODE_API_KEY
+    models:
+      - id: glm-5.3-flash
+        name: GLM-5.3-Flash
+        contextWindow: 280000
+        maxTokens: 131072
+```
+
+`params.sessionDir` is still import-only — point it at the sessions that agent directory produces so Paseo can list sessions started outside Paseo. An explicit `env.PI_CODING_AGENT_DIR` in the provider override wins over `params.agentDir`.
+
+Keys stay in the provider `env`, like every other provider's credentials. They are written to `$PASEO_HOME/config.json`, so keep that file out of version control.
+
+### Where model lists come from
+
+There are no built-in model lists. Each adapter asks its runtime what it can serve — OpenCode through its `/provider` endpoint, OMP through `get_available_models`, ACP through `session/new` — and Paseo's config only ever adds to or replaces that answer:
+
+| Source                                   | Effect                                         |
+| ---------------------------------------- | ---------------------------------------------- |
+| Runtime discovery                        | The default; what the provider actually serves |
+| `agents.providers.<id>.models`           | Replaces discovery for that provider           |
+| `agents.providers.<id>.additionalModels` | Merged on top of whatever discovery returned   |
+| `agents.providers.<id>.maxContextTokens` | Caps the window on all of the above            |
+
+An OpenCode Zen or OpenCode Go model therefore only appears once OMP itself offers it. That is the point: the model list follows the credentials and endpoint in `models.yml`, so a second profile pointed at a different gateway shows that gateway's models and nothing else.
 
 ### Valid `extends` values
 

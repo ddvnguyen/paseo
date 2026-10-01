@@ -1831,3 +1831,101 @@ describe("fetchCatalog", () => {
     expect(catalog.modes.map((mode) => mode.id)).toEqual(["ask"]);
   });
 });
+
+describe("provider maxContextTokens ceiling", () => {
+  const catalogOptions = { scope: "workspace", cwd: "/tmp/registry-cap", force: false } as const;
+
+  test("caps runtime-discovered models the provider serves", async () => {
+    mockState.runtimeModels.set("codex", [
+      { provider: "codex", id: "big", label: "Big", contextWindowMaxTokens: 1_000_000 },
+      { provider: "codex", id: "small", label: "Small", contextWindowMaxTokens: 64_000 },
+    ]);
+
+    const registry = buildProviderRegistry(logger, {
+      providerOverrides: { codex: { maxContextTokens: 128_000 } },
+    });
+    const { models } = await registry.codex.fetchCatalog(catalogOptions);
+
+    expect(models.map((model) => [model.id, model.contextWindowMaxTokens])).toEqual([
+      ["big", 128_000],
+      ["small", 64_000],
+    ]);
+  });
+
+  test("caps configured models too, so config cannot smuggle a larger window", async () => {
+    mockState.runtimeModels.set("codex", [
+      { provider: "codex", id: "runtime", label: "Runtime", contextWindowMaxTokens: 900_000 },
+    ]);
+
+    const registry = buildProviderRegistry(logger, {
+      providerOverrides: {
+        codex: {
+          maxContextTokens: 128_000,
+          additionalModels: [{ id: "curated", label: "Curated" }],
+        },
+      },
+    });
+    const { models } = await registry.codex.fetchCatalog(catalogOptions);
+
+    expect(models.map((model) => [model.id, model.contextWindowMaxTokens])).toEqual([
+      ["runtime", 128_000],
+      ["curated", 128_000],
+    ]);
+  });
+
+  test("caps the limit.context mirror catalogs publish alongside the served field", async () => {
+    mockState.runtimeModels.set("codex", [
+      {
+        provider: "codex",
+        id: "opencode-go/glm-5.3-flash",
+        label: "GLM-5.3-Flash",
+        contextWindowMaxTokens: 1_000_000,
+        metadata: { providerId: "opencode-go", limit: { context: 1_000_000, output: 131_072 } },
+      },
+    ]);
+
+    const registry = buildProviderRegistry(logger, {
+      providerOverrides: { codex: { maxContextTokens: 280_000 } },
+    });
+    const { models } = await registry.codex.fetchCatalog(catalogOptions);
+
+    expect(models[0]?.contextWindowMaxTokens).toBe(280_000);
+    expect(models[0]?.metadata?.limit).toEqual({ context: 280_000, output: 131_072 });
+  });
+
+  test("a derived provider inherits the base provider's ceiling unless it sets its own", async () => {
+    mockState.runtimeModels.set("claude", [
+      { provider: "claude", id: "opus", label: "Opus", contextWindowMaxTokens: 200_000 },
+    ]);
+
+    const inherited = buildProviderRegistry(logger, {
+      providerOverrides: {
+        claude: { maxContextTokens: 128_000 },
+        gateway: { extends: "claude", label: "Gateway" },
+      },
+    });
+    const overridden = buildProviderRegistry(logger, {
+      providerOverrides: {
+        claude: { maxContextTokens: 128_000 },
+        gateway: { extends: "claude", label: "Gateway", maxContextTokens: 64_000 },
+      },
+    });
+
+    const inheritedCatalog = await inherited.gateway.fetchCatalog(catalogOptions);
+    const overriddenCatalog = await overridden.gateway.fetchCatalog(catalogOptions);
+
+    expect(inheritedCatalog.models[0]?.contextWindowMaxTokens).toBe(128_000);
+    expect(overriddenCatalog.models[0]?.contextWindowMaxTokens).toBe(64_000);
+  });
+
+  test("a provider without a ceiling publishes whatever the catalog reported", async () => {
+    mockState.runtimeModels.set("codex", [
+      { provider: "codex", id: "big", label: "Big", contextWindowMaxTokens: 1_000_000 },
+    ]);
+
+    const registry = buildProviderRegistry(logger);
+    const { models } = await registry.codex.fetchCatalog(catalogOptions);
+
+    expect(models[0]?.contextWindowMaxTokens).toBe(1_000_000);
+  });
+});
