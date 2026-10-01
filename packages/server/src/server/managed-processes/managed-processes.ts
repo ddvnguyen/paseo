@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { writeJsonFileAtomic } from "../atomic-file.js";
+import { precedesThisBoot } from "../pid-lock.js";
 import { execCommand } from "../../utils/spawn.js";
 import type { ProcessTerminator, TreeKillTarget } from "../../utils/tree-kill.js";
 
@@ -83,6 +84,7 @@ export interface ManagedProcessReapResult {
   checked: number;
   dead: number;
   mismatched: number;
+  skipped: number;
   removed: number;
   terminated: number;
   errors: Array<{ id: string; message: string }>;
@@ -254,6 +256,7 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
       checked: 0,
       dead: 0,
       mismatched: 0,
+      skipped: 0,
       removed: 0,
       terminated: 0,
       errors: [],
@@ -290,6 +293,13 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
         }
 
         const snapshot = inspection.snapshot;
+        if (isDeliberatelySurvivingAgentHost(entry.record, snapshot)) {
+          // Left running and still recorded: the next daemon re-attaches to it
+          // rather than restarting the agent underneath the user.
+          result.skipped += 1;
+          continue;
+        }
+
         if (!processIdentityMatches(entry.record, snapshot)) {
           await fs.rm(entry.path, { force: true });
           result.mismatched += 1;
@@ -366,6 +376,28 @@ class FileBackedManagedProcessRegistry implements ManagedProcessRegistry {
     }
     return entries;
   }
+}
+
+// Agent hosts outlive the daemon that spawned them so their agent keeps working
+// across a daemon restart, and the next daemon re-attaches to the survivors. The
+// reaper must not SIGKILL them. Nothing records this owner kind yet, so the gate
+// is inert until the agent-host launch path lands; it is here first so the first
+// record written is already safe from the next boot's reaper.
+const AGENT_HOST_OWNER_KIND = "agent-host";
+
+function isDeliberatelySurvivingAgentHost(
+  record: ManagedProcessRecord,
+  snapshot: ManagedProcessSnapshot,
+): boolean {
+  if (record.owner.kind !== AGENT_HOST_OWNER_KIND) return false;
+  // Both halves are required. A host cannot predate the boot it runs under, so a
+  // record stamped before this boot is a leftover whose PID has been recycled,
+  // not a survivor. The identity match proves the PID still names the process we
+  // recorded rather than something the kernel handed out afterwards. An absent
+  // start stamp proves neither, so it is reaped.
+  if (!record.identity.startedAt) return false;
+  if (precedesThisBoot(record.identity.startedAt)) return false;
+  return processIdentityMatches(record, snapshot);
 }
 
 function processIdentityMatches(

@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { writePrivateFileAtomicSync } from "../server/private-files.js";
 import {
   PaseoConfigRawSchema,
   type PaseoConfigRaw,
@@ -82,30 +82,28 @@ export function writePaseoConfigForEdit(
   }
 
   const configPath = resolvePaseoConfigPath(input.repoRoot);
-  const tempPath = join(
-    input.repoRoot,
-    `.${PASEO_CONFIG_FILE_NAME}.${process.pid}.${randomUUID()}.tmp`,
-  );
 
   try {
-    writeFileSync(tempPath, `${JSON.stringify(parsed.data, null, 2)}\n`);
     const currentRevision = statPaseoConfigPath(input.repoRoot);
     if (!paseoConfigRevisionsEqual(currentRevision, input.expectedRevision)) {
-      removeTempPaseoConfig(tempPath);
       return {
         ok: false,
         error: { code: "stale_project_config", currentRevision },
       };
     }
 
-    renameSync(tempPath, configPath);
+    // paseo.json holds provider `env`, so a save can persist API keys. Write it
+    // owner-only, but leave the checkout's own permissions alone: the directory
+    // belongs to the user, and only the file carries the secret.
+    writePrivateFileAtomicSync(configPath, `${JSON.stringify(parsed.data, null, 2)}\n`, {
+      privateDirectory: false,
+    });
     const revision = statPaseoConfigPath(input.repoRoot);
     if (!revision) {
       return { ok: false, error: { code: "write_failed" } };
     }
     return { ok: true, config: parsed.data, revision };
   } catch {
-    removeTempPaseoConfig(tempPath);
     return { ok: false, error: { code: "write_failed" } };
   }
 }
@@ -118,12 +116,4 @@ function paseoConfigRevisionsEqual(
     return left === right;
   }
   return left.mtimeMs === right.mtimeMs && left.size === right.size;
-}
-
-function removeTempPaseoConfig(tempPath: string): void {
-  try {
-    rmSync(tempPath, { force: true });
-  } catch {
-    // Best-effort cleanup only; callers need the original write outcome.
-  }
 }

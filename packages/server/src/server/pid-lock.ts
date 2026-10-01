@@ -56,7 +56,15 @@ function isPidRunning(pid: number): boolean {
 // is a window in which a lock written just before a reboot still reads as current.
 const BOOT_INSTANT_TOLERANCE_MS = 5_000;
 
-function precedesThisBoot(startedAt: string): boolean {
+/**
+ * Whether a process stamped at `startedAt` cannot belong to the running boot.
+ *
+ * A process cannot predate the boot it runs under, so a timestamp older than the
+ * boot instant describes something that is gone — whatever the OS now hands that
+ * PID to. Exported because the managed-process reaper applies the same reasoning
+ * to the leftover records it decides whether to kill.
+ */
+export function precedesThisBoot(startedAt: string): boolean {
   const stamped = Date.parse(startedAt);
   if (Number.isNaN(stamped)) return false;
   return stamped < Date.now() - uptime() * 1000 - BOOT_INSTANT_TOLERANCE_MS;

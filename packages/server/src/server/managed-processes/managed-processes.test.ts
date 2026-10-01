@@ -66,6 +66,7 @@ describe("managed process registry", () => {
       checked: 1,
       dead: 0,
       mismatched: 0,
+      skipped: 0,
       removed: 1,
       terminated: 1,
       errors: [],
@@ -110,6 +111,7 @@ describe("managed process registry", () => {
       checked: 1,
       dead: 1,
       mismatched: 0,
+      skipped: 0,
       removed: 1,
       terminated: 0,
       errors: [],
@@ -159,6 +161,7 @@ describe("managed process registry", () => {
       checked: 1,
       dead: 0,
       mismatched: 1,
+      skipped: 0,
       removed: 1,
       terminated: 0,
       errors: [],
@@ -198,6 +201,7 @@ describe("managed process registry", () => {
       checked: 1,
       dead: 0,
       mismatched: 0,
+      skipped: 0,
       removed: 0,
       terminated: 0,
     });
@@ -241,12 +245,174 @@ describe("managed process registry", () => {
       checked: 1,
       dead: 0,
       mismatched: 1,
+      skipped: 0,
       removed: 1,
       terminated: 0,
       errors: [],
     });
     expect(terminator.terminatedPids).toEqual([]);
     expect(await restartedRegistry.list()).toEqual([]);
+  });
+});
+
+describe("boot reaper gate for agent hosts", () => {
+  // A stamp far enough in the past that no process running under this boot could
+  // carry it, and a stamp from now, which is the only shape a survivor can have.
+  const beforeThisBoot = new Date(Date.now() - 86_400_000).toISOString();
+  const duringThisBoot = new Date().toISOString();
+
+  function agentHostSnapshot(pid: number, startedAt: string | null) {
+    return { pid, commandLine: "paseo-agent-host --port 7000", startedAt };
+  }
+
+  // Records through the registry so identity comes from the process table, exactly
+  // as a real launch would stamp it.
+  async function reapWithIdentity(args: {
+    ownerKind: string;
+    pid: number;
+    recordStartedAt: string | null;
+    liveStartedAt: string | null;
+  }) {
+    tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-processes-"));
+    const terminator = new FakeProcessTerminator();
+    const registry = createManagedProcessRegistry({
+      paseoHome: tempHome,
+      processTable: new FakeProcessTable([agentHostSnapshot(args.pid, args.recordStartedAt)]),
+      terminateProcess: terminator.terminate,
+      logger: createTestLogger(),
+    });
+    await registry.record({
+      owner: { provider: "paseo", kind: args.ownerKind },
+      pid: args.pid,
+      command: "paseo-agent-host",
+      args: ["--port", "7000"],
+    });
+
+    const restartedRegistry = createManagedProcessRegistry({
+      paseoHome: tempHome,
+      processTable: new FakeProcessTable([agentHostSnapshot(args.pid, args.liveStartedAt)]),
+      terminateProcess: terminator.terminate,
+      logger: createTestLogger(),
+    });
+    const result = await restartedRegistry.reapStale();
+    return { result, terminator, registry: restartedRegistry };
+  }
+
+  test("reaps an agent-host record stamped before this boot", async () => {
+    const { result, terminator, registry } = await reapWithIdentity({
+      ownerKind: "agent-host",
+      pid: 4201,
+      recordStartedAt: beforeThisBoot,
+      liveStartedAt: beforeThisBoot,
+    });
+
+    expect(result).toEqual({
+      checked: 1,
+      dead: 0,
+      mismatched: 0,
+      skipped: 0,
+      removed: 1,
+      terminated: 1,
+      errors: [],
+    });
+    expect(terminator.terminatedPids).toEqual([4201]);
+    expect(await registry.list()).toEqual([]);
+  });
+
+  test("leaves an agent host from this boot running for re-attach", async () => {
+    const { result, terminator, registry } = await reapWithIdentity({
+      ownerKind: "agent-host",
+      pid: 4202,
+      recordStartedAt: duringThisBoot,
+      liveStartedAt: duringThisBoot,
+    });
+
+    expect(result).toEqual({
+      checked: 1,
+      dead: 0,
+      mismatched: 0,
+      skipped: 1,
+      removed: 0,
+      terminated: 0,
+      errors: [],
+    });
+    expect(terminator.terminatedPids).toEqual([]);
+    // The record survives too: it is the handle the next daemon re-attaches through.
+    expect(await registry.list()).toHaveLength(1);
+  });
+
+  test("reaps an agent host whose identity no longer matches", async () => {
+    // Same owner kind and same boot, but the PID now names a different process.
+    tempHome = await mkdtemp(path.join(tmpdir(), "paseo-managed-processes-"));
+    const terminator = new FakeProcessTerminator();
+    const registry = createManagedProcessRegistry({
+      paseoHome: tempHome,
+      processTable: new FakeProcessTable([agentHostSnapshot(4203, duringThisBoot)]),
+      terminateProcess: terminator.terminate,
+      logger: createTestLogger(),
+    });
+    await registry.record({
+      owner: { provider: "paseo", kind: "agent-host" },
+      pid: 4203,
+      command: "paseo-agent-host",
+      args: ["--port", "7000"],
+    });
+
+    const restartedRegistry = createManagedProcessRegistry({
+      paseoHome: tempHome,
+      processTable: new FakeProcessTable([
+        agentHostSnapshot(4203, new Date(Date.now() + 60_000).toISOString()),
+      ]),
+      terminateProcess: terminator.terminate,
+      logger: createTestLogger(),
+    });
+    const result = await restartedRegistry.reapStale();
+
+    expect(result).toEqual({
+      checked: 1,
+      dead: 0,
+      mismatched: 1,
+      skipped: 0,
+      removed: 1,
+      terminated: 0,
+      errors: [],
+    });
+    expect(terminator.terminatedPids).toEqual([]);
+    expect(await restartedRegistry.list()).toEqual([]);
+  });
+
+  test("reaps an agent host with no start stamp, having proved neither half", async () => {
+    const { result, terminator, registry } = await reapWithIdentity({
+      ownerKind: "agent-host",
+      pid: 4204,
+      recordStartedAt: null,
+      liveStartedAt: duringThisBoot,
+    });
+
+    expect(result.skipped).toBe(0);
+    expect(terminator.terminatedPids).toEqual([4204]);
+    expect(await registry.list()).toEqual([]);
+  });
+
+  test("does not spare other owner kinds stamped during this boot", async () => {
+    const { result, terminator, registry } = await reapWithIdentity({
+      ownerKind: "helper-server",
+      pid: 4205,
+      recordStartedAt: duringThisBoot,
+      liveStartedAt: duringThisBoot,
+    });
+
+    expect(result).toEqual({
+      checked: 1,
+      dead: 0,
+      mismatched: 0,
+      skipped: 0,
+      removed: 1,
+      terminated: 1,
+      errors: [],
+    });
+    expect(terminator.terminatedPids).toEqual([4205]);
+    expect(await registry.list()).toEqual([]);
   });
 });
 

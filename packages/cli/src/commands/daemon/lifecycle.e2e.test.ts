@@ -181,7 +181,12 @@ test("removed flags and ambiguous targets fail before side effects; observation 
     expect(existsSync(home)).toBe(false);
     for (const args of [
       ["start", "--port", "12345"],
-      ["start", "--foreground"],
+      // COMPAT(daemon-start-flags): --foreground/--listen/--no-web-ui are accepted on
+      // `daemon start` for the checked-in systemd units, but only as a foreground
+      // deployment launch. On a managed launch they are refused rather than ignored,
+      // so they stay in this list.
+      ["start", "--listen", "0.0.0.0:6767"],
+      ["start", "--no-web-ui"],
       ["daemon", "restart", "--no-relay"],
     ]) {
       const result = await f.run(["--json", ...args, "--home", home]);

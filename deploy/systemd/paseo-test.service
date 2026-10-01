@@ -12,6 +12,13 @@
 #
 # TEST is isolated from PROD via a dedicated PASEO_HOME, port 6868, and its own
 # cgroup, so restarting paseo.service can never take TEST down with it.
+#
+# ExecStart below is load-bearing against whatever CLI ~/paseo/TEST has
+# installed, which is not necessarily a build of this checkout: as of 2026-10 it
+# is 0.6.x, which has no `daemon run`. Do not rewrite these flags to
+# `daemon run` until that tree actually ships a CLI that has it. See
+# deploy/systemd/paseo.service and packages/cli/src/commands/daemon/local-daemon.ts
+# (COMPAT(daemon-start-flags)).
 [Unit]
 Description=Paseo TEST instance (bun 1.4 build, isolated PASEO_HOME)
 After=network-online.target
