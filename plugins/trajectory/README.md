@@ -6,14 +6,15 @@ dsh-style ledger UI. Plugin-only — no core paseo edits (upstream-merge-safe).
 
 ## Layout
 
-| Path                   | Owns                                                                                                   |
-| ---------------------- | ------------------------------------------------------------------------------------------------------ |
-| `shared/trajectory.ts` | `TrajectoryEventSchema` envelope + `list`/`changes`/`subscribe` RPC contracts + snapshot schemas (zod) |
-| `server/store.ts`      | `TrajectoryStore` interface; `seq` is DB-assigned (`INTEGER PRIMARY KEY AUTOINCREMENT`)                |
-| `server/node-store.ts` | node:sqlite driver; camelCase rows via SQL aliases; `data` JSON-parsed                                 |
-| `server/recorder.ts`   | pure recorder: paseo events -> ledger rows (turn attribution, dedupe)                                  |
-| `server/wiring.ts`     | idempotent lazy stream attach; one recorder+store per plugin process                                   |
-| `index.server.ts`      | hook registration; every callback calls `ensureAttached(paseo)` first                                  |
+| Path                         | Owns                                                                                                   |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `shared/trajectory.ts`       | `TrajectoryEventSchema` envelope + `list`/`changes`/`subscribe` RPC contracts + snapshot schemas (zod) |
+| `server/store.ts`            | `TrajectoryStore` interface; `seq` is DB-assigned (`INTEGER PRIMARY KEY AUTOINCREMENT`)                |
+| `server/node-store.ts`       | node:sqlite driver; camelCase rows via SQL aliases; `data` JSON-parsed                                 |
+| `server/recorder.ts`         | pure recorder: paseo events -> ledger rows (turn attribution, dedupe)                                  |
+| `server/injected-context.ts` | harness-injected context: daemon `appendSystemPrompt` sampling + the staged-create queue               |
+| `server/wiring.ts`           | idempotent lazy stream attach; one recorder+store per plugin process                                   |
+| `index.server.ts`            | hook registration; every callback calls `ensureAttached(paseo)` first                                  |
 
 ## Tests
 
@@ -27,6 +28,39 @@ cd plugins/trajectory
 ```
 
 Never run the repo's full test suite (repo rule, CLAUDE.md).
+
+## Injected context rows (`system/attach`)
+
+Two rows land in the turn-less preamble bucket, told apart by `data.source`:
+
+| `source`         | What it is                                                       | `correlated`       |
+| ---------------- | ---------------------------------------------------------------- | ------------------ |
+| absent (=caller) | the `systemPrompt` the caller configured, seen on `agent.create` | `config` or `fifo` |
+| `daemon-append`  | the instructions the daemon appends to every session             | `time-window`      |
+
+The daemon's own append is the awkward one. `daemonAppendSystemPrompt` lives
+only on the server-internal `AgentSessionConfig` and is deliberately never
+persisted, and the daemon applies it _after_ `before("agent.create")` runs
+(`createAgentInternal` awaits the hook, then calls `prepareSessionConfig` →
+`applyDaemonAppendSystemPrompt`). No hook payload and no stream event carries
+it, so there is no per-agent observation of it to be had. The plugin samples
+`paseo.config.get()` inside the create instead, and the row says
+`time-window` because the setting is global: the read and the injection share
+one create, and a config patch landing mid-create would make the pairing wrong
+in a way nothing observable can rule out.
+
+Both rows are length + a 12-char sha256 prefix over the _trimmed_ text the
+daemon actually injects. Never the text (d-893c722f28).
+
+`server/injected-context.ts` owns the sampling and the staged-create queue, so
+the pairing is testable without a store or a client. The queue is bounded
+(`MAX_STAGED_CREATES`) because any create with a daemon append stages an entry,
+and an entry whose agent never appears would otherwise leak.
+
+Not observable, so not recorded: `AGENTS.md`/`CLAUDE.md` and any other file the
+harness reads at launch. No hook exposes what a provider loaded, and a plugin
+cannot read an agent's workspace files. A row claiming otherwise would be
+fabricated.
 
 ## Reference bugs fixed by construction (paseo-fleet review, d-03af302129)
 
