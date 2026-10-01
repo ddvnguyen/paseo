@@ -32,7 +32,13 @@ fail() { say "ERROR: $*"; exit 1; }
 port_listening() { ss -tln "sport = :$PORT" 2>/dev/null | grep -q LISTEN; }
 
 daemon_running() {
-  pgrep -f "paseo daemon start" >/dev/null 2>&1
+  # The unit launches paseo-bun, which execs
+  #   bun <runtime>/@getpaseo/cli/dist/index.js daemon start --foreground ...
+  # The old "paseo daemon start" pattern matched none of that — the CLI entry
+  # sits between "paseo" and "daemon start" — so this check silently reported
+  # "stopped" while the daemon was still up, and wait_for_daemon_exit degraded
+  # to waiting on the port alone. Match the argument run every layout shares.
+  pgrep -f 'paseo.*daemon start' >/dev/null 2>&1
 }
 
 # Wait until no daemon process exists and the port is released.
@@ -60,7 +66,11 @@ stop_service() {
 }
 
 start_service() {
-  rm -f "$HOME/.paseo/paseo.pid"
+  # No pid-file removal here. PASEO_HOME moved to ~/paseo/PROD, so the old
+  # $HOME/.paseo/paseo.pid never existed and the line did nothing; and deleting
+  # the real one blindly would drop the lock of a daemon that is still alive.
+  # The unit's ExecStartPre (paseo-prestart.sh) already clears $PASEO_PID_FILE,
+  # and only when the recorded PID is dead or is not a Paseo process.
   timeout 20 systemctl --user reset-failed paseo 2>/dev/null || true
   say "  Starting paseo..."
   if ! timeout 30 systemctl --user start paseo; then

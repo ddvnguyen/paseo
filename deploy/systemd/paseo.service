@@ -9,6 +9,16 @@
 # Consolidation (2026-09): PASEO_HOME and the runtime tree now live together
 # under $HOME/paseo/PROD. The runtime node_modules are installed by the
 # "deploy-prod" pipeline stage (PROD_HOME=/home/ddv/paseo/PROD).
+#
+# ExecStart below is load-bearing against whatever CLI this runtime tree has
+# installed, which is not necessarily a build of this checkout: as of 2026-10 it
+# is 0.6.x, which has no `daemon run`. Do not rewrite these flags to
+# `daemon run` until ~/paseo/PROD actually ships a CLI that has it, or the unit
+# will fail to start and take every agent in the cgroup with it. The current
+# source CLI keeps accepting them for this reason — see
+# packages/cli/src/commands/daemon/local-daemon.ts (COMPAT(daemon-start-flags)).
+# The supported modern equivalent is `daemon run` with PASEO_LISTEN /
+# PASEO_WEB_UI_ENABLED in the environment; this unit already sets the latter.
 [Unit]
 Description=Paseo coding-agent orchestrator daemon (hydra fork, PROD)
 After=network-online.target
