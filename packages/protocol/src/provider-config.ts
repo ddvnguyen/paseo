@@ -59,6 +59,18 @@ export const ProviderOverrideSchema = z.object({
   additionalModels: z.array(ProviderProfileModelSchema).optional(),
   disallowedTools: z.array(z.string()).optional(),
   paseoTools: ProviderPaseoToolsPolicySchema.optional(),
+  /**
+   * Hard ceiling on the context window for every model this provider serves,
+   * applied to the model metadata Paseo publishes. A gateway that only accepts
+   * 128k tokens declares 128000 here regardless of what the upstream catalog
+   * claims, so pickers, headers, and context meters agree.
+   */
+  maxContextTokens: z.number().int().positive().optional(),
+  /**
+   * Bracketed display tag rendered before model labels ("Go" renders as
+   * "[Go]"). Empty or absent leaves labels undecorated.
+   */
+  modelPrefix: z.string().optional(),
   enabled: z.boolean().optional(),
   order: z.number().optional(),
 });

@@ -9,6 +9,7 @@ import type { DraftCommandConfig } from "@/hooks/use-agent-commands-query";
 import { i18n } from "@/i18n/i18next";
 import { compareMatchScores, scoreTextFields } from "@getpaseo/protocol/search/text-match";
 import { filterSelectableModels } from "./model-catalog";
+import { formatProviderModelPrefix, type ProviderModelPrefixes } from "./provider-model-prefix";
 
 export interface ProviderSelectionModelRow {
   /**
@@ -21,8 +22,20 @@ export interface ProviderSelectionModelRow {
   providerLabel: string;
   modelId: string;
   modelLabel: string;
+  /** Bare prefix token ("Go"), absent when the provider declares no tag. */
+  modelPrefix?: string;
   description?: string;
   isDefault?: boolean;
+}
+
+/**
+ * The row's label as users see it: `[Go] GLM-5.3`. Model pickers, the composer
+ * trigger, and the agent header all render this one string, so a provider tag
+ * cannot drift between surfaces.
+ */
+export function formatProviderModelLabel(row: ProviderSelectionModelRow): string {
+  const prefix = formatProviderModelPrefix(row.modelPrefix);
+  return prefix ? `${prefix} ${row.modelLabel}` : row.modelLabel;
 }
 
 function buildModelRowKey(provider: string, modelId: string): string {
@@ -58,6 +71,7 @@ function buildModelRows(
   provider: string,
   providerLabel: string,
   models: AgentModelDefinition[],
+  modelPrefix: string | undefined,
 ): ProviderSelectionModelRow[] {
   return models.map((model) => ({
     favoriteKey: buildModelRowKey(provider, model.id),
@@ -65,6 +79,7 @@ function buildModelRows(
     providerLabel,
     modelId: model.id,
     modelLabel: model.label,
+    ...(modelPrefix ? { modelPrefix } : {}),
     description: model.description ?? model.id,
     isDefault: model.isDefault,
   }));
@@ -90,6 +105,7 @@ function buildModelSelection(
   providerLabel: string,
   models: AgentModelDefinition[] | null,
   excludedModelIds?: ReadonlySet<string>,
+  modelPrefix?: string,
 ): ProviderModelSelection {
   if (models === null) {
     return { kind: "loading" };
@@ -98,19 +114,35 @@ function buildModelSelection(
   if (selectableModels.length === 0) {
     return { kind: "models", rows: [buildSyntheticDefaultRow(provider, providerLabel)] };
   }
-  return { kind: "models", rows: buildModelRows(provider, providerLabel, selectableModels) };
+  return {
+    kind: "models",
+    rows: buildModelRows(provider, providerLabel, selectableModels, modelPrefix),
+  };
 }
 
 function buildEntryModelSelection(
   entry: ProviderSnapshotEntry,
   label: string,
   excludedModelIds?: ReadonlySet<string>,
+  modelPrefix?: string,
 ): ProviderModelSelection {
   if ((entry.models?.length ?? 0) > 0) {
-    return buildModelSelection(entry.provider, label, entry.models ?? null, excludedModelIds);
+    return buildModelSelection(
+      entry.provider,
+      label,
+      entry.models ?? null,
+      excludedModelIds,
+      modelPrefix,
+    );
   }
   if (entry.status === "ready") {
-    return buildModelSelection(entry.provider, label, entry.models ?? null, excludedModelIds);
+    return buildModelSelection(
+      entry.provider,
+      label,
+      entry.models ?? null,
+      excludedModelIds,
+      modelPrefix,
+    );
   }
   if (entry.status === "loading") {
     return { kind: "loading" };
@@ -129,6 +161,7 @@ export function buildProviderSelectorProviders(input: {
   providerDefinitions: AgentProviderDefinition[];
   modelsByProvider: Map<string, AgentModelDefinition[]>;
   excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>;
+  modelPrefixesByProvider?: ProviderModelPrefixes;
 }): ProviderSelectorProvider[] {
   return input.providerDefinitions.map((definition) => ({
     id: definition.id,
@@ -140,6 +173,7 @@ export function buildProviderSelectorProviders(input: {
         ? (input.modelsByProvider.get(definition.id) ?? [])
         : null,
       input.excludedByProvider?.get(definition.id),
+      input.modelPrefixesByProvider?.get(definition.id),
     ),
   }));
 }
@@ -147,6 +181,7 @@ export function buildProviderSelectorProviders(input: {
 export function buildSelectableProviderSelectorProviders(
   entries: ProviderSnapshotEntry[] | undefined,
   excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>,
+  modelPrefixesByProvider?: ProviderModelPrefixes,
 ): ProviderSelectorProvider[] {
   return (entries ?? [])
     .filter((entry) => entry.enabled)
@@ -159,6 +194,7 @@ export function buildSelectableProviderSelectorProviders(
           entry,
           label,
           excludedByProvider?.get(entry.provider),
+          modelPrefixesByProvider?.get(entry.provider),
         ),
       };
     });
@@ -211,12 +247,8 @@ export function resolveSelectedModelLabel(input: {
     return selectedModel;
   }
   const defaultModel = provider.modelSelection.rows.find((row) => row.isDefault);
-  return (
-    model?.modelLabel ??
-    defaultModel?.modelLabel ??
-    provider.modelSelection.rows[0]?.modelLabel ??
-    i18n.t("providerSelection.selectModel")
-  );
+  const resolved = model ?? defaultModel ?? provider.modelSelection.rows[0];
+  return resolved ? formatProviderModelLabel(resolved) : i18n.t("providerSelection.selectModel");
 }
 
 export function buildSelectedTriggerLabel(modelLabel: string): string {
@@ -239,7 +271,13 @@ export function matchesModelSearch(
 }
 
 function getModelRowSearchFields(row: ProviderSelectionModelRow): string[] {
-  return [row.modelLabel, row.modelId, row.providerLabel, row.description ?? ""];
+  return [
+    row.modelLabel,
+    row.modelPrefix ?? "",
+    row.modelId,
+    row.providerLabel,
+    row.description ?? "",
+  ];
 }
 
 export function scoreModelRow(row: ProviderSelectionModelRow, normalizedQuery: string) {

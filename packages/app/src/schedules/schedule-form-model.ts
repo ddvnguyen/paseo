@@ -11,6 +11,7 @@ import {
   buildSelectableProviderSelectorProviders,
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
+import type { ProviderModelPrefixes } from "@/provider-selection/provider-model-prefix";
 import { filterSelectableModels, findModelByReference } from "@/provider-selection/model-catalog";
 import {
   buildProviderDefinitionMapForStatuses,
@@ -56,6 +57,8 @@ export interface ScheduleFormProviderSnapshot {
   entries: ProviderSnapshotEntry[];
   /** Disabled-model exclusion for new selection (C2), scoped to the server. */
   excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Per-provider display tags read from the daemon's provider config. */
+  modelPrefixesByProvider?: ProviderModelPrefixes;
 }
 
 export interface ScheduleDisclosureState {
@@ -1036,6 +1039,7 @@ export function openScheduleForm(snapshot: ScheduleFormSnapshot): ScheduleFormMo
         modelSelectorProviders: buildSelectableProviderSelectorProviders(
           providerEntries,
           excludedByProvider,
+          providerSnapshot.modelPrefixesByProvider,
         ),
         providerResolutionByServerId,
         providerSnapshotRequest: isPendingResolution ? null : state.providerSnapshotRequest,

@@ -16,6 +16,8 @@ import { useExcludedModelIdsByProvider } from "@/stores/disabled-models-store";
 import { OptimisticFormPreferences } from "@/create-agent-preferences/optimistic-preferences";
 import { applyAgentProfilePreferences } from "@/create-agent-preferences/preferences";
 import { useProvidersSnapshot } from "./use-providers-snapshot";
+import { useDaemonConfig } from "./use-daemon-config";
+import { buildProviderModelPrefixes } from "@/provider-selection/provider-model-prefix";
 import {
   useFormPreferences,
   mergeProviderPreferences,
@@ -196,6 +198,11 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
 
   // Disabled models stay hidden from new selection (C2).
   const excludedByProvider = useExcludedModelIdsByProvider(serverId);
+  const { config: daemonConfig } = useDaemonConfig(serverId);
+  const modelPrefixesByProvider = useMemo(
+    () => buildProviderModelPrefixes(daemonConfig),
+    [daemonConfig],
+  );
 
   const allProviderEntries = useMemo(() => snapshotEntries ?? [], [snapshotEntries]);
   const snapshotProviderDefinitions = useMemo(
@@ -231,8 +238,13 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
     [excludedByProvider, snapshotEntries],
   );
   const snapshotModelSelectorProviders = useMemo(
-    () => buildSelectableProviderSelectorProviders(snapshotEntries, excludedByProvider),
-    [excludedByProvider, snapshotEntries],
+    () =>
+      buildSelectableProviderSelectorProviders(
+        snapshotEntries,
+        excludedByProvider,
+        modelPrefixesByProvider,
+      ),
+    [excludedByProvider, modelPrefixesByProvider, snapshotEntries],
   );
   const snapshotSelectedEntry = useMemo(
     () =>

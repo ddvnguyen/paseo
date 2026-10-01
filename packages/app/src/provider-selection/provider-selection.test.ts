@@ -8,6 +8,8 @@ import {
   buildSelectableProviderSelectorProviders,
   buildSelectedTriggerLabel,
   filterAndRankModelRows,
+  formatProviderModelLabel,
+  getProviderModelRows,
   matchesModelSearch,
   resolveSelectedModelLabel,
   resolveSubmissionReadiness,
@@ -483,3 +485,83 @@ function getAllModelLabels(providers: ReturnType<typeof buildSelectableProviderS
       : [],
   );
 }
+
+describe("provider model prefix tags", () => {
+  const goModel: AgentModelDefinition = {
+    provider: "omp",
+    id: "opencode-go/glm-5.3-flash",
+    label: "GLM-5.3-Flash",
+  };
+
+  function entryFor(models: AgentModelDefinition[]): ProviderSnapshotEntry {
+    return { provider: "omp", status: "ready", enabled: true, models };
+  }
+
+  it("leaves rows undecorated when the provider declares no prefix", () => {
+    const [provider] = buildSelectableProviderSelectorProviders([entryFor([goModel])]);
+
+    expect(getProviderModelRows(provider!).map((row) => row.modelPrefix)).toEqual([undefined]);
+    expect(
+      resolveSelectedModelLabel({
+        providers: [provider!],
+        selectedProvider: "omp",
+        selectedModel: goModel.id,
+        isLoading: false,
+      }),
+    ).toBe("GLM-5.3-Flash");
+  });
+
+  it("carries the tag on the row and the picker header label", () => {
+    const [provider] = buildSelectableProviderSelectorProviders(
+      [entryFor([goModel])],
+      undefined,
+      new Map([["omp", "Go"]]),
+    );
+
+    expect(formatProviderModelLabel(getProviderModelRows(provider!)[0]!)).toBe(
+      "[Go] GLM-5.3-Flash",
+    );
+    expect(
+      resolveSelectedModelLabel({
+        providers: [provider!],
+        selectedProvider: "omp",
+        selectedModel: goModel.id,
+        isLoading: false,
+      }),
+    ).toBe("[Go] GLM-5.3-Flash");
+  });
+
+  it("tags rows built from provider definitions the same way", () => {
+    const definition: AgentProviderDefinition = {
+      id: "omp",
+      label: "Oh My Pi",
+      description: "",
+      defaultModeId: null,
+      modes: [],
+    };
+
+    const [provider] = buildProviderSelectorProviders({
+      providerDefinitions: [definition],
+      modelsByProvider: new Map([["omp", [goModel]]]),
+      modelPrefixesByProvider: new Map([["omp", "Go"]]),
+    });
+
+    expect(formatProviderModelLabel(getProviderModelRows(provider!)[0]!)).toBe(
+      "[Go] GLM-5.3-Flash",
+    );
+  });
+
+  it("matches a search for the tag alone", () => {
+    const row = {
+      favoriteKey: "omp:opencode-go/glm-5.3-flash",
+      provider: "omp",
+      providerLabel: "Oh My Pi",
+      modelId: "opencode-go/glm-5.3-flash",
+      modelLabel: "GLM-5.3-Flash",
+      modelPrefix: "Go",
+      description: "opencode-go/glm-5.3-flash",
+    };
+
+    expect(matchesModelSearch(row, "go")).toBe(true);
+  });
+});
