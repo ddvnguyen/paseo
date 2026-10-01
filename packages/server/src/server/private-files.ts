@@ -23,12 +23,24 @@ export function ensurePrivateFile(filePath: string): void {
   applyPrivateMode(filePath, PRIVATE_FILE_MODE);
 }
 
+export interface PrivateFileWriteOptions {
+  /**
+   * Create the parent directory and force it to PRIVATE_DIRECTORY_MODE. Leave this
+   * on for state under PASEO_HOME, which is private by contract. Turn it off when
+   * the parent is a directory Paseo does not own — a user's source checkout, say —
+   * where the secret belongs in the file but the directory's permissions are none
+   * of Paseo's business.
+   */
+  privateDirectory?: boolean;
+}
+
 export function writePrivateFileAtomicSync(
   filePath: string,
   data: string | NodeJS.ArrayBufferView,
+  options: PrivateFileWriteOptions = {},
 ): void {
-  ensurePrivateDirectory(path.dirname(filePath));
   const parent = path.dirname(filePath);
+  if (options.privateDirectory ?? true) ensurePrivateDirectory(parent);
   const temporary = path.join(parent, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}`);
   try {
     writeFileSync(temporary, data, { mode: PRIVATE_FILE_MODE });

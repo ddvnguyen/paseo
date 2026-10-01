@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -156,6 +164,44 @@ describe("paseo config file substrate", () => {
       revision: statPaseoConfigPath(tempDir),
     });
   });
+
+  // paseo.json carries provider `env`, so a save can persist API keys into a file
+  // inside the user's checkout. Anything but owner-only mode leaks them to every
+  // other local account. POSIX-only: Windows has no POSIX mode bits.
+  it.skipIf(isPlatform("win32"))("writes paseo.json owner-only, secrets included", () => {
+    const result = writePaseoConfigForEdit({
+      repoRoot: tempDir,
+      config: {
+        providers: { claude: { env: { ANTHROPIC_API_KEY: "sk-ant-test-value" } } },
+      },
+      expectedRevision: null,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(statSync(join(tempDir, "paseo.json")).mode & 0o777).toBe(0o600);
+  });
+
+  // The checkout belongs to the user, not to Paseo. Locking the directory down to
+  // 0700 would be a side effect on someone else's tree (and breaks group-shared
+  // checkouts), so only the file mode may change.
+  it.skipIf(isPlatform("win32"))(
+    "leaves the containing checkout directory permissions alone",
+    () => {
+      const repoRoot = join(tempDir, "checkout");
+      mkdirSync(repoRoot, { mode: 0o755 });
+      const before = statSync(repoRoot).mode & 0o777;
+
+      const result = writePaseoConfigForEdit({
+        repoRoot,
+        config: { worktree: { setup: "npm install" } },
+        expectedRevision: null,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(statSync(repoRoot).mode & 0o777).toBe(before);
+      expect(statSync(join(repoRoot, "paseo.json")).mode & 0o777).toBe(0o600);
+    },
+  );
 
   it("returns write_failed for filesystem write exceptions", () => {
     const fileRoot = join(tempDir, "not-a-directory");
