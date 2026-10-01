@@ -26,6 +26,23 @@ export function systemPromptHash(prompt: string): string {
   return createHash("sha256").update(prompt, "utf8").digest("hex").slice(0, HASH_CHARS);
 }
 
+/**
+ * Characters per token in the dsh heuristic.
+ *
+ * A rough average across English prose and code, and the same divisor the
+ * trajectory ledger's ported layout uses. It is a GUESS: real tokenizers vary
+ * by content and by provider, and this plugin has no tokenizer and no right to
+ * the text. Every number derived from it therefore ships as an
+ * `estimated: true` (the schema makes that flag a `z.literal`, so it cannot be
+ * dropped), and the chip labels it as an estimate in the copy too.
+ */
+export const CHARS_PER_TOKEN = 4;
+
+/** Chars to an estimated token count. 0 chars is 0 tokens; nothing unknown. */
+export function estimateTokensFromChars(chars: number): number {
+  return Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
 /** Reduced facts from an `agent.create` session config. */
 export interface ConfigFacts {
   systemPromptInjected: boolean;
@@ -83,6 +100,12 @@ export interface SnapshotControls {
  * refreshed or imported agent. That is genuinely unknown, so every prompt field
  * becomes null rather than 0, and the reason travels with the row so the chip can
  * explain the gap instead of implying an empty prompt.
+ *
+ * The token estimate is derived from the captured LENGTH, which is the only
+ * measurement of the prompt this module is allowed to keep. It is null whenever
+ * the length is unknown, and it never covers MCP servers: only their names were
+ * captured, and a token count derived from names would describe content this
+ * plugin cannot see.
  */
 export function buildChipData(input: {
   facts: ConfigFacts | null;
@@ -91,10 +114,20 @@ export function buildChipData(input: {
   reason: string;
   capturedAt: string;
 }): CtxInjectChipData {
+  const promptLengthKnown =
+    input.facts !== null && input.facts.systemPromptInjected === true
+      ? input.facts.systemPromptLength
+      : null;
   return {
     systemPromptInjected: input.facts ? input.facts.systemPromptInjected : null,
     systemPromptLength: input.facts ? input.facts.systemPromptLength : null,
     systemPromptHash: input.facts ? input.facts.systemPromptHash : null,
+    tokenEstimates: {
+      systemPrompt:
+        promptLengthKnown === null
+          ? null
+          : { tokens: estimateTokensFromChars(promptLengthKnown), estimated: true },
+    },
     mcpServers: input.facts ? input.facts.mcpServers : [],
     paseoToolsInjected: input.paseoToolsInjected,
     model: input.facts?.model ?? input.snapshot?.model ?? null,

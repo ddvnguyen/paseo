@@ -18,6 +18,13 @@ const en = {
   detailPromptNotConfigured: "not configured",
   detailPromptValue: "{{count}} chars · sha256:{{hash}}",
   detailPromptUnknown: "unknown for this session",
+  /**
+   * The estimate is labelled in the copy, not only on the wire: the number is
+   * chars/4, and a reader who does not know that would take it for a real
+   * tokenizer count.
+   */
+  detailPromptTokens: "Prompt tokens",
+  detailPromptTokensValue: "~{{count}} (estimated, chars÷4)",
   detailMcp: "MCP servers",
   detailPaseoTools: "Paseo tools",
   detailModel: "Model",

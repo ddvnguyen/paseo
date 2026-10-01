@@ -1,13 +1,14 @@
-import { createHash } from "node:crypto";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { handleChanges, handleList, handleSubscribe } from "./server/rpc.js";
 import { trajectoryChanges, trajectoryList, trajectorySubscribe } from "./shared/trajectory.js";
 import { createWiring, openDefaultStore } from "./server/wiring.js";
-
-/** sha256 as lowercase hex, from the builtin so the plugin stays dependency-free. */
-function sha256Hex(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
-}
+import {
+  contextKeyOf,
+  hash12,
+  PendingContextQueue,
+  sampleDaemonAppend,
+  type ConfigReadable,
+} from "./server/injected-context.js";
 
 /**
  * The turn an item belongs to, when the item says so itself.
@@ -45,22 +46,14 @@ export default function contribute(server: PluginServerContext) {
     };
 
     /**
-     * Pending caller system prompts, awaiting the agent they belong to.
-     *
-     * `before("agent.create")` is the ONLY place a caller systemPrompt reaches a
-     * plugin, and it carries no agent id — the agent does not exist yet.
-     * `agent.created` carries the id but not the config. The daemon exposes no
-     * request id on either hook, so the two are matched on
-     * provider + cwd + title, with an oldest-first fallback for the case where
-     * they disagree. The `correlated` field records which path was taken, so a
-     * row is never presented as a certain match when it was a fallback.
+     * Context staged by `before("agent.create")`, awaiting the agent it belongs
+     * to. Two facts per create: the caller's own systemPrompt (the only prompt
+     * a plugin ever sees on a hook) and, sampled from daemon config, the
+     * instructions the daemon appends to every session. See
+     * server/injected-context.ts for why the second one has to be sampled from
+     * config and attributed by time window rather than by a hook.
      */
-    const pendingSystemPrompts: Array<{ key: string; charsLength: number; hash12: string }> = [];
-    const systemPromptKey = (parts: {
-      provider: string;
-      cwd: string;
-      title?: string | null;
-    }): string => `${parts.provider}\u0000${parts.cwd}\u0000${parts.title ?? ""}`;
+    const pendingContext = new PendingContextQueue();
 
     server.on("agent.turn_started", (event, context) => {
       withPaseo(context.paseo);
@@ -105,31 +98,29 @@ export default function contribute(server: PluginServerContext) {
 
     server.on("agent.created", (event, context) => {
       withPaseo(context.paseo);
-      const key = systemPromptKey(event.agent);
-      const exact = pendingSystemPrompts.findIndex((entry) => entry.key === key);
-      const index = exact === -1 ? 0 : exact;
-      if (pendingSystemPrompts.length === 0) return;
-      const [pending] = pendingSystemPrompts.splice(index, 1);
-      if (pending === undefined) return;
-      wiring.recorder.systemPromptAttached({
-        agentId: event.agent.id,
-        charsLength: pending.charsLength,
-        hash12: pending.hash12,
-        correlated: exact === -1 ? "fifo" : "config",
-      });
+      for (const row of pendingContext.take({ key: contextKeyOf(event.agent) })) {
+        wiring.recorder.systemPromptAttached({ agentId: event.agent.id, ...row });
+      }
     });
 
-    // The caller system prompt. Only ever its LENGTH and a 12-char sha256
-    // prefix: the ledger is length-only by rule and d-893c722f28 sets the
-    // hash-only precedent. The prompt text itself is never written.
-    server.before("agent.create", (input, context) => {
+    // Injected context, reduced to length and a 12-char sha256 prefix and
+    // nothing else: the ledger is length-only by rule and d-893c722f28 sets the
+    // hash-only precedent. No prompt text is ever written.
+    server.before("agent.create", async (input, context) => {
       withPaseo(context.paseo);
       const prompt = input.request.config.systemPrompt;
-      if (typeof prompt !== "string" || prompt.length === 0) return;
-      pendingSystemPrompts.push({
-        key: systemPromptKey(input.request.config),
-        charsLength: prompt.length,
-        hash12: sha256Hex(prompt).slice(0, 12),
+      const caller =
+        typeof prompt === "string" && prompt.length > 0
+          ? { charsLength: prompt.length, hash12: hash12(prompt) }
+          : null;
+      // Read inside the create so this sample and the daemon's own injection
+      // share one window. Neither step can throw: a failed read is a missing
+      // cosmetic row, never a failed agent creation.
+      const daemonAppend = await sampleDaemonAppend(context.paseo as ConfigReadable);
+      pendingContext.stage({
+        key: contextKeyOf(input.request.config),
+        caller,
+        daemonAppend,
       });
       return input.request;
     });

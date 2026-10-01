@@ -351,14 +351,22 @@ function roundRow(event: TrajectoryEvent): TrajectoryFoldRow {
 }
 
 /**
- * The caller system prompt, as a size and a hash. The prompt text is never in
+ * Injected system context, as a size and a hash. The prompt text is never in
  * the ledger, so there is nothing to leak into this row either.
+ *
+ * One row shape for both injections the daemon can apply before a session
+ * exists: what the caller configured (`system prompt`) and what the daemon
+ * appends to every session (`daemon instructions`). A row written before
+ * `source` existed is a caller prompt, so an absent field reads as `caller`
+ * rather than as unknown.
  */
 function systemPromptRow(event: TrajectoryEvent): TrajectoryFoldRow {
   const chars = numericLength(event.data.charsLength);
   const hash = typeof event.data.hash12 === "string" ? event.data.hash12 : null;
   const parts = [
-    `system prompt · ${chars === null ? "— chars" : `${chars.toLocaleString("en-US")} chars`}`,
+    `${event.data.source === "daemon-append" ? "daemon instructions" : "system prompt"} · ${
+      chars === null ? "— chars" : `${chars.toLocaleString("en-US")} chars`
+    }`,
   ];
   if (hash !== null) parts.push(`hash ${hash}…`);
   return {
