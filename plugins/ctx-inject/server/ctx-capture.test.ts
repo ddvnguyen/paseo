@@ -5,6 +5,8 @@ import type { AgentSessionConfig } from "@getpaseo/protocol/agent-types";
 import {
   buildChipData,
   configFacts,
+  CHARS_PER_TOKEN,
+  estimateTokensFromChars,
   HASH_CHARS,
   MCP_NAMES_MAX,
   systemPromptHash,
@@ -106,6 +108,92 @@ describe("configFacts", () => {
   });
 });
 
+describe("estimateTokensFromChars", () => {
+  it("applies the chars/4 heuristic and rounds up", () => {
+    expect(estimateTokensFromChars(0)).toBe(0);
+    expect(estimateTokensFromChars(4)).toBe(1);
+    // A partial token still costs a token, and rounding down would understate
+    // the prompt — the chip is an upper-ish bound, not a floor claim.
+    expect(estimateTokensFromChars(5)).toBe(2);
+    expect(estimateTokensFromChars(CHARS_PER_TOKEN * 308 + 2)).toBe(309);
+  });
+});
+
+describe("buildChipData token estimates", () => {
+  const withLength = (chars: number): ConfigFacts => ({
+    ...FACTS,
+    systemPromptInjected: true,
+    systemPromptLength: chars,
+  });
+
+  it("estimates the configured prompt from its captured length only", () => {
+    const data = buildChipData({
+      facts: withLength(1234),
+      snapshot: null,
+      paseoToolsInjected: null,
+      reason: "create",
+      capturedAt: "2026-09-27T00:00:00.000Z",
+    });
+
+    expect(data.tokenEstimates?.systemPrompt).toEqual({ tokens: 309, estimated: true });
+  });
+
+  it("reports unknown rather than zero when no create hook was correlated", () => {
+    const data = buildChipData({
+      facts: null,
+      snapshot: null,
+      paseoToolsInjected: null,
+      reason: "resume",
+      capturedAt: "2026-09-27T00:00:00.000Z",
+    });
+
+    // "Zero tokens" would be a claim about a prompt nobody read.
+    expect(data.tokenEstimates?.systemPrompt).toBeNull();
+  });
+
+  it("reports unknown rather than zero when no prompt was configured", () => {
+    const data = buildChipData({
+      facts: {
+        ...FACTS,
+        systemPromptInjected: false,
+        systemPromptLength: 0,
+        systemPromptHash: null,
+      },
+      snapshot: null,
+      paseoToolsInjected: null,
+      reason: "create",
+      capturedAt: "2026-09-27T00:00:00.000Z",
+    });
+
+    expect(data.tokenEstimates?.systemPrompt).toBeNull();
+  });
+
+  it("estimates no MCP tokens, because only the server names were captured", () => {
+    const data = buildChipData({
+      facts: { ...FACTS, mcpServers: ["github", "playwright"] },
+      snapshot: null,
+      paseoToolsInjected: null,
+      reason: "create",
+      capturedAt: "2026-09-27T00:00:00.000Z",
+    });
+
+    // A count derived from names would describe config this plugin never reads.
+    expect(Object.keys(data.tokenEstimates ?? {})).toEqual(["systemPrompt"]);
+  });
+
+  it("never carries prompt text into the estimates", () => {
+    const data = buildChipData({
+      facts: { ...FACTS, systemPromptLength: SECRET.length, systemPromptHash: null },
+      snapshot: null,
+      paseoToolsInjected: null,
+      reason: "create",
+      capturedAt: "2026-09-27T00:00:00.000Z",
+    });
+
+    expect(JSON.stringify(data.tokenEstimates)).not.toContain("DO-NOT-LEAK");
+  });
+});
+
 describe("buildChipData", () => {
   it("merges create facts with the agent snapshot", () => {
     const data = buildChipData({
@@ -120,6 +208,8 @@ describe("buildChipData", () => {
       systemPromptInjected: true,
       systemPromptLength: 12,
       systemPromptHash: "abcdef012345",
+      // 12 chars at the chars/4 heuristic, flagged as a guess on the wire.
+      tokenEstimates: { systemPrompt: { tokens: 3, estimated: true } },
       mcpServers: ["github"],
       paseoToolsInjected: true,
       model: "claude-opus-5",

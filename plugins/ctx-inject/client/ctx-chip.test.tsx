@@ -69,6 +69,7 @@ const CREATED: CtxInjectChipData = {
   systemPromptInjected: true,
   systemPromptLength: 1234,
   systemPromptHash: "abcdef012345",
+  tokenEstimates: { systemPrompt: { tokens: 309, estimated: true } },
   mcpServers: ["github", "linear", "sentry", "datadog"],
   paseoToolsInjected: true,
   model: "claude-opus-5",
@@ -81,6 +82,7 @@ const RESUMED: CtxInjectChipData = {
   systemPromptInjected: null,
   systemPromptLength: null,
   systemPromptHash: null,
+  tokenEstimates: { systemPrompt: null },
   mcpServers: [],
   paseoToolsInjected: null,
   model: null,
@@ -247,5 +249,34 @@ describe("CtxInjectChip content", () => {
 
     expect(byId("ctx-inject-summary").getAttribute("data-lines")).toBe("1");
     expect(text()).toContain("prompt 1234 chars");
+  });
+});
+
+describe("CtxInjectChip token estimate", () => {
+  it("labels the estimate as one, so the number is never read as measured", () => {
+    render(CREATED);
+    toggle();
+    const detail = byId("ctx-inject-detail").textContent ?? "";
+
+    // The wire flag says estimated: true, but the reader sees the copy, not the
+    // flag — so the copy has to carry the same claim.
+    expect(detail).toContain("Prompt tokens: ~309 (estimated, chars÷4)");
+  });
+
+  it("shows an em dash for an unknown estimate rather than zero tokens", () => {
+    render(RESUMED);
+    toggle();
+
+    expect(byId("ctx-inject-detail").textContent).toContain("Prompt tokens: —");
+  });
+
+  it("reads a row written before the field existed as unknown, not as zero", () => {
+    // tokenEstimates is optional on purpose, so pre-field rows still parse; a
+    // renderer that reached for .systemPrompt unguarded would throw here.
+    const { tokenEstimates: _omitted, ...withoutField } = CREATED;
+    render(withoutField as CtxInjectChipData);
+    toggle();
+
+    expect(byId("ctx-inject-detail").textContent).toContain("Prompt tokens: —");
   });
 });

@@ -88,6 +88,20 @@ function promptDetail(data: CtxInjectChipData): string {
   });
 }
 
+/**
+ * The estimated prompt size, or the em dash.
+ *
+ * `tokenEstimates` is absent on rows written before the field existed, and its
+ * entry is null when the prompt length was never known — both read as unknown
+ * here, which is the same thing the length itself renders as. The "estimated"
+ * wording is in the string, so a reader never has to trust the wire flag alone.
+ */
+function promptTokensDetail(data: CtxInjectChipData): string {
+  const estimate = data.tokenEstimates?.systemPrompt;
+  if (estimate === undefined || estimate === null) return t(LOCALE, "unknown");
+  return t(LOCALE, "detailPromptTokensValue", { count: estimate.tokens });
+}
+
 function mcpSummary(data: CtxInjectChipData): string {
   const count = data.mcpServers.length;
   if (count === 0) return t(LOCALE, "mcpNone");
@@ -140,6 +154,11 @@ export function CtxInjectChip({ item, theme, layout }: PluginTimelineItemProps<C
       {expanded ? (
         <View style={styles.detail} testID="ctx-inject-detail">
           <Detail label={t(LOCALE, "detailPrompt")} value={promptDetail(data)} styles={styles} />
+          <Detail
+            label={t(LOCALE, "detailPromptTokens")}
+            value={promptTokensDetail(data)}
+            styles={styles}
+          />
           <Detail
             label={t(LOCALE, "detailMcp")}
             value={data.mcpServers.length > 0 ? data.mcpServers.join(", ") : t(LOCALE, "unknown")}
