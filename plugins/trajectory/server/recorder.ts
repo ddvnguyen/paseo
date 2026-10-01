@@ -57,7 +57,7 @@ export interface Recorder {
   /** Stash usage on the open turn; turn/end reports it if no terminal usage arrives. */
   usage(input: UsageInput): void;
   /**
-   * Record the caller system prompt's SIZE and a short hash. Never the text:
+   * Record an injected system prompt's SIZE and a short hash. Never the text:
    * the ledger is length-only by rule, and d-893c722f28 sets the hash precedent
    * for something that must be comparable across runs without being readable.
    */
@@ -66,17 +66,30 @@ export interface Recorder {
 
 export interface SystemPromptInput {
   agentId: string;
-  /** Character count of the caller-supplied prompt. */
+  /** Character count of the prompt. */
   charsLength: number;
   /** First 12 hex chars of the prompt's sha256, for equality comparison. */
   hash12: string;
   /**
+   * Which injection this row documents. "caller" is the prompt the caller
+   * configured; "daemon-append" is the daemon's own appended instructions.
+   *
+   * One row type for both: each is context in force before the first turn, so
+   * both belong in the same turn-less preamble bucket, and a reader scanning
+   * that bucket wants one kind of row. Omitted on rows written before the field
+   * existed, which were all caller prompts — a row with no `source` therefore
+   * reads as "caller" rather than as unknown.
+   */
+  source?: "caller" | "daemon-append";
+  /**
    * How the row was attributed to this agent: "config" when the create config
    * matched the agent exactly, "fifo" when it fell back to the oldest pending
-   * create. The daemon exposes no request id on either hook, so this is recorded
+   * create, "time-window" when the fact is global to the daemon rather than
+   * per-agent and is attributed by the window in which the agent was created.
+   * The daemon exposes no request id on either hook, so this is recorded
    * rather than assumed.
    */
-  correlated?: "config" | "fifo";
+  correlated?: "config" | "fifo" | "time-window";
 }
 
 interface OpenTurn {
@@ -507,6 +520,7 @@ export function createRecorder(options: {
           derived: true,
           charsLength: input.charsLength,
           hash12: input.hash12,
+          ...(input.source === undefined ? {} : { source: input.source }),
           ...(input.correlated === undefined ? {} : { correlated: input.correlated }),
         },
       });

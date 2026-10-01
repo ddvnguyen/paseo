@@ -350,6 +350,42 @@ describe("eventsToFoldRows", () => {
     expect(rows[0].label).toBe("system prompt · — chars · hash abc…");
   });
 
+  it("labels the daemon's appended instructions as their own row, same shape", () => {
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "system/attach",
+        turn: null,
+        data: {
+          derived: true,
+          source: "daemon-append",
+          correlated: "time-window",
+          charsLength: 412,
+          hash12: "998877665544",
+        },
+      }),
+    ]);
+    // Identical kind, palette and turn handling to a caller prompt — both are
+    // context in force before the first turn. Only the label says which.
+    expect(rows[0].kind).toBe("systemPrompt");
+    expect(rows[0].label).toBe("daemon instructions · 412 chars · hash 998877665544…");
+    expect(rows[0].turnId).toBeNull();
+  });
+
+  it("keeps reading a source-less row as the caller's prompt", () => {
+    // Rows written before `source` existed are all caller prompts, so an absent
+    // field must not render as unknown or as the daemon's.
+    const rows = eventsToFoldRows([
+      event({
+        seq: 1,
+        type: "system/attach",
+        turn: null,
+        data: { charsLength: 1234, hash12: "abcdef123456" },
+      }),
+    ]);
+    expect(rows[0].label).toBe("system prompt · 1,234 chars · hash abcdef123456…");
+  });
+
   it("never renders prompt text even if one somehow reached the event", () => {
     const rows = eventsToFoldRows([
       event({

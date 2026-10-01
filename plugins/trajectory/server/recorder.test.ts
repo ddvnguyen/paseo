@@ -343,6 +343,37 @@ describe("recorder", () => {
     expect(JSON.stringify(row.data)).not.toMatch(/prompt\s*:/i);
   });
 
+  test("records the daemon's appended instructions as their own sourced row", () => {
+    const { store, recorder } = harness();
+    recorder.systemPromptAttached({
+      agentId: "agent-1",
+      charsLength: 412,
+      hash12: "998877665544",
+      source: "daemon-append",
+      correlated: "time-window",
+    });
+    const [row] = allEvents(store);
+    // Same type and same shape as a caller prompt — both are context in force
+    // before the first turn — with the source and the weaker attribution that
+    // comes with a global setting recorded rather than presented as a match.
+    expect(row.type).toBe("system/attach");
+    expect(row.turn).toBeNull();
+    expect(row.data.source).toBe("daemon-append");
+    expect(row.data.correlated).toBe("time-window");
+    expect(row.data.charsLength).toBe(412);
+  });
+
+  test("omits source on a caller row, so pre-existing rows keep reading as caller", () => {
+    const { store, recorder } = harness();
+    recorder.systemPromptAttached({
+      agentId: "agent-1",
+      charsLength: 10,
+      hash12: "abcdef123456",
+    });
+    // Absence is the older, caller-only shape — not an unknown source.
+    expect(allEvents(store)[0].data.source).toBeUndefined();
+  });
+
   function toolCall(
     rec: ReturnType<typeof harness>["recorder"],
     turnId: string,
