@@ -33,6 +33,7 @@ import {
   type PersistedWorkspaceRecord,
   FileBackedProjectRegistry,
   FileBackedWorkspaceRegistry,
+  resolveWorkspaceDisplayName,
 } from "../workspace-registry.js";
 import { archiveByScope, type ActiveWorkspaceRef } from "../workspace-archive-service.js";
 import {
@@ -272,6 +273,25 @@ async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promi
           workspaceArchiveInProgress = false;
         }
       },
+  };
+}
+
+/**
+ * Mirrors the production binding of the run-naming seam: the dispatch name lands on
+ * `title` as well as `displayName`, because the workspace list serves
+ * `title ?? displayName`. Asserting only one of the two would pass against a binding
+ * that never reaches the UI.
+ */
+function createRegistryWorkspaceNamer(
+  workspaceRegistry: FileBackedWorkspaceRegistry,
+): NonNullable<ScheduleServiceOptions["nameRunWorkspace"]> {
+  return async (workspaceId, displayName) => {
+    await workspaceRegistry.update(workspaceId, (existing) => ({
+      ...existing,
+      displayName,
+      title: displayName,
+      updatedAt: new Date().toISOString(),
+    }));
   };
 }
 
@@ -1735,6 +1755,277 @@ describe("ScheduleService", () => {
         archivedAt: null,
       }),
     ]);
+  });
+
+  test("names the workspace each run dispatches into with its ordinal and hour", async () => {
+    const {
+      workspaceRegistry,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      createArchiveWorkspace,
+    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      archiveWorkspace: createArchiveWorkspace({
+        agentManager: manager,
+        agentStorage,
+      }),
+      nameRunWorkspace: createRegistryWorkspaceNamer(workspaceRegistry),
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "name my workspaces",
+      // Every minute in UTC: the cron timezone is what makes the stamped hour
+      // deterministic, so the expectation cannot drift with the machine's zone.
+      cadence: { type: "cron", expression: "* * * * *", timezone: "UTC" },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: false,
+        },
+      },
+    });
+
+    now = new Date("2026-01-01T00:01:00.000Z");
+    await service.tick();
+
+    const inspected = await service.inspect(created.id);
+    const run = inspected.runs[0]!;
+    expect(run.status).toBe("succeeded");
+    expect(run.workspaceOrigin).toBe("provisioned");
+    const workspace = await workspaceRegistry.get(run.workspaceId!);
+    // Without the name every run's workspace reads as the same checkout, so there is
+    // no way to tell which run a workspace belongs to.
+    expect(workspace?.displayName).toBe("#1 - 260101-00");
+    expect(workspace?.title).toBe("#1 - 260101-00");
+    expect(resolveWorkspaceDisplayName(workspace!)).toBe("#1 - 260101-00");
+  });
+
+  test("numbers repeat runs and advances the stamped hour with each dispatch", async () => {
+    const {
+      workspaceRegistry,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      createArchiveWorkspace,
+    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      archiveWorkspace: createArchiveWorkspace({
+        agentManager: manager,
+        agentStorage,
+      }),
+      nameRunWorkspace: createRegistryWorkspaceNamer(workspaceRegistry),
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "one workspace per run",
+      cadence: { type: "cron", expression: "* * * * *", timezone: "UTC" },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: false,
+        },
+      },
+    });
+
+    now = new Date("2026-01-01T00:01:00.000Z");
+    await service.tick();
+    // The next hour, because the stamp carries the hour and not the minute: two
+    // dispatches inside one hour must still differ by their ordinal.
+    now = new Date("2026-01-01T01:01:00.000Z");
+    await service.tick();
+
+    const inspected = await service.inspect(created.id);
+    expect(inspected.runs).toHaveLength(2);
+    const names = await Promise.all(
+      inspected.runs.map(async (run) => (await workspaceRegistry.get(run.workspaceId!))?.title),
+    );
+    // The ordinal counts this schedule's own runs, and the hour is the dispatch time:
+    // two different workspaces, two names a user can tell apart.
+    expect(names).toEqual(["#1 - 260101-00", "#2 - 260101-01"]);
+  });
+
+  test("stamps the schedule's timezone hour, not the dispatching daemon's", async () => {
+    const {
+      workspaceRegistry,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      createArchiveWorkspace,
+    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      archiveWorkspace: createArchiveWorkspace({
+        agentManager: manager,
+        agentStorage,
+      }),
+      nameRunWorkspace: createRegistryWorkspaceNamer(workspaceRegistry),
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "run on the Bangkok clock",
+      // 18:30Z is 01:30 the next day in Bangkok. A daemon stamping its own local hour
+      // would write `260101-18`, a name the user who set the schedule never sees.
+      cadence: { type: "cron", expression: "* * * * *", timezone: "Asia/Bangkok" },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: false,
+        },
+      },
+      runOnCreate: true,
+    });
+
+    now = new Date("2026-01-01T18:30:00.000Z");
+    await service.tick();
+
+    const inspected = await service.inspect(created.id);
+    const run = inspected.runs[0]!;
+    expect(run.status).toBe("succeeded");
+    expect((await workspaceRegistry.get(run.workspaceId!))?.displayName).toBe("#1 - 260102-01");
+  });
+
+  test("renames a reused workspace to the latest dispatch", async () => {
+    const {
+      workspaceRegistry,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      createArchiveWorkspace,
+    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const shared = await createScheduleDirectoryWorkspace({
+      cwd: tempDir,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      archiveWorkspace: createArchiveWorkspace({
+        agentManager: manager,
+        agentStorage,
+      }),
+      nameRunWorkspace: createRegistryWorkspaceNamer(workspaceRegistry),
+      seedWorkspaces: [shared],
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "shared workspace, newest name wins",
+      cadence: { type: "cron", expression: "* * * * *", timezone: "UTC" },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: false,
+          workspaceId: shared.workspaceId,
+        },
+      },
+    });
+
+    now = new Date("2026-01-01T00:01:00.000Z");
+    await service.tick();
+    const afterFirstRun = await workspaceRegistry.get(shared.workspaceId);
+    expect(afterFirstRun?.displayName).toBe("#1 - 260101-00");
+
+    now = new Date("2026-01-01T01:01:00.000Z");
+    await service.tick();
+
+    const inspected = await service.inspect(created.id);
+    expect(inspected.runs.map((run) => run.workspaceOrigin)).toEqual(["reused", "reused"]);
+    // One shared workspace, so the name can only be the latest dispatch's. That is
+    // the point: opening it lands the user on the run that is current, not run one.
+    const afterSecondRun = await workspaceRegistry.get(shared.workspaceId);
+    expect(afterSecondRun?.displayName).toBe("#2 - 260101-01");
+    expect(afterSecondRun?.title).toBe("#2 - 260101-01");
+    expect(afterSecondRun?.archivedAt ?? null).toBeNull();
+  });
+
+  test("a workspace that cannot be named still runs the agent", async () => {
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      nameRunWorkspace: async () => {
+        throw new Error("registry write failed");
+      },
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "naming is not the job",
+      cadence: { type: "cron", expression: "* * * * *", timezone: "UTC" },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: false,
+        },
+      },
+    });
+
+    now = new Date("2026-01-01T00:01:00.000Z");
+    await service.tick();
+
+    // A missing label must not cost the user the run that was scheduled.
+    const inspected = await service.inspect(created.id);
+    expect(inspected.runs[0]).toMatchObject({ status: "succeeded" });
+    expect(inspected.runs[0]?.agentId).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   test("archiveOnFinish=true archives the run workspace through workspace archive", async () => {

@@ -1332,6 +1332,22 @@ export async function createPaseoDaemon(
       },
     );
   };
+  const nameScheduleRunWorkspaceExternal = async (workspaceId: string, displayName: string) => {
+    const updatedAt = new Date().toISOString();
+    // title as well as displayName: the workspace list serves resolveWorkspaceName,
+    // which is `title ?? displayName`, and a git checkout derives its served
+    // displayName live from the branch. Writing only displayName would leave the
+    // run name invisible behind the prompt title the workspace was created with.
+    if (!workspaceRegistry) return;
+    const updated = await workspaceRegistry.update(workspaceId, (existing) => ({
+      ...existing,
+      displayName,
+      title: displayName,
+      updatedAt,
+    }));
+    if (!updated) return;
+    await emitWorkspaceUpdatesExternal([workspaceId]);
+  };
   const scheduleService = new ScheduleService({
     paseoHome: config.paseoHome,
     logger,
@@ -1348,6 +1364,7 @@ export async function createPaseoDaemon(
       if (!workspaceRegistry) return null;
       return (await workspaceRegistry.get(workspaceId)) ?? null;
     },
+    nameRunWorkspace: nameScheduleRunWorkspaceExternal,
   });
   await scheduleService.start();
   agentManager.setAgentArchivedCallback(async (agentId) => {

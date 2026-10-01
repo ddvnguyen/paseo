@@ -18,6 +18,7 @@ import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
 import type { CreatePaseoWorktreeWorkflowResult } from "../worktree-session.js";
 import { ScheduleStore } from "./store.js";
 import { computeNextRunAt, validateScheduleCadence } from "./cron.js";
+import { formatScheduleRunWorkspaceName } from "./run-workspace-name.js";
 import type {
   CreateScheduleInput,
   ScheduleExecutionResult,
@@ -306,6 +307,12 @@ export interface ScheduleServiceOptions {
    * current provision-a-new-workspace behaviour instead of failing every run.
    */
   getWorkspace?: (workspaceId: string) => Promise<PersistedWorkspaceRecord | null>;
+  /**
+   * Name the workspace a run is dispatching into, so the workspace list shows
+   * which run each one belongs to. Optional and a noop when absent: naming is
+   * presentation, and a host that cannot apply it must still run schedules.
+   */
+  nameRunWorkspace?: (workspaceId: string, displayName: string) => Promise<void>;
   now?: () => Date;
   runner?: (schedule: StoredSchedule, runId: string) => Promise<ScheduleExecutionResult>;
 }
@@ -324,6 +331,7 @@ export class ScheduleService {
   ) => Promise<CreatePaseoWorktreeWorkflowResult>;
   private readonly archiveWorkspace: (workspaceId: string) => Promise<void>;
   private readonly getWorkspace?: (workspaceId: string) => Promise<PersistedWorkspaceRecord | null>;
+  private readonly nameRunWorkspace: (workspaceId: string, displayName: string) => Promise<void>;
   private readonly now: () => Date;
   private readonly runner: (
     schedule: StoredSchedule,
@@ -344,6 +352,7 @@ export class ScheduleService {
     this.createPaseoWorktreeWorkspace = options.createPaseoWorktreeWorkspace;
     this.archiveWorkspace = options.archiveWorkspace;
     this.getWorkspace = options.getWorkspace;
+    this.nameRunWorkspace = options.nameRunWorkspace ?? (async () => {});
     this.now = options.now ?? (() => new Date());
     this.runner = options.runner ?? ((schedule, runId) => this.executeSchedule(schedule, runId));
   }
@@ -996,6 +1005,7 @@ export class ScheduleService {
           agentId: null,
         });
       }
+      await this.nameScheduleRunWorkspace(schedule, runId, workspace.workspaceId);
       const runConfig = { ...config, cwd: workspace.cwd };
       const created = await this.createAgent({
         kind: "mcp",
@@ -1077,6 +1087,60 @@ export class ScheduleService {
         }
       }
     }
+  }
+
+  /**
+   * Put this run's dispatch name on the workspace it is running in.
+   *
+   * Applied to whichever workspace the run ended up with, including a reused one:
+   * the name identifies the LATEST dispatch, which is the run a user opens the
+   * workspace for. A naming failure is a missing label, not a failed run, so it
+   * is logged and the run continues — the agent still has to happen.
+   */
+  private async nameScheduleRunWorkspace(
+    schedule: StoredSchedule,
+    runId: string,
+    workspaceId: string,
+  ): Promise<void> {
+    const dispatch = this.resolveScheduleRunDispatch(schedule, runId);
+    const displayName = formatScheduleRunWorkspaceName(
+      dispatch.ordinal,
+      dispatch.at,
+      dispatch.timeZone,
+    );
+    try {
+      await this.nameRunWorkspace(workspaceId, displayName);
+    } catch (error) {
+      this.logger.warn(
+        { err: error, scheduleId: schedule.id, runId, workspaceId, displayName },
+        "Failed to name scheduled workspace after dispatch",
+      );
+    }
+  }
+
+  /**
+   * Where this run sits in its own schedule's history, and when it was dispatched.
+   *
+   * `runSchedule` appends the running run to `schedule.runs` BEFORE handing the
+   * updated schedule to the runner, so the run's index in that array IS its
+   * dispatch ordinal — no counter is kept and nothing can drift out of step with
+   * the recorded history. `startedAt` is the dispatch instant, read from the same
+   * record rather than from the clock so the name cannot disagree with the run log.
+   */
+  private resolveScheduleRunDispatch(
+    schedule: StoredSchedule,
+    runId: string,
+  ): { ordinal: number; at: Date; timeZone: string | undefined } {
+    const runIndex = schedule.runs.findIndex((run) => run.id === runId);
+    const run = runIndex >= 0 ? schedule.runs[runIndex] : null;
+    // Absent run: fall back to the count so a naming miss degrades to a plausible
+    // ordinal instead of throwing and failing the run.
+    const ordinal = runIndex >= 0 ? runIndex + 1 : schedule.runs.length + 1;
+    return {
+      ordinal,
+      at: run ? new Date(run.startedAt) : this.now(),
+      timeZone: schedule.cadence.type === "cron" ? schedule.cadence.timezone : undefined,
+    };
   }
 
   /**

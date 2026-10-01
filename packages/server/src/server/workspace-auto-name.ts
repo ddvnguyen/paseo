@@ -5,6 +5,7 @@ import { resolveFirstAgentPromptTitle } from "./agent/create-agent-title.js";
 import type { AgentManager } from "./agent/agent-manager.js";
 import type { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import type { StructuredGenerationDaemonConfig } from "./agent/structured-generation-providers.js";
+import { isScheduleRunWorkspaceName } from "./schedule/run-workspace-name.js";
 import {
   attemptFirstAgentBranchAutoName,
   type AttemptFirstAgentBranchAutoNameResult,
@@ -182,7 +183,15 @@ export class WorkspaceAutoName {
   ): Promise<void> {
     await this.workspaceRegistry.update(workspaceId, (current) => {
       let title = current.title;
-      if (!title || (input.promptTitle && title === input.promptTitle)) {
+      // A schedule dispatch names the workspace it runs in (`#12 - 261002-01`), and
+      // that name is how the user tells one run's workspace from another's. It wins
+      // over generation: the workspace is already carrying the prompt title this
+      // path is allowed to replace, so without the guard the generated name would
+      // land after dispatch and erase the run the workspace belongs to.
+      if (
+        !isScheduleRunWorkspaceName(title) &&
+        (!title || (input.promptTitle && title === input.promptTitle))
+      ) {
         title = input.title;
       }
       return {
