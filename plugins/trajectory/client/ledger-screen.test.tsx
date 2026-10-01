@@ -64,11 +64,32 @@ vi.mock("react-native", () => ({
     children,
     onPress,
     testID,
-  }: React.PropsWithChildren<{ onPress?: () => void; testID?: string }>) =>
+    accessibilityRole,
+    accessibilityLabel,
+    hitSlop,
+  }: {
+    // Render-function children carry press state, so the union is explicit:
+    // ReactNode alone would narrow the function branch away.
+    children?: React.ReactNode | ((state: { pressed: boolean }) => React.ReactNode);
+    onPress?: () => void;
+    testID?: string;
+    accessibilityRole?: string;
+    accessibilityLabel?: string;
+    hitSlop?: number;
+  }) =>
     React.createElement(
       "button",
-      { type: "button", "data-testid": testID, onClick: onPress },
-      children,
+      {
+        type: "button",
+        "data-testid": testID,
+        "data-hit-slop": hitSlop,
+        role: accessibilityRole,
+        "aria-label": accessibilityLabel,
+        onClick: onPress,
+      },
+      // Render-function children carry press state; there is no press to
+      // simulate here, so every branch is exercised at rest.
+      typeof children === "function" ? children({ pressed: false }) : children,
     ),
 }));
 
@@ -126,7 +147,13 @@ const TURN_NUMBERS_WITH_APPENDED: ReadonlyMap<string, number> = new Map([
   ["t3", 3],
 ]);
 
-function render(overrides: { compact?: boolean; extraTurn?: boolean } = {}): void {
+function render(
+  overrides: {
+    compact?: boolean;
+    extraTurn?: boolean;
+    onClose?: () => void;
+  } = {},
+): void {
   const appended = overrides.extraTurn === true;
   const rows = appended ? ROWS_WITH_APPENDED_TURN : FIXTURE_ROWS;
   const turnNumbers = appended ? TURN_NUMBERS_WITH_APPENDED : FIXTURE_TURN_NUMBERS;
@@ -138,6 +165,7 @@ function render(overrides: { compact?: boolean; extraTurn?: boolean } = {}): voi
         openCallIds={FIXTURE_OPEN_CALLS}
         compact={overrides.compact === true}
         theme={THEME}
+        onClose={overrides.onClose}
       />,
     );
   });
@@ -211,20 +239,16 @@ describe("ledger screen", () => {
     }
   });
 
-  it("the Turns toggle hides tool rows with characters and durations, then restores them", () => {
+  it("folding every turn header hides tool rows with characters and durations, then restores them", () => {
     render();
     const visible = () =>
       container.querySelectorAll('[data-testid="ledger-list"] [data-testid^="cell-"]').length;
     const shown = visible();
     expect(shown).toBeGreaterThan(0);
-    // Already open by default, so the toggle collapses everything.
-    act(() =>
-      (document.querySelector('[data-testid="toggle-turns"]') as HTMLButtonElement).click(),
-    );
+    // Already open by default, so folding every header collapses everything.
+    toggleEveryTurn();
     expect(visible()).toBe(0);
-    act(() =>
-      (document.querySelector('[data-testid="toggle-turns"]') as HTMLButtonElement).click(),
-    );
+    toggleEveryTurn();
     expect(visible()).toBe(shown);
     // In-flight tool (c3) shows the em dash; settled one shows 2,400 ms.
     const durations = [...document.querySelectorAll('[data-testid="duration-text"]')].map(
@@ -250,8 +274,17 @@ describe("ledger screen", () => {
   });
   // --- toolbar parity ----------------------------------------------------
 
-  function press(testID: string): void {
-    act(() => (container.querySelector(`[data-testid="${testID}"]`) as HTMLButtonElement).click());
+  /**
+   * Press every turn header, the way a reader folds the ledger now that the
+   * toolbar's Turns toggle is gone. Headers survive a fold, so the same list
+   * serves to unfold them again.
+   */
+  function toggleEveryTurn(): void {
+    const headers = [...container.querySelectorAll('[data-testid^="turn-header-"]')];
+    expect(headers.length).toBeGreaterThan(0);
+    for (const header of headers) {
+      act(() => (header as HTMLButtonElement).click());
+    }
   }
 
   function cells(): Element[] {
@@ -268,23 +301,49 @@ describe("ledger screen", () => {
     });
   }
 
-  it("renders the toolbar: Duration, Turns and a search box, and no Calls toggle", () => {
-    render();
-    for (const id of ["toggle-duration", "toggle-turns", "ledger-search"]) {
-      expect(container.querySelector(`[data-testid="${id}"]`)).not.toBeNull();
-    }
-    expect(container.querySelector('[data-testid="toggle-calls"]')).toBeNull();
+  it("renders a search box and, when the host can dismiss, a close control", () => {
+    render({ onClose: () => {} });
+    expect(container.querySelector('[data-testid="ledger-search"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="trajectory-toolbar-close"]')).not.toBeNull();
   });
 
-  it("the Turns toggle closes every turn and opens them again", () => {
+  it("no longer renders the Duration, Turns or Calls toggles", () => {
+    render({ onClose: () => {} });
+    for (const id of ["toggle-duration", "toggle-turns", "toggle-calls"]) {
+      expect(container.querySelector(`[data-testid="${id}"]`)).toBeNull();
+    }
+  });
+
+  it("the toolbar close is a 44px-target button wired to the host's dismiss", () => {
+    const dismissals: string[] = [];
+    render({ onClose: () => dismissals.push("closed") });
+    const close = container.querySelector(
+      '[data-testid="trajectory-toolbar-close"]',
+    ) as HTMLButtonElement;
+    expect(close.getAttribute("role")).toBe("button");
+    expect(close.getAttribute("aria-label")).toBe("Close trajectory");
+    // A 26pt painted box plus 9pt of slop on each side.
+    expect(close.getAttribute("data-hit-slop")).toBe("9");
+    act(() => close.click());
+    expect(dismissals).toEqual(["closed"]);
+  });
+
+  it("hides the close control on a host that cannot dismiss (older host)", () => {
+    render();
+    expect(container.querySelector('[data-testid="trajectory-toolbar-close"]')).toBeNull();
+    // Search never depended on the host, so it is unaffected.
+    expect(container.querySelector('[data-testid="ledger-search"]')).not.toBeNull();
+  });
+
+  it("folding every turn header closes them all, and pressing again opens them", () => {
     render();
     const open = cells().length;
     expect(open).toBeGreaterThan(0);
 
-    press("toggle-turns");
+    toggleEveryTurn();
     expect(cells()).toHaveLength(0);
 
-    press("toggle-turns");
+    toggleEveryTurn();
     expect(cells().length).toBe(open);
   });
 
@@ -314,7 +373,7 @@ describe("ledger screen", () => {
   it("search reveals a match inside a turn the user collapsed", () => {
     render();
     // The reader folds everything, including the turn holding the shell tool.
-    press("toggle-turns");
+    toggleEveryTurn();
     expect(cells()).toHaveLength(0);
 
     // A match must still be reachable without the reader reopening anything.
@@ -324,7 +383,7 @@ describe("ledger screen", () => {
 
   it("search matches the user prompt label of a later turn", () => {
     render();
-    press("toggle-turns");
+    toggleEveryTurn();
     search("failing assertion");
     const matched = cells();
     expect(matched.length).toBeGreaterThan(0);
@@ -344,7 +403,7 @@ describe("ledger screen", () => {
 
   it("a search with no match shows no rows rather than everything", () => {
     render();
-    press("toggle-turns");
+    toggleEveryTurn();
     search("zzzz-no-such-term");
     expect(cells()).toHaveLength(0);
   });

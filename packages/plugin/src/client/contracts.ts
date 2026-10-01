@@ -31,6 +31,20 @@ export interface PluginHostProps {
 }
 
 interface PluginNavigableHostProps extends PluginHostProps {
+  /**
+   * Dismiss the surface this component is rendered into.
+   *
+   * The SDK has `openPanel` but no way back, so a surface that draws its own
+   * chrome — a toolbar close control, say — had no plugin-side way to close
+   * itself and had to lean on whatever the host happened to draw.
+   *
+   * Present exactly where the host has something to close (a `dialog`-location
+   * panel) and absent everywhere else: a workspace tab or side pane has no close
+   * of its own, and an older host never supplied it. Optional and additive, so a
+   * component must HIDE the affordance when it is absent rather than render a
+   * control that cannot do anything. Same posture as `navigation` below.
+   */
+  readonly onClosePanel?: () => void;
   /** Client-owned navigation. Undefined on older hosts; hide dependent affordances when absent. */
   readonly navigation?: {
     /** Present only on Electron. The browser runs locally; serverId selects workspace ownership. */

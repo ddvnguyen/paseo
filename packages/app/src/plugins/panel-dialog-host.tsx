@@ -142,6 +142,7 @@ function PluginPanelDialogBody({ theme }: { theme: PluginTheme }) {
       host,
       layout,
       navigation,
+      onClosePanel: closePluginPanelDialog,
       workspaceId,
     };
     Surface = contribution.Component;
@@ -153,6 +154,7 @@ function PluginPanelDialogBody({ theme }: { theme: PluginTheme }) {
       host,
       layout,
       navigation,
+      onClosePanel: closePluginPanelDialog,
       workspaceId,
       agentId: dialog.agentId ?? "",
     };
@@ -220,10 +222,12 @@ function PluginPanelSheet(props: {
       scrollable={false}
       bodyStyle={styles.body}
       // The plugin surface owns its own padding and draws full bleed, so the
-      // sheet's content inset must not sit on top of it. The close control
-      // stays reachable as a floating overlay, which is what keeps a full-screen
-      // dialog escapable now that the bar is gone.
+      // sheet's content inset must not sit on top of it. It also owns a close
+      // control in its own chrome — a toolbar X, say — which is why the sheet's
+      // own control stands down on wide. Compact keeps it: a full-screen sheet
+      // starts at 0,0, so the surface's own close is where the status bar is.
       edgeToEdge
+      surfaceOwnsClose
       desktopHeight={fullScreen ? "100%" : undefined}
       desktopMaxWidth={fullScreen ? FULL_SCREEN_MAX_WIDTH : undefined}
       snapPoints={fullScreen ? fullScreenSnapPoints : undefined}

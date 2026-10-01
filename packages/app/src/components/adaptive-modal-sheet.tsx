@@ -291,6 +291,19 @@ const styles = StyleSheet.create((theme) => ({
 
 const WEB_EXIT_DURATION_MS = 160;
 
+/**
+ * Whether the sheet draws a close control of its own. See
+ * `AdaptiveModalSheetProps.surfaceOwnsClose`: the caller's close wins on wide,
+ * where the two would overlap in the card's top-right corner, and the sheet
+ * keeps the inset-aware one on compact.
+ *
+ * A named function rather than an inline `||` in the component below, which
+ * already sits at this file's cyclomatic ceiling.
+ */
+function resolveSheetClose(surfaceOwnsClose: boolean, isMobile: boolean): boolean {
+  return !surfaceOwnsClose || isMobile;
+}
+
 function SheetBackground({ style }: BottomSheetBackgroundProps) {
   const { theme } = useUnistyles();
   const combinedStyle = useMemo(
@@ -593,6 +606,21 @@ export interface AdaptiveModalSheetProps {
    * and already paint their own padding.
    */
   edgeToEdge?: boolean;
+  /**
+   * The caller's content paints its own close control (a toolbar X, say), so the
+   * sheet's own one steps aside — but only on WIDE, where the two would sit on
+   * top of each other, both hugging the card's top-right corner.
+   *
+   * COMPACT keeps the sheet's control. A full-screen sheet's own chrome starts at
+   * 0,0 and cannot take the top safe-area inset, so on a notched phone the
+   * caller's close is where the status bar is. The floating control is the one
+   * that takes `insets.top`, and it is the only exit for content that has not
+   * painted its chrome yet (a loading or empty surface).
+   *
+   * Absent reads as false, so every existing caller keeps the control it has
+   * today.
+   */
+  surfaceOwnsClose?: boolean;
 }
 
 export function AdaptiveModalSheet({
@@ -614,6 +642,7 @@ export function AdaptiveModalSheet({
   sizeContentToCurrentSnapPoint = true,
   contextBridge = null,
   edgeToEdge = false,
+  surfaceOwnsClose,
 }: AdaptiveModalSheetProps) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
@@ -751,6 +780,7 @@ export function AdaptiveModalSheet({
     () => (edgeToEdge ? styles.edgeToEdgeContent : undefined),
     [edgeToEdge],
   );
+  const showSheetClose = resolveSheetClose(surfaceOwnsClose === true, isMobile);
 
   if (isMobile) {
     const body = (
@@ -789,6 +819,7 @@ export function AdaptiveModalSheet({
           testID={testID}
           edgeToEdge={edgeToEdge}
           layerTestID={testID}
+          showCloseButton={showSheetClose}
         />
         {body}
         {footerView}
@@ -826,7 +857,12 @@ export function AdaptiveModalSheet({
     desktopHeight == null ? styles.desktopStaticContent : styles.compactStaticContent;
   const cardInner = (
     <OverlayLayerProvider layer={modalLayer}>
-      <SheetHeaderView header={header} onClose={onClose} edgeToEdge={edgeToEdge} />
+      <SheetHeaderView
+        header={header}
+        onClose={onClose}
+        edgeToEdge={edgeToEdge}
+        showCloseButton={showSheetClose}
+      />
       <View style={[scrollable ? styles.desktopScrollContainer : desktopStaticStyle, bodyStyle]}>
         {scrollable ? (
           <ScrollView
