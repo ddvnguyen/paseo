@@ -33,7 +33,7 @@ type AgentSelection =
  * tail-follow only at bottom, compact tags, in-flight "—").
  */
 export function TrajectoryPanel(props: TrajectoryPanelProps) {
-  const { theme, layout } = props;
+  const { theme, layout, onClosePanel } = props;
   const selection = useTrajectoryAgent(props);
 
   if (selection.status !== "ready") {
@@ -42,6 +42,7 @@ export function TrajectoryPanel(props: TrajectoryPanelProps) {
         theme={theme}
         testID="trajectory-panel-notice"
         message={noticeMessage(selection)}
+        onClose={onClosePanel}
       />
     );
   }
@@ -52,6 +53,7 @@ export function TrajectoryPanel(props: TrajectoryPanelProps) {
       compact={layout.compact}
       platform={layout.platform}
       theme={theme}
+      onClose={onClosePanel}
     />
   );
 }
@@ -68,8 +70,9 @@ function LiveLedger(props: {
   compact: boolean;
   platform: "ios" | "android" | "web";
   theme: PluginTheme;
+  onClose: (() => void) | undefined;
 }) {
-  const { agentId, compact, platform, theme } = props;
+  const { agentId, compact, platform, theme, onClose } = props;
   const delta = useTrajectoryDelta(agentId);
   // Selected row seq (null = inspector closed, the default). Seq — not the
   // row object — so live updates refresh the inspector content in place; a
@@ -151,7 +154,12 @@ function LiveLedger(props: {
 
   if (delta.status === "loading") {
     return (
-      <PanelNotice theme={theme} testID="trajectory-panel-loading" message="loading trajectory…" />
+      <PanelNotice
+        theme={theme}
+        testID="trajectory-panel-loading"
+        message="loading trajectory…"
+        onClose={onClose}
+      />
     );
   }
 
@@ -186,6 +194,7 @@ function LiveLedger(props: {
             onVisibleCells={onVisibleCells}
             selectedSeq={selectedSeq}
             onSelectSpan={onSelectSpan}
+            onClose={onClose}
           />
         </View>
         {/* Wide dock takes layout space; compact overlays (absolute fill). */}
@@ -245,11 +254,39 @@ function noticeMessage(selection: Exclude<AgentSelection, { status: "ready" }>):
   return `trajectory unavailable: ${selection.error}`;
 }
 
-function PanelNotice(props: { theme: PluginTheme; testID: string; message: string }) {
-  const { theme, testID, message } = props;
+/**
+ * A panel that has nothing to show yet: the notice, plus a way out.
+ *
+ * The notice states get their own close because they have no toolbar to carry
+ * one, and the host stands its close down once a surface draws its own — a
+ * loading or empty panel that could only be left with Escape would strand
+ * anyone on a device without a keyboard. Same opt-in shape as the toolbar's:
+ * absent on an older host, so the control is not drawn at all.
+ */
+function PanelNotice(props: {
+  theme: PluginTheme;
+  testID: string;
+  message: string;
+  onClose?: (() => void) | undefined;
+}) {
+  const { theme, testID, message, onClose } = props;
   return (
     <View style={panelStyles(theme)} testID={testID}>
-      <Text style={captionStyles(theme)}>{message}</Text>
+      <View style={noticeRowStyles()}>
+        <Text style={captionStyles(theme)}>{message}</Text>
+        {onClose === undefined ? null : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close trajectory"
+            hitSlop={8}
+            onPress={onClose}
+            style={noticeCloseStyles()}
+            testID="trajectory-notice-close"
+          >
+            <Text style={captionStyles(theme)}>close</Text>
+          </Pressable>
+        )}
+      </View>
     </View>
   );
 }
@@ -278,6 +315,25 @@ function bodyStyles(): ViewStyle {
   return {
     flex: 1,
     flexDirection: "row",
+  };
+}
+
+/** Notice centred in the panel, with the one way out beneath it. */
+function noticeRowStyles(): ViewStyle {
+  return {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  };
+}
+
+/** Ghost, painted on the panel surface, so the larger target stays invisible. */
+function noticeCloseStyles(): ViewStyle {
+  return {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 4,
   };
 }
 

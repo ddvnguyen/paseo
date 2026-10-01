@@ -60,6 +60,12 @@ export function LedgerScreen(props: {
   /** Called when a timeline bar is pressed, with that record's source seq. */
   onSelectSpan?: (sourceSeq: number) => void;
   /**
+   * Dismiss the host dialog from the toolbar's close control. Optional: an older
+   * host supplies no callback and the control is not rendered at all, rather than
+   * rendering a button that cannot do anything.
+   */
+  onClose?: (() => void) | undefined;
+  /**
    * Which surface this is, from the host's layout contract. Drives whether the
    * strip's tooltip is hover-driven or tap-driven; omitted means tap-only.
    */
@@ -77,13 +83,13 @@ export function LedgerScreen(props: {
     onVisibleCells,
     selectedSeq,
     onSelectSpan,
+    onClose,
     platform,
     testID,
   } = props;
   const [fold, setFold] = useState<FoldState>(ALL_OPEN);
   const [follow, setFollow] = useState(true);
   const [query, setQuery] = useState("");
-  const [actualDuration, setActualDuration] = useState(false);
   const listRef = useRef<FlatList<ListRow> | null>(null);
 
   const turns = useMemo(
@@ -170,25 +176,7 @@ export function LedgerScreen(props: {
     });
   }, []);
 
-  // Toolbar toggles are tri-state-free on purpose: each one is either "everything
-  // open" or "everything closed", matching the dsh aria-pressed contract. A mixed
-  // state reports closed, so a press always moves toward fully open.
-  const allTurnsOpen = turnNumbers1ToN(turns).every((turn) => !fold.closedTurns.has(turn));
-
-  const toggleAllTurns = useCallback(() => {
-    setFold((previous) => {
-      // "Everything open" -> close every turn there is right now. The inverse
-      // clears the closed set rather than re-seeding it, so turns that arrive
-      // after this press are open too.
-      if (turnNumbers1ToN(turns).every((turn) => !previous.closedTurns.has(turn))) {
-        return { closedTurns: new Set(turnNumbers1ToN(turns)) };
-      }
-      return ALL_OPEN;
-    });
-  }, [turns]);
-
   const onQueryChange = useCallback((value: string) => setQuery(value), []);
-  const onToggleDuration = useCallback(() => setActualDuration((value) => !value), []);
 
   const handlers = useMemo(
     () => ({
@@ -264,17 +252,18 @@ export function LedgerScreen(props: {
       <Toolbar
         compact={compact}
         theme={theme}
-        actualDuration={actualDuration}
-        allTurnsOpen={allTurnsOpen}
         query={query}
-        onToggleDuration={onToggleDuration}
-        onToggleTurns={toggleAllTurns}
+        onClose={onClose}
         onQueryChange={onQueryChange}
       />
       <LedgerColumnHeader compact={compact} theme={theme} />
       <TrajectoryTimelineStrip
         turns={visibleTurns}
-        actualDuration={actualDuration}
+        // The toolbar's Duration toggle is gone (owner T4 item 2), so the strip
+        // stays on its default `sequence` projection: every record gets an equal
+        // slot in arrival order, which is what makes the strip readable as an
+        // overview. Mode switching, if it ever returns, belongs to the strip.
+        actualDuration={false}
         compact={compact}
         theme={theme}
         selectedSeq={selectedSeq}
@@ -298,9 +287,22 @@ export function LedgerScreen(props: {
 }
 
 /**
- * Toolbar: Duration / Turns toggles plus a search box.
- * Look follows TrajectoryToolbar.module.css — 20px chips, 3px radius, transparent
- * until pressed — mapped onto plugin theme tokens.
+ * Toolbar: a search box and the dialog's close control.
+ *
+ * Owner T4 items 1-2. The Duration and Turns chips are gone — the Duration chip
+ * was the only way to reach the strip's other projection, and folding turns one
+ * header at a time is what a reader of a live ledger actually wants. The search
+ * box takes the row and the close X sits at its trailing edge, on the bar's own
+ * padding rail.
+ *
+ * The X is chrome, so it is ghost: no border, no fill, and the only state is the
+ * glyph's colour, exactly as the host's own sheet close does it. It is never
+ * hover-dependent, so there is nothing to reveal on touch and no fallback to
+ * keep.
+ *
+ * The close callback is OPTIONAL: a host that predates it supplies nothing, and
+ * a button that cannot do anything is worse than no button, so the control is
+ * not rendered at all.
  *
  * Plain objects, not StyleSheet.create: these carry theme colors, and the
  * themed-factory form re-registers styles on every theme (the c05e19c24
@@ -309,44 +311,15 @@ export function LedgerScreen(props: {
 function Toolbar(props: {
   compact: boolean;
   theme: PluginTheme;
-  actualDuration: boolean;
-  allTurnsOpen: boolean;
   query: string;
-  onToggleDuration: () => void;
-  onToggleTurns: () => void;
+  /** Dismiss the host dialog; absent on older hosts, which hides the control. */
+  onClose?: (() => void) | undefined;
   onQueryChange: (value: string) => void;
 }) {
-  const {
-    compact,
-    theme,
-    actualDuration,
-    allTurnsOpen,
-    query,
-    onToggleDuration,
-    onToggleTurns,
-    onQueryChange,
-  } = props;
+  const { compact, theme, query, onClose, onQueryChange } = props;
   const styles = useMemo(() => toolbarStyles(theme, compact), [theme, compact]);
   return (
     <View style={styles.bar} testID="ledger-toolbar">
-      <View style={styles.actions}>
-        <ToolbarToggle
-          label="Duration"
-          icon="◷"
-          pressed={actualDuration}
-          onPress={onToggleDuration}
-          styles={styles}
-          testID="toggle-duration"
-        />
-        <ToolbarToggle
-          label="Turns"
-          icon={allTurnsOpen ? "⊟" : "⊞"}
-          pressed={!allTurnsOpen}
-          onPress={onToggleTurns}
-          styles={styles}
-          testID="toggle-turns"
-        />
-      </View>
       <View style={styles.search}>
         <TextInput
           value={query}
@@ -358,45 +331,43 @@ function Toolbar(props: {
           testID="ledger-search"
         />
       </View>
+      {onClose === undefined ? null : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close trajectory"
+          hitSlop={CLOSE_HIT_SLOP}
+          onPress={onClose}
+          style={styles.close}
+          testID="trajectory-toolbar-close"
+        >
+          {({ pressed }) => (
+            <Text style={pressed ? styles.closeGlyphOn : styles.closeGlyph}>✕</Text>
+          )}
+        </Pressable>
+      )}
     </View>
   );
 }
 
-function ToolbarToggle(props: {
-  label: string;
-  icon: string;
-  pressed: boolean;
-  onPress: () => void;
-  styles: ReturnType<typeof toolbarStyles>;
-  testID: string;
-}) {
-  const { label, icon, pressed, onPress, styles, testID } = props;
-  // Memoised so a re-render does not hand Pressable/Text fresh style arrays.
-  const resolved = useMemo(
-    () => ({
-      a11yState: { selected: pressed },
-      pressable: pressed ? [styles.toggle, styles.toggleOn] : styles.toggle,
-      icon: pressed ? [styles.toggleIcon, styles.toggleOnText] : styles.toggleIcon,
-      label: pressed ? [styles.toggleLabel, styles.toggleOnText] : styles.toggleLabel,
-    }),
-    [pressed, styles],
-  );
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={resolved.a11yState}
-      accessibilityLabel={label}
-      onPress={onPress}
-      style={resolved.pressable}
-      testID={testID}
-    >
-      <Text style={resolved.icon}>{icon}</Text>
-      <Text style={resolved.label}>{label}</Text>
-    </Pressable>
-  );
-}
+/** Painted box of the toolbar close; a touch wider than the search field so the ✕ has air. */
+const CLOSE_PAINTED = 26;
+/**
+ * Minimum comfortable target, matching the inspector's close and the host
+ * sheet's own floor for its close control. `hitSlop` grows the touch/hit rect
+ * without touching layout or paint, so the painted box stays compact.
+ */
+const CLOSE_TARGET = 44;
+const CLOSE_HIT_SLOP = (CLOSE_TARGET - CLOSE_PAINTED) / 2;
 
 function toolbarStyles(theme: PluginTheme, compact: boolean) {
+  // Optical, not arithmetic: the ✕ glyph's box is not its stroke's, so it sits a
+  // hair left of centre in a square button. Nudge, don't measure.
+  const closeGlyph: TextStyle = {
+    marginLeft: -1,
+    color: theme.colors.foregroundMuted,
+    fontSize: 13,
+    lineHeight: 15,
+  };
   return {
     bar: {
       flexDirection: "row",
@@ -408,37 +379,28 @@ function toolbarStyles(theme: PluginTheme, compact: boolean) {
       borderBottomColor: theme.colors.border,
       backgroundColor: theme.colors.surface1,
     } satisfies ViewStyle,
-    actions: { flexDirection: "row", alignItems: "center", gap: 2 } satisfies ViewStyle,
-    toggle: {
-      flexDirection: "row",
-      alignItems: "center",
-      height: 20,
-      paddingHorizontal: 7,
-      gap: 4,
-      borderRadius: 3,
-    } satisfies ViewStyle,
-    toggleOn: { backgroundColor: theme.colors.surface2 } satisfies ViewStyle,
-    toggleIcon: {
-      color: theme.colors.foregroundMuted,
-      fontSize: compact ? 10 : 12,
-    } satisfies TextStyle,
-    toggleLabel: {
-      color: theme.colors.foregroundMuted,
-      fontSize: compact ? 10 : 12,
-    } satisfies TextStyle,
-    toggleOnText: { color: theme.colors.foreground } satisfies TextStyle,
     search: {
       flex: 1,
       flexDirection: "row",
       alignItems: "center",
       height: 22,
-      marginLeft: 8,
       paddingHorizontal: 6,
       borderWidth: 1,
       borderColor: theme.colors.border,
       borderRadius: 4,
       backgroundColor: theme.colors.surface2,
     } satisfies ViewStyle,
+    close: {
+      width: CLOSE_PAINTED,
+      height: CLOSE_PAINTED,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      borderRadius: 4,
+    } satisfies ViewStyle,
+    closeGlyph,
+    // Press is a colour shift and nothing else: the plugin palette carries no
+    // interaction token, so a background change is not available here.
+    closeGlyphOn: { ...closeGlyph, color: theme.colors.foreground },
     searchInput: {
       flex: 1,
       minWidth: 0,
@@ -588,12 +550,6 @@ type LeadRecord =
     }
   | { __kind: "turn-rule"; turn: number }
   | { __kind: "cell"; cell: TrajectoryCellProps };
-
-/** Flatten folded turns into virtualizable records (headers + visible cells). */
-/** Turn numbers are positional (1..N) throughout the fold, as expandTurns uses. */
-function turnNumbers1ToN(turns: readonly TrajectoryTurnModel[]): number[] {
-  return turns.map((_, index) => index + 1);
-}
 
 /**
  * Keep only the groups holding a match. Turn objects are kept even when they end
