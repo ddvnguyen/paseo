@@ -164,7 +164,13 @@ const MutableDaemonProviderConfigSchema = z
  * receive one back: the published schema has no way to express it.
  */
 const MutableDaemonProviderConfigPatchEntrySchema = MutableDaemonProviderConfigSchema.partial()
-  .extend({ maxContextTokens: z.number().nullable().optional() })
+  .extend({
+    maxContextTokens: z.number().nullable().optional(),
+    // The same `null`-means-remove marker as the ceiling: an omitted field
+    // merges as "leave it alone", so clearing the tag must send an explicit
+    // `null` for the daemon to delete the key.
+    modelPrefix: z.string().max(24).nullable().optional(),
+  })
   .passthrough();
 
 const MutableStructuredGenerationProviderSchema = z

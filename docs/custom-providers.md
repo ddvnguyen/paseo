@@ -757,7 +757,7 @@ A model whose catalog reports no window at all is published with the ceiling as 
 }
 ```
 
-Brackets are added by the renderer, so `Go` and `[Zen]` both work. The tag renders in model-picker rows, the composer model chip, and the agent controls, all from one decorated label. Omit it — or set it to an empty string — and labels are unchanged. Searching for the tag finds the row.
+Brackets are added by the renderer, so `Go` and `[Zen]` both work. The tag renders in model-picker rows, the composer model chip, and the agent controls, all from one decorated label. Omit it — or set it to an empty string — and labels are unchanged. Searching for the tag finds the row. The tag is editable per provider in Settings → Providers (Model tag field); editing `config.json` directly remains an alternative.
 
 ### Model definition
 
