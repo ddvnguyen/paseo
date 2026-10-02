@@ -160,22 +160,46 @@ export function trajectoryRecordId(cell: TrajectoryCellProps): string {
   return `${cell.kind}\u0000index\u0000${cell.index}`;
 }
 
+/** Boundaries between the three duration tiers. */
+const MS_PER_SECOND = 1000;
+const SECONDS_PER_MINUTE = 60;
+
 /**
- * Format a duration in milliseconds with thousands separators.
+ * Format a duration the way a reader scans one.
+ *
+ * Three tiers: raw milliseconds under a second, whole seconds under a minute,
+ * minutes and seconds above that. `32,000 ms` is noise in a narrow column and
+ * `3m45s` is not something the eye parses as "225000" — the label has to be
+ * short enough to sit in a fixed column and unambiguous enough to compare down
+ * a list of rows.
+ *
+ * Every tier FLOORS to its own unit, so a label never claims time the row did
+ * not take: 32,400ms reads "32s", not "33s". Flooring also means a row sitting
+ * just under a boundary (59.9s) does not round itself up past it and report a
+ * duration it has not reached yet.
+ *
+ * There is no hour tier, so an hour-long call reads "60m0s". Two tiers were the
+ * ask; add hours if real sessions produce one.
+ *
  * @param milliseconds - Duration in milliseconds, or `null` when absent.
- * @returns `—` when unknown, otherwise an integer-millisecond label.
+ * @returns `—` when unknown or not a real duration, otherwise the tier's label.
  */
 export function formatDurationMillis(milliseconds: number | null): string {
-  if (milliseconds === null || !Number.isFinite(milliseconds)) return "—";
-  const integer = String(Math.round(milliseconds));
-  return `${integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",")} ms`;
+  // A negative duration is not a short one, and rendering it as one would put a
+  // signed number in a column of unsigned ones; unknown is the honest label.
+  if (milliseconds === null || !Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+  if (milliseconds < MS_PER_SECOND) return `${Math.floor(milliseconds)} ms`;
+  const totalSeconds = Math.floor(milliseconds / MS_PER_SECOND);
+  if (totalSeconds < SECONDS_PER_MINUTE) return `${totalSeconds}s`;
+  return `${Math.floor(totalSeconds / SECONDS_PER_MINUTE)}m${totalSeconds % SECONDS_PER_MINUTE}s`;
 }
 
 /**
- * Format an elapsed duration given in seconds as a millisecond label.
+ * Format an elapsed duration given in seconds, through the shared millisecond
+ * formatter — one set of tiers for every duration in the ledger.
  * @param seconds - Duration seconds, or `null` when absent.
- * @returns `—` when unknown, otherwise an integer-millisecond label.
+ * @returns `—` when unknown, otherwise the same label a millisecond value gets.
  */
 export function formatElapsedSeconds(seconds: number | null): string {
-  return formatDurationMillis(seconds === null ? null : seconds * 1000);
+  return formatDurationMillis(seconds === null ? null : seconds * MS_PER_SECOND);
 }

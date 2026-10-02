@@ -236,7 +236,7 @@ export function formatClockTime(startedAt: number | null | undefined): string {
   return match?.[1] ?? "—";
 }
 
-/** Own-duration text: the dsh `—` when unknown (in-flight), else `N,NNN ms`. */
+/** Own-duration text: the `—` when unknown (in-flight), else the shared tiers. */
 export function DurationText(props: { timeSeconds: number | null; theme: PluginTheme }) {
   const { timeSeconds, theme } = props;
   return (

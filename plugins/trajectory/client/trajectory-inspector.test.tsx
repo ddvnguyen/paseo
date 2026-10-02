@@ -108,7 +108,8 @@ describe("trajectory inspector", () => {
     expect(text("inspector-label")).toBe("shell · npm test");
     expect(text("inspector-seq")).toBe("#2");
     expect(text("inspector-turn")).toBe("t1");
-    expect(text("inspector-duration")).toBe("2,400 ms");
+    // 2.4s floors to "2s" — the inspector shares the ledger's formatter.
+    expect(text("inspector-duration")).toBe("2s");
     expect(text("inspector-output")).toContain("1,520 chars");
     // Fixture carries no failure flag: status is unknown, not "ok".
     expect(text("inspector-error")).toBe("—");
@@ -148,7 +149,7 @@ describe("trajectory inspector", () => {
     render(TOOL_ROW, { compact: true });
     expect(text("inspector-label")).toBe("shell · npm test");
     expect(text("inspector-seq")).toBe("#2");
-    expect(text("inspector-duration")).toBe("2,400 ms");
+    expect(text("inspector-duration")).toBe("2s");
     expect(text("inspector-call")).toBe("c1");
   });
 
