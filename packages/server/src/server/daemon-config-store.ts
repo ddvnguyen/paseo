@@ -152,7 +152,7 @@ function omitMetadataGenerationProvidersFromConfig<
  * reload. `null` is the marker that can, and only these fields read it — a
  * `null` anywhere else stays whatever the merge made of it.
  */
-const DELETABLE_PROVIDER_FIELDS = ["maxContextTokens"] as const;
+const DELETABLE_PROVIDER_FIELDS = ["maxContextTokens", "modelPrefix"] as const;
 
 type ProviderDeleteMarker = (typeof DELETABLE_PROVIDER_FIELDS)[number];
 

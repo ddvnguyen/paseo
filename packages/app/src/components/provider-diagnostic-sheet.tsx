@@ -15,6 +15,10 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { ModelDisableSwitch } from "@/components/provider-model-toggle";
 import { ProviderMaxContextField } from "@/components/provider-max-context-field";
 import { buildProviderMaxContextPatch } from "@/components/provider-max-context";
+// @ts-expect-error - provider-model-prefix-field.ts wins extensionless resolution;
+// the component lives in the sibling .tsx and must be imported with its extension.
+import { ProviderModelPrefixField } from "@/components/provider-model-prefix-field.tsx";
+import { buildProviderModelPrefixPatch } from "@/components/provider-model-prefix-field";
 import { ScrollableCodeSurface, SurfaceCard } from "@/components/ui/scrollable-code-surface";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
@@ -447,9 +451,12 @@ interface ProviderModalBodyProps {
   visible: boolean;
   maxContextTokens: number | undefined;
   isSavingMaxContext: boolean;
+  modelPrefix: string | undefined;
+  isSavingModelPrefix: boolean;
   onRefresh: () => void;
   onDeleteCustom: (modelId: string) => void;
   onSaveMaxContext: (tokens: number | undefined) => void;
+  onSaveModelPrefix: (prefix: string | undefined) => void;
   theme: { iconSize: { md: number }; colors: { foregroundMuted: string } };
 }
 
@@ -540,9 +547,12 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
     visible,
     maxContextTokens,
     isSavingMaxContext,
+    modelPrefix,
+    isSavingModelPrefix,
     onRefresh,
     onDeleteCustom,
     onSaveMaxContext,
+    onSaveModelPrefix,
     theme,
   } = props;
 
@@ -591,6 +601,19 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
               storedTokens={maxContextTokens}
               onSave={onSaveMaxContext}
               isSaving={isSavingMaxContext}
+              visible={visible}
+            />
+          </View>
+        </View>
+      </View>
+      <View style={sheetStyles.section}>
+        <SectionHeader title={t("settings.providers.modelPrefix.section")} />
+        <View style={settingsStyles.card}>
+          <View style={sheetStyles.limitRow}>
+            <ProviderModelPrefixField
+              storedPrefix={modelPrefix}
+              onSave={onSaveModelPrefix}
+              isSaving={isSavingModelPrefix}
               visible={visible}
             />
           </View>
@@ -656,6 +679,7 @@ export function ProviderDiagnosticSheet({
   const [diagSheetOpen, setDiagSheetOpen] = useState(false);
   const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
   const [savingMaxContext, setSavingMaxContext] = useState(false);
+  const [savingModelPrefix, setSavingModelPrefix] = useState(false);
 
   const providerLabel = resolveProviderLabel(provider, snapshotEntries);
   const providerEntry = useMemo(
@@ -667,6 +691,7 @@ export function ProviderDiagnosticSheet({
     [config?.providers, provider],
   );
   const maxContextTokens = config?.providers?.[provider]?.maxContextTokens;
+  const modelPrefix = config?.providers?.[provider]?.modelPrefix;
   const providerSnapshotRefreshing = providerEntry?.status === "loading";
   const providerErrorMessage =
     providerEntry?.status === "error"
@@ -750,6 +775,25 @@ export function ProviderDiagnosticSheet({
     [patchConfig, provider, refresh, savingMaxContext, t],
   );
 
+  const handleSaveModelPrefix = useCallback(
+    (prefix: string | undefined) => {
+      if (savingModelPrefix) return;
+      setSavingModelPrefix(true);
+      void patchConfig({ providers: buildProviderModelPrefixPatch(provider, prefix) })
+        .catch((err: unknown) => {
+          Alert.alert(
+            t("settings.providers.modelPrefix.failedToSaveTitle"),
+            err instanceof Error ? err.message : t("settings.providers.modelPrefix.failedToSave"),
+          );
+        })
+        .finally(() => {
+          void refresh([provider]);
+          setSavingModelPrefix(false);
+        });
+    },
+    [patchConfig, provider, refresh, savingModelPrefix, t],
+  );
+
   const handleDeleteCustom = useCallback(
     (modelId: string) => {
       setDeletingModelId(modelId);
@@ -814,9 +858,12 @@ export function ProviderDiagnosticSheet({
           visible={visible}
           maxContextTokens={maxContextTokens}
           isSavingMaxContext={savingMaxContext}
+          modelPrefix={modelPrefix}
+          isSavingModelPrefix={savingModelPrefix}
           onRefresh={handleRefreshModels}
           onDeleteCustom={handleDeleteCustom}
           onSaveMaxContext={handleSaveMaxContext}
+          onSaveModelPrefix={handleSaveModelPrefix}
           theme={theme}
         />
       </AdaptiveModalSheet>

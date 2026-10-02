@@ -119,6 +119,24 @@ describe("provider field deletion via an explicit null", () => {
     ).toEqual({ omp: { extends: "omp" } });
   });
 
+  test("removes modelPrefix while leaving the provider's other fields alone", () => {
+    expect(
+      applyMutableProviderConfigToOverrides(
+        {
+          omp: {
+            extends: "omp",
+            label: "Oh My Pi",
+            modelPrefix: "Go",
+            maxContextTokens: 128_000,
+          },
+        },
+        { omp: { modelPrefix: null } },
+      ),
+    ).toEqual({
+      omp: { extends: "omp", label: "Oh My Pi", maxContextTokens: 128_000 },
+    });
+  });
+
   describe("end to end through patch, disk, and reload", () => {
     const tempDirs: string[] = [];
 
@@ -170,6 +188,40 @@ describe("provider field deletion via an explicit null", () => {
       const afterReload = reloadableConfig(loadPersistedConfig(paseoHome));
       expect(afterReload.providers.omp).toBeDefined();
       expect(afterReload.providers.omp).not.toHaveProperty("maxContextTokens");
+    });
+
+    test("clearing a model tag removes it from memory, from disk, and after a reload", () => {
+      const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-clear-model-prefix-"));
+      tempDirs.push(paseoHome);
+      const store = createStore(paseoHome, { omp: { extends: "omp" } });
+
+      // The constructor's initial config is in-memory only, and a patch that
+      // changes nothing never reaches disk: both fields must be patched in so
+      // the clearing test below proves what survives the persisted file.
+      store.patch({ providers: { omp: { maxContextTokens: 128_000 } } });
+      store.patch({ providers: { omp: { modelPrefix: "Go" } } });
+      expect(store.get().providers.omp?.modelPrefix).toBe("Go");
+      expect(loadPersistedConfig(paseoHome).agents?.providers?.omp).toMatchObject({
+        modelPrefix: "Go",
+        maxContextTokens: 128_000,
+      });
+
+      store.patch({ providers: { omp: { modelPrefix: null } } });
+
+      expect(store.get().providers.omp).not.toHaveProperty("modelPrefix");
+      expect(store.get().providers.omp?.modelPrefix).toBeUndefined();
+      const persistedProvider = loadPersistedConfig(paseoHome).agents?.providers?.omp;
+      expect(persistedProvider).not.toBeUndefined();
+      expect(persistedProvider).not.toHaveProperty("modelPrefix");
+
+      // Deleting the tag must not disturb the provider's other fields.
+      expect(store.get().providers.omp?.maxContextTokens).toBe(128_000);
+      expect(persistedProvider).toMatchObject({ maxContextTokens: 128_000 });
+
+      const afterReload = reloadableConfig(loadPersistedConfig(paseoHome));
+      expect(afterReload.providers.omp).toBeDefined();
+      expect(afterReload.providers.omp).not.toHaveProperty("modelPrefix");
+      expect(afterReload.providers.omp).toMatchObject({ maxContextTokens: 128_000 });
     });
 
     test("an empty provider object still merges to a no-op, which is why null exists", () => {
