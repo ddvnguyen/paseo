@@ -7,8 +7,6 @@
  * dispatches the save, which is the same split the schedule form uses.
  */
 
-import type { MutableDaemonConfig } from "@getpaseo/protocol/messages";
-
 const THOUSAND = 1_000;
 const MILLION = 1_000_000;
 
@@ -77,23 +75,6 @@ export function formatMaxContextTokens(tokens: number | undefined): string {
 
 export function formatMaxContextTokenCount(tokens: number, locale: string): string {
   return tokens.toLocaleString(locale);
-}
-
-/**
- * Reads the stored ceiling out of the daemon config.
- *
- * `MutableDaemonProviderConfigSchema` is `.passthrough()` and declares only the
- * fields the client writes, so a value the daemon owns arrives untyped. The
- * daemon validates it as a positive integer in `ProviderOverrideSchema` before
- * it is ever persisted; this narrow exists because the wire schema cannot say
- * so, not because the value is in doubt.
- */
-export function readProviderMaxContextTokens(
-  config: MutableDaemonConfig | null | undefined,
-  provider: string,
-): number | undefined {
-  const stored: unknown = config?.providers?.[provider]?.maxContextTokens;
-  return typeof stored === "number" ? stored : undefined;
 }
 
 export interface MaxContextFieldState {

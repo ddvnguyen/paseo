@@ -144,6 +144,10 @@ const MutableDaemonProviderConfigSchema = z
     // Read-only for the client: pickers derive their `[Tag]` decoration from the
     // config entry, so the model catalog stays free of display policy.
     modelPrefix: z.string().optional(),
+    // Read-only for the client: the settings field seeds its textbox from the
+    // ceiling the daemon applies when it serves the catalog. Same pattern as
+    // modelPrefix (T5, e92d11e60).
+    maxContextTokens: z.number().optional(),
   })
   .passthrough();
 

@@ -14,7 +14,6 @@ import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { ModelDisableSwitch } from "@/components/provider-model-toggle";
 import { ProviderMaxContextField } from "@/components/provider-max-context-field";
-import { readProviderMaxContextTokens } from "@/components/provider-max-context";
 import { ScrollableCodeSurface, SurfaceCard } from "@/components/ui/scrollable-code-surface";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
@@ -666,10 +665,7 @@ export function ProviderDiagnosticSheet({
     () => config?.providers?.[provider]?.additionalModels ?? [],
     [config?.providers, provider],
   );
-  const maxContextTokens = useMemo(
-    () => readProviderMaxContextTokens(config, provider),
-    [config, provider],
-  );
+  const maxContextTokens = config?.providers?.[provider]?.maxContextTokens;
   const providerSnapshotRefreshing = providerEntry?.status === "loading";
   const providerErrorMessage =
     providerEntry?.status === "error"
