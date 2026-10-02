@@ -287,18 +287,25 @@ export function LedgerScreen(props: {
 }
 
 /**
- * Toolbar: a search box and the dialog's close control.
+ * Toolbar: a search box and the dialog's close control. One row on every form
+ * factor, phone included — the field takes the slack and the X keeps its box.
  *
- * Owner T4 items 1-2. The Duration and Turns chips are gone — the Duration chip
- * was the only way to reach the strip's other projection, and folding turns one
- * header at a time is what a reader of a live ledger actually wants. The search
- * box takes the row and the close X sits at its trailing edge, on the bar's own
- * padding rail.
+ * Owner T4 items 1-2, T8. The Duration and Turns chips are gone — the Duration
+ * chip was the only way to reach the strip's other projection, and folding turns
+ * one header at a time is what a reader of a live ledger actually wants. The
+ * close X sits at the row's trailing edge, on the bar's own padding rail.
+ *
+ * This is the ONLY close control the dialog draws. It is not a sticky toolbar
+ * that can scroll away — the bar is a sibling of the FlatList, not a list header
+ * — so it is on screen for the whole session, and the notice states (which have
+ * no toolbar) carry their own. The host's floating sheet close therefore has
+ * nothing left to cover, and leaving it on produced a second X on a phone:
+ * edge-to-edge puts that control at insets.top + 12, which is BELOW this
+ * flush-at-0,0 row, so it landed on the column header and the sequence strip.
  *
  * The X is chrome, so it is ghost: no border, no fill, and the only state is the
  * glyph's colour, exactly as the host's own sheet close does it. It is never
- * hover-dependent, so there is nothing to reveal on touch and no fallback to
- * keep.
+ * hover-dependent, so there is nothing to reveal on touch.
  *
  * The close callback is OPTIONAL: a host that predates it supplies nothing, and
  * a button that cannot do anything is worse than no button, so the control is
@@ -381,6 +388,12 @@ function toolbarStyles(theme: PluginTheme, compact: boolean) {
     } satisfies ViewStyle,
     search: {
       flex: 1,
+      // The pair that keeps this ONE row at phone widths: a CSS flex item
+      // defaults to min-width: auto, so without minWidth 0 the field cannot
+      // shrink below its content and pushes the X off the row (the same
+      // flex-shrink/min-width hazard docs/design.md §8 and the ctx-inject chip
+      // both call out). flexShrink 0 on the X below is the other half.
+      minWidth: 0,
       flexDirection: "row",
       alignItems: "center",
       height: 22,
@@ -393,6 +406,9 @@ function toolbarStyles(theme: PluginTheme, compact: boolean) {
     close: {
       width: CLOSE_PAINTED,
       height: CLOSE_PAINTED,
+      // Fixed-size control next to a flexible field: it keeps its box rather
+      // than being squeezed to nothing when the row runs out of room.
+      flexShrink: 0,
       alignItems: "center" as const,
       justifyContent: "center" as const,
       borderRadius: 4,

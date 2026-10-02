@@ -36,8 +36,19 @@ vi.mock("react-native", () => ({
         ),
       ),
     ),
-  View: ({ children, testID }: React.PropsWithChildren<{ testID?: string }>) =>
-    React.createElement("div", { "data-testid": testID }, children),
+  View: ({
+    children,
+    testID,
+    style,
+  }: React.PropsWithChildren<{ testID?: string; style?: unknown }>) =>
+    // Styles are serialized so the flex contract can be asserted directly: a
+    // search field that cannot shrink is invisible in a text-only assertion, and
+    // it is what pushed the close off its row on a phone.
+    React.createElement(
+      "div",
+      { "data-testid": testID, "data-style": JSON.stringify(style) },
+      children,
+    ),
   TextInput: ({
     value,
     onChangeText,
@@ -67,6 +78,7 @@ vi.mock("react-native", () => ({
     accessibilityRole,
     accessibilityLabel,
     hitSlop,
+    style,
   }: {
     // Render-function children carry press state, so the union is explicit:
     // ReactNode alone would narrow the function branch away.
@@ -76,6 +88,7 @@ vi.mock("react-native", () => ({
     accessibilityRole?: string;
     accessibilityLabel?: string;
     hitSlop?: number;
+    style?: unknown;
   }) =>
     React.createElement(
       "button",
@@ -83,6 +96,7 @@ vi.mock("react-native", () => ({
         type: "button",
         "data-testid": testID,
         "data-hit-slop": hitSlop,
+        "data-style": JSON.stringify(style),
         role: accessibilityRole,
         "aria-label": accessibilityLabel,
         onClick: onPress,
@@ -291,6 +305,12 @@ describe("ledger screen", () => {
     return [...container.querySelectorAll('[data-testid^="cell-"]')];
   }
 
+  /** The style object the mock serialized onto a node. */
+  function styleOf(node: Element): Record<string, unknown> {
+    const raw = node.getAttribute("data-style");
+    return raw === null ? {} : (JSON.parse(raw) as Record<string, unknown>);
+  }
+
   /** React tracks the input value on the node, so set it natively then fire. */
   function search(term: string): void {
     const input = container.querySelector('[data-testid="ledger-search"]') as HTMLInputElement;
@@ -333,6 +353,34 @@ describe("ledger screen", () => {
     expect(container.querySelector('[data-testid="trajectory-toolbar-close"]')).toBeNull();
     // Search never depended on the host, so it is unaffected.
     expect(container.querySelector('[data-testid="ledger-search"]')).not.toBeNull();
+  });
+
+  it("keeps search and the close on one row at phone widths", () => {
+    // Owner T8: on a phone the field took the whole row and the X was left
+    // below it. jsdom lays nothing out, so this asserts the two properties that
+    // decide it — the flexible field must be allowed to shrink, and the
+    // fixed-size X must not be — plus the structure they sit in.
+    render({ compact: true, onClose: () => {} });
+    const bar = container.querySelector('[data-testid="ledger-toolbar"]') as HTMLElement;
+    const field = bar.firstElementChild as HTMLElement;
+    const close = container.querySelector(
+      '[data-testid="trajectory-toolbar-close"]',
+    ) as HTMLElement;
+
+    expect(styleOf(bar).flexDirection).toBe("row");
+    // Two children, both in the bar: siblings, not stacked rows.
+    expect(bar.children).toHaveLength(2);
+    expect(field.parentElement).toBe(bar);
+    expect(close.parentElement).toBe(bar);
+
+    // A CSS flex item defaults to min-width: auto, so the field pins itself to
+    // its content width without this and crowds the X out of the row.
+    expect(styleOf(field).flex).toBe(1);
+    expect(styleOf(field).minWidth).toBe(0);
+    expect(styleOf(close).flexShrink).toBe(0);
+    // The 44px target is a hitSlop over a compact painted box, on phone as on
+    // desktop — the control is the same chip, not a bigger one.
+    expect(close.getAttribute("data-hit-slop")).toBe("9");
   });
 
   it("folding every turn header closes them all, and pressing again opens them", () => {
