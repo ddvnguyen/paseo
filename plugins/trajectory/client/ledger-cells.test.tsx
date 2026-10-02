@@ -116,9 +116,10 @@ describe("ledger cells", () => {
     expect(document.querySelector('[data-testid="kind-tag-tool"]')?.textContent).toBe("T");
   });
 
-  it("renders duration through the ported formatter and the em dash when unknown", () => {
+  it("renders duration through the shared formatter and the em dash when unknown", () => {
     render(<DurationText timeSeconds={1.5} theme={THEME} />);
-    expect(document.querySelector('[data-testid="duration-text"]')?.textContent).toBe("1,500 ms");
+    // 1.5s floors to whole seconds: the label never claims time not taken.
+    expect(document.querySelector('[data-testid="duration-text"]')?.textContent).toBe("1s");
     render(<DurationText timeSeconds={null} theme={THEME} />);
     expect(document.querySelector('[data-testid="duration-text"]')?.textContent).toBe("—");
   });
@@ -143,7 +144,7 @@ describe("ledger cells", () => {
     render(<TrajectoryCellRow cell={cell()} compact={false} theme={THEME} testID="cell-1" />);
     expect(document.querySelector('[data-testid="cell-1"]')).not.toBeNull();
     expect(document.querySelector('[data-testid="kind-tag-tool"]')?.textContent).toBe("tool");
-    expect(document.querySelector('[data-testid="duration-text"]')?.textContent).toBe("1,500 ms");
+    expect(document.querySelector('[data-testid="duration-text"]')?.textContent).toBe("1s");
     render(
       <TrajectoryCellRow
         cell={cell({ isError: true, text: "read" })}
@@ -201,7 +202,7 @@ describe("ledger cells", () => {
       />,
     );
     expect(document.querySelector('[data-testid="chars-text"]')?.textContent).toBe("1,520 chars");
-    expect(document.querySelector('[data-testid="duration-text"]')?.textContent).toBe("1,500 ms");
+    expect(document.querySelector('[data-testid="duration-text"]')?.textContent).toBe("1s");
   });
 
   it("reports the em dash for a tool row whose size and runtime are unknown", () => {

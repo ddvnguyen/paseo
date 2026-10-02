@@ -281,9 +281,11 @@ describe("TrajectoryTimelineStrip rendering", () => {
     expect(
       container.querySelector('[data-testid="timeline-tooltip-label"]')?.textContent?.length,
     ).toBeGreaterThan(0);
+    // The shared formatter's three tiers, or the em dash for an open span: the
+    // tooltip must not be left showing a raw millisecond count.
     expect(
       container.querySelector('[data-testid="timeline-tooltip-duration"]')?.textContent,
-    ).toMatch(/ms|—/);
+    ).toMatch(/^(?:\d+ ms|\d+s|\d+m\d+s|—)$/);
   });
 
   it("does not open on hover when the surface is not web", () => {

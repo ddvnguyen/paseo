@@ -264,11 +264,11 @@ describe("ledger screen", () => {
     expect(visible()).toBe(0);
     toggleEveryTurn();
     expect(visible()).toBe(shown);
-    // In-flight tool (c3) shows the em dash; settled one shows 2,400 ms.
+    // In-flight tool (c3) shows the em dash; the settled one floors to "2s".
     const durations = [...document.querySelectorAll('[data-testid="duration-text"]')].map(
       (node) => node.textContent,
     );
-    expect(durations).toContain("2,400 ms");
+    expect(durations).toContain("2s");
     expect(durations).toContain("—");
     const chars = [...document.querySelectorAll('[data-testid="chars-text"]')].map(
       (node) => node.textContent,
