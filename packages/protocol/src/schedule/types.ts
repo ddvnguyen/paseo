@@ -32,6 +32,15 @@ export const ScheduleTargetSchema = z.discriminatedUnion("type", [
       thinkingOptionId: z.string().trim().min(1).optional(),
       archiveOnFinish: z.boolean().optional(),
       isolation: z.enum(["local", "worktree"]).optional(),
+      /**
+       * Reuse this existing workspace for every run instead of provisioning a new
+       * one. Default (absent) keeps today's behaviour: one workspace per run.
+       *
+       * Only valid for a target that does not archive on finish — a shared
+       * workspace archived by one run disappears out from under every other run.
+       * The server rejects the unsafe combination rather than trusting config.
+       */
+      workspaceId: z.string().trim().min(1).optional(),
       title: z.string().trim().min(1).nullable().optional(),
       providerOptions: z.record(z.string(), z.json()).optional(),
       featureValues: z.record(z.string(), z.unknown()).optional(),

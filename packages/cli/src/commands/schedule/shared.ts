@@ -151,6 +151,7 @@ export function parseScheduleCreateInput(options: {
   host?: string;
   daemonTarget: import("../../utils/daemon-target.js").DaemonTarget;
   maxRuns?: string;
+  workspaceId?: string;
   expiresIn?: string;
   runNow?: boolean;
 }): CreateScheduleInput {
@@ -204,6 +205,12 @@ export function parseScheduleCreateInput(options: {
         ...(resolvedProviderModel.model ? { model: resolvedProviderModel.model } : {}),
         ...(modeId ? { modeId } : {}),
         ...(thinkingOptionId ? { thinkingOptionId } : {}),
+        // Reuse is meaningless unless the workspace is not archived per run; refuse
+        // the unsafe pair at the CLI rather than at run time, so the user learns
+        // before the schedule exists rather than on its first tick.
+        ...(options.workspaceId
+          ? { workspaceId: parseWorkspaceId(options.workspaceId), archiveOnFinish: false }
+          : {}),
       },
     };
   };
@@ -249,6 +256,8 @@ export interface ScheduleUpdateOptionsInput {
   model?: string;
   mode?: string;
   cwd?: string;
+  /** Reuse an existing workspace for every run; omit to keep per-run workspaces. */
+  workspaceId?: string;
   maxRuns?: string;
   expiresIn?: string;
   clearMaxRuns?: boolean;
@@ -437,7 +446,28 @@ function buildNewAgentConfigPatch(
     }
     patch.cwd = trimmed;
   }
+  if (options.workspaceId !== undefined) {
+    const trimmed = options.workspaceId.trim();
+    if (!trimmed) {
+      throw {
+        code: "INVALID_WORKSPACE_ID",
+        message: "--workspace-id cannot be empty; omit the flag to keep provisioning a new workspace",
+      } satisfies CommandError;
+    }
+    patch.workspaceId = trimmed;
+  }
   return Object.keys(patch).length > 0 ? patch : undefined;
+}
+
+function parseWorkspaceId(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw {
+      code: "INVALID_WORKSPACE_ID",
+      message: "--workspace-id cannot be empty",
+    } satisfies CommandError;
+  }
+  return trimmed;
 }
 
 function parsePositiveInt(value: string, flag: string): number {
