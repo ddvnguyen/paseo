@@ -577,6 +577,24 @@ jobs:
       - name: Patch runtime deps (TEST)
         run: bash "${{ steps.locate.outputs.dir }}/deploy/patch-runtime-deps.sh" "${{ env.TEST_HOME }}"
 
+      - name: Put the daemon's bun on PATH for the closure check
+        run: |
+          set -euo pipefail
+          # The systemd units run the daemon with %h/.bun/bin on PATH (see
+          # deploy/systemd/paseo.service). An Actions `run:` step gets
+          # `/usr/bin/bash -e` with no profile, so bun is absent and the verify
+          # step below died with `bun: command not found` (run 36883189188).
+          # Use the host's own bun rather than downloading one: this check
+          # exists to prove the closure resolves under the runtime that serves
+          # it. GITHUB_PATH, not `export`, because each step is its own shell.
+          BUN_BIN="$HOME/.bun/bin"
+          if [ ! -x "$BUN_BIN/bun" ]; then
+            echo "::error::bun not found at $BUN_BIN/bun — the daemon runtime is missing on this runner"
+            exit 1
+          fi
+          echo "$BUN_BIN" >> "$GITHUB_PATH"
+          echo "bun: $BUN_BIN/bun $("$BUN_BIN/bun" --version)"
+
       - name: Verify runtime dep closure resolves (TEST)
         run: |
           set -euo pipefail
