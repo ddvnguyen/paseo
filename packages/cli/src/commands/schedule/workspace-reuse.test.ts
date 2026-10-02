@@ -76,6 +76,49 @@ function captureStderr() {
   };
 }
 
+/**
+ * A daemon that answers with the schedule it actually stored, config included.
+ *
+ * The command handlers read the response back to check the flags landed, so a mock
+ * that returns a fixed schedule without the applied fields reads as a daemon that
+ * silently dropped them. Applying the patch keeps every happy-path test honest and
+ * leaves the stale-daemon cases to opt out explicitly.
+ */
+function applyingScheduleUpdate(): { schedule: ScheduleRecord; error: null } {
+  const input = scheduleUpdate.mock.calls.at(-1)?.[0] as UpdateScheduleInput | undefined;
+  const config = (input?.newAgentConfig ?? {}) as Record<string, unknown>;
+  return {
+    schedule: {
+      ...SCHEDULE,
+      target: {
+        type: "new-agent",
+        config: { ...SCHEDULE.target.config, ...definedEntries(config) },
+      },
+    } as ScheduleRecord,
+    error: null,
+  };
+}
+
+function applyingScheduleCreate(): { schedule: ScheduleRecord; error: null } {
+  const input = scheduleCreate.mock.calls.at(-1)?.[0] as CreateScheduleInput | undefined;
+  const target = input?.target as { type: string; config: Record<string, unknown> } | undefined;
+  return {
+    schedule: {
+      ...SCHEDULE,
+      target: {
+        type: "new-agent",
+        config: { ...SCHEDULE.target.config, ...definedEntries(target?.config ?? {}) },
+      },
+    } as ScheduleRecord,
+    error: null,
+  };
+}
+
+/** A clear arrives as `null` and must land as an absent field, not a stored null. */
+function definedEntries(config: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(config).filter(([, value]) => value !== null));
+}
+
 /** Run a command that is expected to fail, capturing what the user is told. */
 async function runUpdateExpectingExit(argv: string[], expected?: RegExp): Promise<string> {
   const exit = vi.spyOn(process, "exit").mockImplementation((() => {
@@ -95,10 +138,29 @@ async function runUpdateExpectingExit(argv: string[], expected?: RegExp): Promis
   }
 }
 
+/** Run a create that is expected to fail, capturing what the user is told. */
+async function runCreateExpectingExit(argv: string[], expected?: RegExp): Promise<string> {
+  const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+    throw new Error("process.exit");
+  }) as never);
+  const stderr = captureStderr();
+  try {
+    await expect(subcommand("create").parseAsync(argv, { from: "user" })).rejects.toThrow(
+      "process.exit",
+    );
+    expect(exit).toHaveBeenCalledWith(1);
+    if (expected) expect(stderr.join()).toMatch(expected);
+    return stderr.join();
+  } finally {
+    exit.mockRestore();
+    stderr.restore();
+  }
+}
+
 describe("schedule create workspace flags through commander", () => {
   beforeEach(() => {
     scheduleCreate.mockReset();
-    scheduleCreate.mockResolvedValue({ schedule: SCHEDULE, error: null });
+    scheduleCreate.mockImplementation(applyingScheduleCreate);
     close.mockReset();
     close.mockResolvedValue(undefined);
   });
@@ -133,9 +195,9 @@ describe("schedule create workspace flags through commander", () => {
 describe("schedule update workspace flags through commander", () => {
   beforeEach(() => {
     scheduleUpdate.mockReset();
-    scheduleUpdate.mockResolvedValue({ schedule: SCHEDULE, error: null });
+    scheduleUpdate.mockImplementation(applyingScheduleUpdate);
     scheduleCreate.mockReset();
-    scheduleCreate.mockResolvedValue({ schedule: SCHEDULE, error: null });
+    scheduleCreate.mockImplementation(applyingScheduleCreate);
     scheduleInspect.mockReset();
     scheduleInspect.mockResolvedValue({ schedule: SCHEDULE, error: null });
     scheduleList.mockReset();
@@ -228,8 +290,43 @@ describe("schedule update workspace flags through commander", () => {
       await runUpdateExpectingExit(["sch_1", "--no-workspace-id"], /Schedule not found/);
     });
 
-    test("setting an id is never gated — every daemon with schedules reads a string", async () => {
+    test("setting an id is not capability-gated, but a daemon that drops it is caught", async () => {
+      // There is no feature flag for the SET direction, because every daemon with
+      // schedules accepts a string. That was the wrong conclusion: a daemon whose
+      // update schema predates the field STRIPS it, reports success, and the runs
+      // keep provisioning a workspace apiece. So the answer is not gated on
+      // server_info — it is read back off the daemon's own response.
       serverInfo = { features: {} };
+      scheduleUpdate.mockResolvedValueOnce({ schedule: SCHEDULE, error: null });
+      const output = await runUpdateExpectingExit(["sch_1", "--workspace-id", "wks_shared"]);
+      expect(output).toContain("--workspace-id");
+      expect(output).toContain("too old");
+    });
+  });
+
+  describe("a daemon that silently drops a config field", () => {
+    test("the update is reported as a version problem naming the flag", async () => {
+      serverInfo = { features: { scheduleWorkspaceReuseClear: true } };
+      // The daemon answered with a schedule that never had the workspace: exactly
+      // what a Zod strip of an undeclared key produces.
+      scheduleUpdate.mockResolvedValueOnce({ schedule: SCHEDULE, error: null });
+      const output = await runUpdateExpectingExit(["sch_1", "--workspace-id", "wks_shared"]);
+      expect(output).toContain("--workspace-id");
+      expect(output).toContain("Update the Paseo daemon");
+    });
+
+    test("a create that lost the field fails instead of reporting a schedule", async () => {
+      serverInfo = { features: { scheduleWorkspaceReuseClear: true } };
+      scheduleCreate.mockResolvedValueOnce({ schedule: SCHEDULE, error: null });
+      const output = await runCreateExpectingExit(
+        ["do the thing", "--every", "5m", "--provider", "claude", "--workspace-id", "wks_shared"],
+        /--workspace-id/,
+      );
+      expect(output).toContain("Update the Paseo daemon");
+    });
+
+    test("a field the daemon did apply is not reported as dropped", async () => {
+      serverInfo = { features: { scheduleWorkspaceReuseClear: true } };
       const input = await runUpdateArgv(["sch_1", "--workspace-id", "wks_shared"]);
       expect(input.newAgentConfig).toEqual({ workspaceId: "wks_shared", archiveOnFinish: false });
     });

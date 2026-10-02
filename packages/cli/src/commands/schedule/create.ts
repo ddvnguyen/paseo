@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import type { SingleResult } from "../../output/index.js";
 import { scheduleSchema } from "./schema.js";
 import {
+  assertNewAgentConfigApplied,
   connectScheduleClient,
   parseScheduleCreateInput,
   toScheduleCommandError,
@@ -61,6 +62,15 @@ export async function runCreateCommand(
     const payload = await client.scheduleCreate(input);
     if (payload.error || !payload.schedule) {
       throw new Error(payload.error ?? "Schedule creation failed");
+    }
+    // A create request carries the whole new-agent config, so a daemon that predates
+    // a field strips it the same way an update does. The stored schedule is the only
+    // place that shows whether the flag actually took.
+    if (input.target.type === "new-agent") {
+      assertNewAgentConfigApplied(payload.schedule, input.target.config, {
+        failureCode: "SCHEDULE_CREATE_FAILED",
+        failureMessage: "Schedule was not created as a new-agent schedule",
+      });
     }
     return {
       type: "single",

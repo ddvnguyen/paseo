@@ -88,6 +88,74 @@ export function isWorkspaceReuseClearRejection(error: unknown): boolean {
 }
 
 /**
+ * Fail when the daemon's answer does not show a field the command just set.
+ *
+ * A wire schema is a Zod object, and a Zod object silently STRIPS keys it does not
+ * declare. So a daemon built before a field joined the schedule schemas accepts the
+ * whole request, drops that one key, applies the rest, and answers with a schedule
+ * that never had it — no error anywhere. `--workspace-id` against such a daemon
+ * reported the schedule as configured and changed nothing; the collector's runs went
+ * on provisioning a workspace apiece, which is the exact behaviour the flag exists to
+ * stop.
+ *
+ * A capability flag cannot close this on its own: it only covers fields someone
+ * remembered to gate, and it cannot be consulted before `server_info` has arrived.
+ * Reading the daemon's own answer back needs neither, and covers any field the
+ * protocol grows later.
+ */
+export function assertNewAgentConfigApplied(
+  // `schedule/create` answers with a summary and `schedule/update` with the full
+  // record; both carry the target, which is all this reads.
+  schedule: { target: ScheduleTarget | ScheduleListItem["target"] },
+  requested: NewAgentConfigFields | undefined,
+  options?: { failureCode?: string; failureMessage?: string },
+): void {
+  if (!requested) return;
+  const config = schedule.target.type === "new-agent" ? schedule.target.config : null;
+  if (!config) {
+    throw {
+      code: options?.failureCode ?? "SCHEDULE_UPDATE_FAILED",
+      message:
+        options?.failureMessage ??
+        "Schedule is no longer a new-agent schedule, so its configuration was not applied",
+    } satisfies CommandError;
+  }
+  const dropped = droppedConfigFields(config, requested);
+  if (dropped.length === 0) return;
+  throw {
+    code: "DAEMON_TOO_OLD",
+    message:
+      `This daemon ignored ${dropped.join(", ")} and reported success. ` +
+      "It is too old to store them. Update the Paseo daemon, then retry.",
+  } satisfies CommandError;
+}
+
+/** The new-agent config fields the CLI can set, and which a stale daemon may drop. */
+export interface NewAgentConfigFields {
+  workspaceId?: string | null;
+}
+
+/**
+ * Which of the fields this request set are absent from the schedule the daemon
+ * returned. A clear is encoded as `null` and must land as an absent field, so both
+ * directions are compared as "equals what was asked for".
+ */
+function droppedConfigFields(
+  config: Extract<ScheduleTarget, { type: "new-agent" }>["config"],
+  requested: NewAgentConfigFields,
+): string[] {
+  const dropped: string[] = [];
+  for (const [field, flag] of [["workspaceId", "workspace-id"]] as const) {
+    const asked = requested[field];
+    if (asked === undefined) continue;
+    const applied = asked === null ? undefined : asked;
+    if (config[field] === applied) continue;
+    dropped.push(`--${asked === null ? "no-" : ""}${flag}`);
+  }
+  return dropped;
+}
+
+/**
  * Warn when another schedule already names the same workspace. Two schedules sharing
  * one workspace run concurrently with no exclusion, so their agents can interleave in
  * the same directory. Best effort: a list failure is not worth failing the command

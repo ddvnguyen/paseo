@@ -7,6 +7,7 @@ import {
 } from "./schema.js";
 import {
   assertDaemonSupportsWorkspaceReuseClear,
+  assertNewAgentConfigApplied,
   connectScheduleClient,
   isWorkspaceReuseClearRejection,
   parseScheduleUpdateInput,
@@ -66,8 +67,9 @@ export async function runUpdateCommand(
   try {
     await requireNewAgentSchedule(client, id);
     // COMPAT(scheduleWorkspaceReuseClear): added in v0.8.0, remove after 2027-09-30.
-    // Only the clear is gated. Setting an id is a plain string and every daemon that
-    // has schedules understands it.
+    // Only the CLEAR is capability-gated, because a null is the one shape an older
+    // daemon rejects loudly. Setting an id is not gated: a daemon that predates the
+    // field strips it instead, which is caught by reading the answer back below.
     if (input.newAgentConfig?.workspaceId === null) {
       assertDaemonSupportsWorkspaceReuseClear(client);
     }
@@ -76,6 +78,10 @@ export async function runUpdateCommand(
     if (payload.error || !payload.schedule) {
       throw new Error(payload.error ?? `Failed to update schedule: ${id}`);
     }
+    // The daemon answers with the schedule it actually stored. Reading the fields
+    // back is what turns "this daemon does not know that key" from a silent no-op
+    // into a failure naming the flag.
+    assertNewAgentConfigApplied(payload.schedule, input.newAgentConfig);
     return {
       type: "list",
       data: createScheduleInspectRows(payload.schedule),
