@@ -223,9 +223,10 @@ function PluginPanelSheet(props: {
       bodyStyle={styles.body}
       // The plugin surface owns its own padding and draws full bleed, so the
       // sheet's content inset must not sit on top of it. It also owns a close
-      // control in its own chrome — a toolbar X, say — which is why the sheet's
-      // own control stands down on wide. Compact keeps it: a full-screen sheet
-      // starts at 0,0, so the surface's own close is where the status bar is.
+      // control in its own chrome — a fixed toolbar row, not one that scrolls
+      // away — so the sheet's floating control stands down. It has to: in
+      // edgeToEdge that control lands below a surface starting at 0,0, which on
+      // a phone is the caller's column header and timeline strip.
       edgeToEdge
       surfaceOwnsClose
       desktopHeight={fullScreen ? "100%" : undefined}

@@ -291,19 +291,6 @@ const styles = StyleSheet.create((theme) => ({
 
 const WEB_EXIT_DURATION_MS = 160;
 
-/**
- * Whether the sheet draws a close control of its own. See
- * `AdaptiveModalSheetProps.surfaceOwnsClose`: the caller's close wins on wide,
- * where the two would overlap in the card's top-right corner, and the sheet
- * keeps the inset-aware one on compact.
- *
- * A named function rather than an inline `||` in the component below, which
- * already sits at this file's cyclomatic ceiling.
- */
-function resolveSheetClose(surfaceOwnsClose: boolean, isMobile: boolean): boolean {
-  return !surfaceOwnsClose || isMobile;
-}
-
 function SheetBackground({ style }: BottomSheetBackgroundProps) {
   const { theme } = useUnistyles();
   const combinedStyle = useMemo(
@@ -608,17 +595,20 @@ export interface AdaptiveModalSheetProps {
   edgeToEdge?: boolean;
   /**
    * The caller's content paints its own close control (a toolbar X, say), so the
-   * sheet's own one steps aside — but only on WIDE, where the two would sit on
-   * top of each other, both hugging the card's top-right corner.
+   * sheet's own one steps aside — on EVERY form factor, not just wide.
    *
-   * COMPACT keeps the sheet's control. A full-screen sheet's own chrome starts at
-   * 0,0 and cannot take the top safe-area inset, so on a notched phone the
-   * caller's close is where the status bar is. The floating control is the one
-   * that takes `insets.top`, and it is the only exit for content that has not
-   * painted its chrome yet (a loading or empty surface).
+   * The bar is where this control normally lives, so on a non-edge-to-edge sheet
+   * the two would simply sit side by side and the caller's would be the one a
+   * reader aims at. In `edgeToEdge` there is no bar at all: the control floats
+   * over the content, and on compact that means `insets.top + spacing` BELOW the
+   * first row of a surface that starts at 0,0. It then lands on whatever the
+   * caller painted there — a ledger's column header and timeline strip — which
+   * is what a second close control costs when the caller's already covers every
+   * state.
    *
-   * Absent reads as false, so every existing caller keeps the control it has
-   * today.
+   * So the caller's close has to be genuinely always-present before setting this:
+   * a fixed row, not one that scrolls away. Absent reads as false, so every
+   * existing caller keeps the control it has today.
    */
   surfaceOwnsClose?: boolean;
 }
@@ -780,7 +770,9 @@ export function AdaptiveModalSheet({
     () => (edgeToEdge ? styles.edgeToEdgeContent : undefined),
     [edgeToEdge],
   );
-  const showSheetClose = resolveSheetClose(surfaceOwnsClose === true, isMobile);
+  // A surface that draws its own close does so on EVERY form factor. See
+  // `surfaceOwnsClose` for why the compact exception was a mistake.
+  const showSheetClose = surfaceOwnsClose !== true;
 
   if (isMobile) {
     const body = (
