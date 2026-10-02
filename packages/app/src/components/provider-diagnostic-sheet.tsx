@@ -3,7 +3,7 @@ import { AlertTriangle, Copy, FileText, Plus, RotateCw, Trash2 } from "lucide-re
 import type { TFunction } from "i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, type PressableStateCallbackType, Text, View } from "react-native";
+import { Alert, Pressable, type PressableStateCallbackType, Text, View } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import {
   AdaptiveModalSheet,
@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { ModelDisableSwitch } from "@/components/provider-model-toggle";
+import { ProviderMaxContextField } from "@/components/provider-max-context-field";
 import { ScrollableCodeSurface, SurfaceCard } from "@/components/ui/scrollable-code-surface";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
@@ -442,8 +443,12 @@ interface ProviderModalBodyProps {
   filteredDiscovered: AgentModelDefinition[];
   filteredCustom: ProviderProfileModel[];
   deletingModelId: string | null;
+  visible: boolean;
+  maxContextTokens: number | undefined;
+  isSavingMaxContext: boolean;
   onRefresh: () => void;
   onDeleteCustom: (modelId: string) => void;
+  onSaveMaxContext: (tokens: number | undefined) => void;
   theme: { iconSize: { md: number }; colors: { foregroundMuted: string } };
 }
 
@@ -531,8 +536,12 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
     filteredDiscovered,
     filteredCustom,
     deletingModelId,
+    visible,
+    maxContextTokens,
+    isSavingMaxContext,
     onRefresh,
     onDeleteCustom,
+    onSaveMaxContext,
     theme,
   } = props;
 
@@ -573,6 +582,19 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
   }
   return (
     <>
+      <View style={sheetStyles.section}>
+        <SectionHeader title={t("settings.providers.maxContext.section")} />
+        <View style={settingsStyles.card}>
+          <View style={sheetStyles.limitRow}>
+            <ProviderMaxContextField
+              storedTokens={maxContextTokens}
+              onSave={onSaveMaxContext}
+              isSaving={isSavingMaxContext}
+              visible={visible}
+            />
+          </View>
+        </View>
+      </View>
       {filteredDiscovered.length > 0 ? (
         <View style={sheetStyles.section}>
           <SectionHeader
@@ -632,6 +654,7 @@ export function ProviderDiagnosticSheet({
   const [addSheetOpen, setAddSheetOpen] = useState(false);
   const [diagSheetOpen, setDiagSheetOpen] = useState(false);
   const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
+  const [savingMaxContext, setSavingMaxContext] = useState(false);
 
   const providerLabel = resolveProviderLabel(provider, snapshotEntries);
   const providerEntry = useMemo(
@@ -642,6 +665,7 @@ export function ProviderDiagnosticSheet({
     () => config?.providers?.[provider]?.additionalModels ?? [],
     [config?.providers, provider],
   );
+  const maxContextTokens = config?.providers?.[provider]?.maxContextTokens;
   const providerSnapshotRefreshing = providerEntry?.status === "loading";
   const providerErrorMessage =
     providerEntry?.status === "error"
@@ -706,6 +730,25 @@ export function ProviderDiagnosticSheet({
   const handleOpenDiagSheet = useCallback(() => setDiagSheetOpen(true), []);
   const handleCloseDiagSheet = useCallback(() => setDiagSheetOpen(false), []);
 
+  const handleSaveMaxContext = useCallback(
+    (tokens: number | undefined) => {
+      if (savingMaxContext) return;
+      setSavingMaxContext(true);
+      void patchConfig({ providers: { [provider]: { maxContextTokens: tokens } } })
+        // The ceiling is applied when the catalog is served, so the new value is
+        // not observable until the provider is re-read.
+        .then(() => refresh([provider]))
+        .catch((err: unknown) => {
+          Alert.alert(
+            t("settings.providers.maxContext.failedToSaveTitle"),
+            err instanceof Error ? err.message : t("settings.providers.maxContext.failedToSave"),
+          );
+        })
+        .finally(() => setSavingMaxContext(false));
+    },
+    [patchConfig, provider, refresh, savingMaxContext, t],
+  );
+
   const handleDeleteCustom = useCallback(
     (modelId: string) => {
       setDeletingModelId(modelId);
@@ -767,8 +810,12 @@ export function ProviderDiagnosticSheet({
           filteredDiscovered={filteredDiscovered}
           filteredCustom={filteredCustom}
           deletingModelId={deletingModelId}
+          visible={visible}
+          maxContextTokens={maxContextTokens}
+          isSavingMaxContext={savingMaxContext}
           onRefresh={handleRefreshModels}
           onDeleteCustom={handleDeleteCustom}
+          onSaveMaxContext={handleSaveMaxContext}
           theme={theme}
         />
       </AdaptiveModalSheet>
@@ -858,6 +905,9 @@ const sheetStyles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1],
+  },
+  limitRow: {
+    padding: theme.spacing[4],
   },
   modelRow: {
     flexDirection: "row",
