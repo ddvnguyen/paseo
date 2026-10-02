@@ -120,6 +120,20 @@ The daemon re-checks reuse on every run rather than trusting the stored config, 
 
 Clearing reuse needs a daemon that understands it. Against an older daemon the command fails and asks you to update rather than sending a request it would reject.
 
+Setting and clearing are both checked against the schedule the daemon returns, so a daemon too old to store a field fails the command and names the flag. A field the daemon silently ignored used to read as success while the schedule went on behaving as if the flag had never been passed.
+
+### Naming each run's conversation
+
+A schedule that starts a fresh agent every tick leaves one conversation per run, and they all carry the same title. Pass `--name-run-conversations` to title each one `#<run> - <YYMMDD-HH>`, where the number is the run's position in that schedule's own history and the stamp is the dispatch time in the schedule's timezone:
+
+```bash
+paseo schedule create --every 30m --cwd ~/dev/my-app \
+  --name-run-conversations \
+  "Triage new issues."
+```
+
+The name goes on the conversation, not the workspace — a workspace shared by every run can only carry the latest run's name, while each conversation keeps its own. `--no-name-run-conversations` goes back to titles derived from the prompt.
+
 ### Sharing one workspace between schedules
 
 Two schedules can name the same workspace, and `paseo schedule create` / `update` warn when another schedule already uses it. Nothing serialises the two: their runs are independent, so agents from both can be working in the same directory at once, and a run that finishes does not wait for the other. Two schedules that write to the same files will collide. Give each schedule its own workspace, or use one schedule with a longer cadence.

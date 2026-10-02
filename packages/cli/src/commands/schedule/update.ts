@@ -34,6 +34,14 @@ export interface ScheduleUpdateOptions extends ScheduleCommandOptions {
    * permanently undefined and the clear flag would silently do nothing.
    */
   workspaceId?: string | false;
+  /**
+   * `--name-run-conversations` and `--no-name-run-conversations` share this key.
+   * Commander folds a `--no-x` onto `x` itself, so there is no separate
+   * `noNameRunConversations` to read. `getOptionValueSource` is what separates
+   * "not passed" from "passed as false" — without it the flag defaults to true and
+   * every schedule update would switch naming on by accident.
+   */
+  nameRunConversations?: boolean;
   maxRuns?: string | false;
   noMaxRuns?: boolean;
   expiresIn?: string | false;
@@ -43,8 +51,13 @@ export interface ScheduleUpdateOptions extends ScheduleCommandOptions {
 export async function runUpdateCommand(
   id: string,
   options: ScheduleUpdateOptions,
-  _command: Command,
+  command: Command,
 ): Promise<ListResult<ScheduleInspectRow>> {
+  // "cli" is the only source that means the user typed the flag. Anything else is
+  // Commander's own default, which for a positive/negative pair is a value, not an
+  // absence — reading options.nameRunConversations directly would turn naming on
+  // for every update that did not mention it.
+  const nameRunConversationsSource = command.getOptionValueSource("nameRunConversations");
   const input = parseScheduleUpdateInput({
     id,
     every: options.every,
@@ -58,6 +71,12 @@ export async function runUpdateCommand(
     cwd: options.cwd,
     workspaceId: typeof options.workspaceId === "string" ? options.workspaceId : undefined,
     clearWorkspaceId: options.workspaceId === false,
+    nameRunConversations:
+      nameRunConversationsSource === "cli" && options.nameRunConversations === true
+        ? true
+        : undefined,
+    clearNameRunConversations:
+      nameRunConversationsSource === "cli" && options.nameRunConversations === false,
     maxRuns: typeof options.maxRuns === "string" ? options.maxRuns : undefined,
     expiresIn: typeof options.expiresIn === "string" ? options.expiresIn : undefined,
     clearMaxRuns: options.maxRuns === false || options.noMaxRuns === true,
@@ -67,9 +86,8 @@ export async function runUpdateCommand(
   try {
     await requireNewAgentSchedule(client, id);
     // COMPAT(scheduleWorkspaceReuseClear): added in v0.8.0, remove after 2027-09-30.
-    // Only the CLEAR is capability-gated, because a null is the one shape an older
-    // daemon rejects loudly. Setting an id is not gated: a daemon that predates the
-    // field strips it instead, which is caught by reading the answer back below.
+    // Only the clear is gated. Setting an id is a plain string and every daemon that
+    // has schedules understands it.
     if (input.newAgentConfig?.workspaceId === null) {
       assertDaemonSupportsWorkspaceReuseClear(client);
     }

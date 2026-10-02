@@ -133,6 +133,7 @@ export function assertNewAgentConfigApplied(
 /** The new-agent config fields the CLI can set, and which a stale daemon may drop. */
 export interface NewAgentConfigFields {
   workspaceId?: string | null;
+  nameRunConversations?: boolean | null;
 }
 
 /**
@@ -145,7 +146,10 @@ function droppedConfigFields(
   requested: NewAgentConfigFields,
 ): string[] {
   const dropped: string[] = [];
-  for (const [field, flag] of [["workspaceId", "workspace-id"]] as const) {
+  for (const [field, flag] of [
+    ["workspaceId", "workspace-id"],
+    ["nameRunConversations", "name-run-conversations"],
+  ] as const) {
     const asked = requested[field];
     if (asked === undefined) continue;
     const applied = asked === null ? undefined : asked;
@@ -288,6 +292,7 @@ export function parseScheduleCreateInput(options: {
   daemonTarget: import("../../utils/daemon-target.js").DaemonTarget;
   maxRuns?: string;
   workspaceId?: string;
+  nameRunConversations?: boolean;
   expiresIn?: string;
   runNow?: boolean;
 }): CreateScheduleInput {
@@ -349,6 +354,11 @@ export function parseScheduleCreateInput(options: {
         ...(options.workspaceId
           ? { workspaceId: parseWorkspaceId(options.workspaceId), archiveOnFinish: false }
           : {}),
+        // Only written when the flag was actually passed, so a schedule created
+        // without it stores nothing and the daemon keeps the prompt-derived default.
+        ...(options.nameRunConversations !== undefined
+          ? { nameRunConversations: options.nameRunConversations }
+          : {}),
       },
     };
   };
@@ -398,6 +408,10 @@ export interface ScheduleUpdateOptionsInput {
   workspaceId?: string;
   /** Drop workspace reuse and go back to one workspace per run. */
   clearWorkspaceId?: boolean;
+  /** Name each run's conversation `#<ordinal> - <YYMMDD-HH>`; omit to keep prompt titles. */
+  nameRunConversations?: boolean;
+  /** Drop the conversation-naming opt-in and go back to prompt-derived titles. */
+  clearNameRunConversations?: boolean;
   maxRuns?: string;
   expiresIn?: string;
   clearMaxRuns?: boolean;
@@ -606,6 +620,19 @@ function buildNewAgentConfigPatch(
     // false here would rebuild the leak this feature exists to avoid — one
     // never-archived workspace per run, accumulating for the life of the schedule.
     patch.archiveOnFinish = true;
+  }
+  // `!== undefined` on both sides, never truthiness: `--no-name-run-conversations`
+  // is the only way to write `false`, and a truthiness guard would drop that patch
+  // as empty and the command would report nothing to update.
+  //
+  // Unlike `--workspace-id`, the two flags here cannot be checked for conflict.
+  // Commander folds a `--no-x` onto `x` itself, so by the time the handler runs,
+  // "both typed" and "only the negated one" are the same value. Last one wins,
+  // which is what the user who typed both would expect anyway.
+  if (options.nameRunConversations !== undefined) {
+    patch.nameRunConversations = options.nameRunConversations;
+  } else if (options.clearNameRunConversations) {
+    patch.nameRunConversations = null;
   }
   return Object.keys(patch).length > 0 ? patch : undefined;
 }

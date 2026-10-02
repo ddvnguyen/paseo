@@ -18,7 +18,7 @@ import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
 import type { CreatePaseoWorktreeWorkflowResult } from "../worktree-session.js";
 import { ScheduleStore } from "./store.js";
 import { computeNextRunAt, validateScheduleCadence } from "./cron.js";
-import { formatScheduleRunWorkspaceName } from "./run-workspace-name.js";
+import { formatRunConversationName } from "./run-conversation-name.js";
 import type {
   CreateScheduleInput,
   ScheduleExecutionResult,
@@ -111,6 +111,23 @@ function applyNewAgentConfig(
       delete config.thinkingOptionId;
     }
   }
+  applyScheduleRunFlags(config, patch);
+  return { ...target, config };
+}
+
+/**
+ * Apply the target flags that describe how a run behaves, as opposed to what it runs.
+ *
+ * Split out of `applyNewAgentConfig` because these four share one convention the
+ * string fields above do not: a `null` CLEARS, and a cleared field leaves the stored
+ * config entirely rather than persisting as an explicit `null` or `false`. That is
+ * what lets a schedule go back to the default behaviour instead of pinning a value
+ * the user can no longer see.
+ */
+function applyScheduleRunFlags(
+  config: Extract<ScheduleTarget, { type: "new-agent" }>["config"],
+  patch: UpdateScheduleNewAgentConfig,
+): void {
   if (patch.archiveOnFinish !== undefined) {
     config.archiveOnFinish = patch.archiveOnFinish;
   }
@@ -127,7 +144,15 @@ function applyNewAgentConfig(
   if (patch.isolation !== undefined) {
     config.isolation = patch.isolation;
   }
-  return { ...target, config };
+  if (patch.nameRunConversations !== undefined) {
+    // `!== undefined` rather than truthiness: false is the value that turns the
+    // opt-in back off, and it has to survive the same branch a `true` does.
+    if (patch.nameRunConversations === null) {
+      delete config.nameRunConversations;
+    } else {
+      config.nameRunConversations = patch.nameRunConversations;
+    }
+  }
 }
 
 function normalizeMaxRuns(value: number | null | undefined): number | null {
@@ -307,12 +332,6 @@ export interface ScheduleServiceOptions {
    * current provision-a-new-workspace behaviour instead of failing every run.
    */
   getWorkspace?: (workspaceId: string) => Promise<PersistedWorkspaceRecord | null>;
-  /**
-   * Name the workspace a run is dispatching into, so the workspace list shows
-   * which run each one belongs to. Optional and a noop when absent: naming is
-   * presentation, and a host that cannot apply it must still run schedules.
-   */
-  nameRunWorkspace?: (workspaceId: string, displayName: string) => Promise<void>;
   now?: () => Date;
   runner?: (schedule: StoredSchedule, runId: string) => Promise<ScheduleExecutionResult>;
 }
@@ -331,7 +350,6 @@ export class ScheduleService {
   ) => Promise<CreatePaseoWorktreeWorkflowResult>;
   private readonly archiveWorkspace: (workspaceId: string) => Promise<void>;
   private readonly getWorkspace?: (workspaceId: string) => Promise<PersistedWorkspaceRecord | null>;
-  private readonly nameRunWorkspace: (workspaceId: string, displayName: string) => Promise<void>;
   private readonly now: () => Date;
   private readonly runner: (
     schedule: StoredSchedule,
@@ -352,7 +370,6 @@ export class ScheduleService {
     this.createPaseoWorktreeWorkspace = options.createPaseoWorktreeWorkspace;
     this.archiveWorkspace = options.archiveWorkspace;
     this.getWorkspace = options.getWorkspace;
-    this.nameRunWorkspace = options.nameRunWorkspace ?? (async () => {});
     this.now = options.now ?? (() => new Date());
     this.runner = options.runner ?? ((schedule, runId) => this.executeSchedule(schedule, runId));
   }
@@ -1005,7 +1022,6 @@ export class ScheduleService {
           agentId: null,
         });
       }
-      await this.nameScheduleRunWorkspace(schedule, runId, workspace.workspaceId);
       const runConfig = { ...config, cwd: workspace.cwd };
       const created = await this.createAgent({
         kind: "mcp",
@@ -1013,7 +1029,7 @@ export class ScheduleService {
         config: buildScheduleAgentConfig(runConfig),
         cwd: workspace.cwd,
         workspaceId: workspace.workspaceId,
-        title: resolveScheduleAgentTitle(config, schedule.prompt),
+        title: this.resolveScheduleRunTitle(schedule, runId, config),
         labels: {
           "paseo.schedule-id": schedule.id,
           "paseo.schedule-run": runId,
@@ -1090,31 +1106,30 @@ export class ScheduleService {
   }
 
   /**
-   * Put this run's dispatch name on the workspace it is running in.
+   * The title this run's conversation gets.
    *
-   * Applied to whichever workspace the run ended up with, including a reused one:
-   * the name identifies the LATEST dispatch, which is the run a user opens the
-   * workspace for. A naming failure is a missing label, not a failed run, so it
-   * is logged and the run continues — the agent still has to happen.
+   * `nameRunConversations` opts into the dispatch name; without it the title stays
+   * the prompt's own first line, which is what a user reads to recognise the work.
+   * A formatter that throws must not cost the user the run, so a bad ordinal or
+   * instant degrades to the prompt title and is logged.
    */
-  private async nameScheduleRunWorkspace(
+  private resolveScheduleRunTitle(
     schedule: StoredSchedule,
     runId: string,
-    workspaceId: string,
-  ): Promise<void> {
+    config: Extract<ScheduleTarget, { type: "new-agent" }>["config"],
+  ): string {
+    if (config.nameRunConversations !== true) {
+      return resolveScheduleAgentTitle(config, schedule.prompt);
+    }
     const dispatch = this.resolveScheduleRunDispatch(schedule, runId);
-    const displayName = formatScheduleRunWorkspaceName(
-      dispatch.ordinal,
-      dispatch.at,
-      dispatch.timeZone,
-    );
     try {
-      await this.nameRunWorkspace(workspaceId, displayName);
+      return formatRunConversationName(dispatch.ordinal, dispatch.at, dispatch.timeZone);
     } catch (error) {
       this.logger.warn(
-        { err: error, scheduleId: schedule.id, runId, workspaceId, displayName },
-        "Failed to name scheduled workspace after dispatch",
+        { err: error, scheduleId: schedule.id, runId, dispatch },
+        "Failed to name scheduled run conversation; falling back to the prompt title",
       );
+      return resolveScheduleAgentTitle(config, schedule.prompt);
     }
   }
 

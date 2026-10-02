@@ -319,16 +319,69 @@ describe("schedule update workspace flags through commander", () => {
       serverInfo = { features: { scheduleWorkspaceReuseClear: true } };
       scheduleCreate.mockResolvedValueOnce({ schedule: SCHEDULE, error: null });
       const output = await runCreateExpectingExit(
-        ["do the thing", "--every", "5m", "--provider", "claude", "--workspace-id", "wks_shared"],
-        /--workspace-id/,
+        ["do the thing", "--every", "5m", "--provider", "claude", "--name-run-conversations"],
+        /--name-run-conversations/,
       );
       expect(output).toContain("Update the Paseo daemon");
     });
 
     test("a field the daemon did apply is not reported as dropped", async () => {
       serverInfo = { features: { scheduleWorkspaceReuseClear: true } };
-      const input = await runUpdateArgv(["sch_1", "--workspace-id", "wks_shared"]);
-      expect(input.newAgentConfig).toEqual({ workspaceId: "wks_shared", archiveOnFinish: false });
+      const input = await runUpdateArgv(["sch_1", "--name-run-conversations"]);
+      expect(input.newAgentConfig).toEqual({ nameRunConversations: true });
+    });
+  });
+
+  describe("--name-run-conversations through commander", () => {
+    test("update sets the opt-in", async () => {
+      const input = await runUpdateArgv(["sch_1", "--name-run-conversations"]);
+      expect(input.newAgentConfig).toEqual({ nameRunConversations: true });
+    });
+
+    test("update clears it with the negated flag", async () => {
+      const input = await runUpdateArgv(["sch_1", "--no-name-run-conversations"]);
+      // null, not false: the clear removes the field so the daemon's prompt-derived
+      // default applies again.
+      expect(input.newAgentConfig).toEqual({ nameRunConversations: null });
+    });
+
+    test("an update that mentions neither flag leaves the config untouched", async () => {
+      // The positive/negative pair is exactly where a naive read goes wrong: without
+      // the value-source check Commander reports a default, and every unrelated
+      // `schedule update` would silently switch naming on.
+      const input = await runUpdateArgv(["sch_1", "--name", "renamed"]);
+      expect(input.newAgentConfig).toBeUndefined();
+    });
+
+    test("the last of the two flags wins, because Commander cannot tell them apart", async () => {
+      // Not a conflict check: Commander collapses `--no-x` onto `x`, so both orderings
+      // arrive as `false` and the handler cannot know whether one flag or two were
+      // typed. Pinning last-wins keeps that from reading as a bug later.
+      const input = await runUpdateArgv([
+        "sch_1",
+        "--name-run-conversations",
+        "--no-name-run-conversations",
+      ]);
+      expect(input.newAgentConfig).toEqual({ nameRunConversations: null });
+    });
+
+    test("create sets the opt-in on the target config", async () => {
+      const input = await runCreateArgv([
+        "do the thing",
+        "--every",
+        "5m",
+        "--provider",
+        "claude",
+        "--name-run-conversations",
+      ]);
+      const target = input.target as { type: string; config: Record<string, unknown> };
+      expect(target.config.nameRunConversations).toBe(true);
+    });
+
+    test("create without the flag stores nothing", async () => {
+      const input = await runCreateArgv(["do the thing", "--every", "5m", "--provider", "claude"]);
+      const target = input.target as { type: string; config: Record<string, unknown> };
+      expect(target.config.nameRunConversations).toBeUndefined();
     });
   });
 

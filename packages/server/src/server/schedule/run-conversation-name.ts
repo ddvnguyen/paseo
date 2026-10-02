@@ -1,12 +1,16 @@
 /**
- * The name a schedule run gives the workspace it dispatches into:
- * `#<ordinal> - <YYMMDD-HH>`, e.g. `#37 - 261002-01`.
+ * The name a schedule run gives the conversation it dispatches:
+ * `#<ordinal> - <YYMMDD-HH>`, e.g. `#38 - 261002-06`.
  *
- * Without it a schedule that provisions a workspace per run leaves rows in the
- * workspace list that all read as the project's checkout, so there is no way to
- * tell run 12 from run 37 by looking. The ordinal answers "which run" and the
- * timestamp answers "when", both of which the user otherwise has to dig out of the
- * schedule's run history.
+ * A schedule that starts a fresh agent every tick leaves one conversation per run,
+ * and they all carry the same prompt-derived title, so the agent list is a column of
+ * identical rows. The ordinal answers "which run" and the timestamp answers "when",
+ * both of which the user otherwise has to dig out of the schedule's run history.
+ *
+ * The conversation is the object, not the workspace. The owner asked for this
+ * explicitly: a run's workspace may be shared with every other run of the same
+ * schedule, so naming it would make the name describe the latest dispatch rather
+ * than the conversation being read.
  *
  * The timestamp is rendered in the SCHEDULE's timezone (its cron cadence's), not
  * the daemon's: a schedule the user configured as `0 9 * * *` in Asia/Bangkok must
@@ -16,15 +20,11 @@
  */
 
 /** Matches a name this module produced. Used where a dispatch name must not be overwritten. */
-const SCHEDULE_RUN_WORKSPACE_NAME_PATTERN = /^#\d+ - \d{6}-\d{2}$/;
+const SCHEDULE_RUN_CONVERSATION_NAME_PATTERN = /^#\d+ - \d{6}-\d{2}$/;
 
-export function formatScheduleRunWorkspaceName(
-  ordinal: number,
-  at: Date,
-  timeZone?: string,
-): string {
+export function formatRunConversationName(ordinal: number, at: Date, timeZone?: string): string {
   if (!Number.isInteger(ordinal) || ordinal < 1) {
-    throw new Error(`Schedule run workspace name needs a 1-based ordinal, got: ${ordinal}`);
+    throw new Error(`Schedule run conversation name needs a 1-based ordinal, got: ${ordinal}`);
   }
   const dispatch = readDispatchParts(at, timeZone);
   const year = String(dispatch.year % 100).padStart(2, "0");
@@ -34,8 +34,8 @@ export function formatScheduleRunWorkspaceName(
   return `#${ordinal} - ${year}${month}${day}-${hour}`;
 }
 
-export function isScheduleRunWorkspaceName(name: string | null | undefined): boolean {
-  return SCHEDULE_RUN_WORKSPACE_NAME_PATTERN.test(name ?? "");
+export function isRunConversationName(name: string | null | undefined): boolean {
+  return SCHEDULE_RUN_CONVERSATION_NAME_PATTERN.test(name ?? "");
 }
 
 interface DispatchParts {

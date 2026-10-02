@@ -40,6 +40,11 @@ export function createScheduleCommand(): Command {
         "--workspace-id <id>",
         "Reuse this existing workspace for every run instead of provisioning one (implies archiveOnFinish: false)",
       )
+      // Declared as a pair, positive first. The positive option is what keeps the
+      // default undefined instead of true; the handlers read getOptionValueSource
+      // to tell "not passed" from "passed as false".
+      .option("--name-run-conversations", "Title each run's conversation #<run> - <YYMMDD-HH>")
+      .option("--no-name-run-conversations", "Keep prompt-derived conversation titles")
       .option("--expires-in <duration>", "Time to live for the schedule"),
   ).action(withOutput(runCreateCommand));
 
@@ -106,6 +111,8 @@ export function createScheduleCommand(): Command {
         "--no-workspace-id",
         "Stop reusing a workspace and go back to one archived workspace per run",
       )
+      .option("--name-run-conversations", "Title each run's conversation #<run> - <YYMMDD-HH>")
+      .option("--no-name-run-conversations", "Keep prompt-derived conversation titles")
       .option("--no-max-runs", "Clear the max-runs limit")
       .option("--expires-in <duration>", "Set or change time to live for the schedule")
       .option("--no-expires-in", "Clear the expiration"),

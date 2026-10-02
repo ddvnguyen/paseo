@@ -41,6 +41,15 @@ export const ScheduleTargetSchema = z.discriminatedUnion("type", [
        * The server rejects the unsafe combination rather than trusting config.
        */
       workspaceId: z.string().trim().min(1).optional(),
+      /**
+       * Title each run's agent conversation `#<ordinal> - <YYMMDD-HH>`, so a schedule
+       * that starts a fresh conversation every tick leaves rows the user can order.
+       * Absent (the default) leaves the title derived from the prompt.
+       *
+       * Opt-in because the run name is only useful to a user who reads the agent
+       * list, and it costs the prompt's own first line as a label.
+       */
+      nameRunConversations: z.boolean().optional(),
       title: z.string().trim().min(1).nullable().optional(),
       providerOptions: z.record(z.string(), z.json()).optional(),
       featureValues: z.record(z.string(), z.unknown()).optional(),
@@ -119,6 +128,8 @@ export interface UpdateScheduleNewAgentConfig {
   cwd?: string;
   /** Set to reuse a workspace for every run; `null` clears reuse. */
   workspaceId?: string | null;
+  /** Set to name each run's conversation; `null` restores prompt-derived titles. */
+  nameRunConversations?: boolean | null;
 }
 
 export interface UpdateScheduleInput {

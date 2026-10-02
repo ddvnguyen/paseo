@@ -24,6 +24,8 @@ export interface ScheduleCreateOptions extends ScheduleCommandOptions {
   cwd?: string;
   /** Reuse this existing workspace for every run instead of provisioning one. */
   workspaceId?: string;
+  /** Name each run's conversation `#<ordinal> - <YYMMDD-HH>`. */
+  nameRunConversations?: boolean;
   maxRuns?: string;
   expiresIn?: string;
   runNow?: boolean;
@@ -36,6 +38,9 @@ export async function runCreateCommand(
 ): Promise<SingleResult<ScheduleRow>> {
   const runNowSource = command.getOptionValueSource("runNow");
   const runNow = runNowSource === "cli" ? Boolean(options.runNow) : undefined;
+  // Same reason as runNow: a positive/negative pair reads as a value when the user
+  // passed nothing, and that would switch naming on for every schedule created.
+  const nameRunConversationsSource = command.getOptionValueSource("nameRunConversations");
   const input = parseScheduleCreateInput({
     prompt,
     every: options.every,
@@ -49,6 +54,8 @@ export async function runCreateCommand(
     cwd: options.cwd,
     daemonTarget: options.daemonTarget,
     workspaceId: options.workspaceId,
+    nameRunConversations:
+      nameRunConversationsSource === "cli" ? options.nameRunConversations : undefined,
     maxRuns: options.maxRuns,
     expiresIn: options.expiresIn,
     runNow,

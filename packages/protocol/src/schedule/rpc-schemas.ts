@@ -90,6 +90,11 @@ const ScheduleUpdateNewAgentConfigSchema = z.object({
    * workspace per run. See ScheduleTargetSchema.
    */
   workspaceId: z.string().trim().min(1).nullable().optional(),
+  /**
+   * Name each run's agent conversation. `null` clears the opt-in and restores
+   * prompt-derived titles. See ScheduleTargetSchema.
+   */
+  nameRunConversations: z.boolean().nullable().optional(),
 });
 
 export const ScheduleUpdateRequestSchema = z.object({

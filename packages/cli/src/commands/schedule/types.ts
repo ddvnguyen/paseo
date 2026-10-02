@@ -33,6 +33,8 @@ export type ScheduleTarget =
         /** Reuse this existing workspace for every run instead of provisioning one. */
         workspaceId?: string;
         archiveOnFinish?: boolean;
+        /** Name each run's conversation `#<ordinal> - <YYMMDD-HH>`. */
+        nameRunConversations?: boolean;
       };
     };
 
@@ -144,6 +146,8 @@ export interface UpdateScheduleNewAgentConfig {
   cwd?: string;
   /** Reuse this existing workspace for every run instead of provisioning one. */
   workspaceId?: string | null;
+  /** Name each run's conversation; `null` restores prompt-derived titles. */
+  nameRunConversations?: boolean | null;
   archiveOnFinish?: boolean;
 }
 
