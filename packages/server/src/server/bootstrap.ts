@@ -1341,6 +1341,13 @@ export async function createPaseoDaemon(
     createDirectoryWorkspace: createScheduleLocalWorkspaceExternal,
     createPaseoWorktreeWorkspace: createSchedulePaseoWorktreeExternal,
     archiveWorkspace: archiveScheduleWorkspaceExternal,
+    // Target reuse: resolve a workspace named by the schedule target so repeat runs
+    // share one workspace instead of provisioning a new one per run. Returns null
+    // for an unknown id, which degrades to provisioning rather than failing runs.
+    getWorkspace: async (workspaceId: string) => {
+      if (!workspaceRegistry) return null;
+      return (await workspaceRegistry.get(workspaceId)) ?? null;
+    },
   });
   await scheduleService.start();
   agentManager.setAgentArchivedCallback(async (agentId) => {

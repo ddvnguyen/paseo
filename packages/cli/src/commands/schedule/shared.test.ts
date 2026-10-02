@@ -302,6 +302,73 @@ describe("parseScheduleUpdateInput", () => {
   });
 });
 
+describe("schedule workspace reuse flags", () => {
+  test("create --workspace-id pins archiveOnFinish false", () => {
+    const input = parseScheduleCreateInput({ ...baseOptions, workspaceId: "wks_shared" });
+    expect(input.target).toEqual({
+      type: "new-agent",
+      config: {
+        provider: "claude",
+        cwd: process.cwd(),
+        workspaceId: "wks_shared",
+        archiveOnFinish: false,
+      },
+    });
+  });
+
+  test("create without --workspace-id leaves archiveOnFinish alone", () => {
+    const input = parseScheduleCreateInput(baseOptions);
+    expect(input.target).toEqual({
+      type: "new-agent",
+      config: { provider: "claude", cwd: process.cwd() },
+    });
+  });
+
+  test("create rejects an empty --workspace-id", () => {
+    expect(() => parseScheduleCreateInput({ ...baseOptions, workspaceId: "  " })).toThrow(
+      expect.objectContaining({ code: "INVALID_WORKSPACE_ID" }),
+    );
+  });
+
+  test("update --workspace-id also sets archiveOnFinish false", () => {
+    // Patching only workspaceId left archiveOnFinish at its default on a schedule
+    // that already existed, which is the combination the daemon refuses at run time.
+    expect(parseScheduleUpdateInput({ id: "abc", workspaceId: "wks_shared" })).toEqual({
+      id: "abc",
+      newAgentConfig: { workspaceId: "wks_shared", archiveOnFinish: false },
+    });
+  });
+
+  test("update without workspace flags leaves the config untouched", () => {
+    expect(parseScheduleUpdateInput({ id: "abc", name: "renamed" })).toEqual({
+      id: "abc",
+      name: "renamed",
+    });
+  });
+
+  test("update --no-workspace-id clears reuse and restores archiving", () => {
+    // Reuse is what pins archiveOnFinish false. Clearing only the id would leave
+    // every later run provisioning a workspace that is never archived — the same
+    // per-run leak, once the feature meant to prevent it is switched off.
+    expect(parseScheduleUpdateInput({ id: "abc", clearWorkspaceId: true })).toEqual({
+      id: "abc",
+      newAgentConfig: { workspaceId: null, archiveOnFinish: true },
+    });
+  });
+
+  test("rejects passing both --workspace-id and --no-workspace-id", () => {
+    expect(() =>
+      parseScheduleUpdateInput({ id: "abc", workspaceId: "wks_shared", clearWorkspaceId: true }),
+    ).toThrow(expect.objectContaining({ code: "CONFLICTING_WORKSPACE_ID" }));
+  });
+
+  test("update rejects an empty --workspace-id", () => {
+    expect(() => parseScheduleUpdateInput({ id: "abc", workspaceId: "   " })).toThrow(
+      expect.objectContaining({ code: "INVALID_WORKSPACE_ID" }),
+    );
+  });
+});
+
 describe("compileEveryPresetToCron", () => {
   test.each([
     ["1m", "*/1 * * * *"],

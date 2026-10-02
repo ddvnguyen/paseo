@@ -2,10 +2,12 @@ import type { Command } from "commander";
 import type { SingleResult } from "../../output/index.js";
 import { scheduleSchema } from "./schema.js";
 import {
+  assertNewAgentConfigApplied,
   connectScheduleClient,
   parseScheduleCreateInput,
   toScheduleCommandError,
   toScheduleRow,
+  warnOnSharedWorkspace,
   type ScheduleCommandOptions,
   type ScheduleRow,
 } from "./shared.js";
@@ -20,6 +22,10 @@ export interface ScheduleCreateOptions extends ScheduleCommandOptions {
   mode?: string;
   thinking?: string;
   cwd?: string;
+  /** Reuse this existing workspace for every run instead of provisioning one. */
+  workspaceId?: string;
+  /** Name each run's conversation `#<ordinal> - <YYMMDD-HH>`. */
+  nameRunConversations?: boolean;
   maxRuns?: string;
   expiresIn?: string;
   runNow?: boolean;
@@ -32,6 +38,9 @@ export async function runCreateCommand(
 ): Promise<SingleResult<ScheduleRow>> {
   const runNowSource = command.getOptionValueSource("runNow");
   const runNow = runNowSource === "cli" ? Boolean(options.runNow) : undefined;
+  // Same reason as runNow: a positive/negative pair reads as a value when the user
+  // passed nothing, and that would switch naming on for every schedule created.
+  const nameRunConversationsSource = command.getOptionValueSource("nameRunConversations");
   const input = parseScheduleCreateInput({
     prompt,
     every: options.every,
@@ -44,15 +53,31 @@ export async function runCreateCommand(
     thinking: options.thinking,
     cwd: options.cwd,
     daemonTarget: options.daemonTarget,
+    workspaceId: options.workspaceId,
+    nameRunConversations:
+      nameRunConversationsSource === "cli" ? options.nameRunConversations : undefined,
     maxRuns: options.maxRuns,
     expiresIn: options.expiresIn,
     runNow,
   });
   const { client } = await connectScheduleClient(options.daemonTarget);
   try {
+    await warnOnSharedWorkspace(
+      client,
+      input.target.type === "new-agent" ? input.target.config.workspaceId : undefined,
+    );
     const payload = await client.scheduleCreate(input);
     if (payload.error || !payload.schedule) {
       throw new Error(payload.error ?? "Schedule creation failed");
+    }
+    // A create request carries the whole new-agent config, so a daemon that predates
+    // a field strips it the same way an update does. The stored schedule is the only
+    // place that shows whether the flag actually took.
+    if (input.target.type === "new-agent") {
+      assertNewAgentConfigApplied(payload.schedule, input.target.config, {
+        failureCode: "SCHEDULE_CREATE_FAILED",
+        failureMessage: "Schedule was not created as a new-agent schedule",
+      });
     }
     return {
       type: "single",

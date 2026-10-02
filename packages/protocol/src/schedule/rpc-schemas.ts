@@ -85,6 +85,16 @@ const ScheduleUpdateNewAgentConfigSchema = z.object({
   archiveOnFinish: z.boolean().optional(),
   isolation: z.enum(["local", "worktree"]).optional(),
   cwd: z.string().trim().min(1).optional(),
+  /**
+   * Reuse an existing workspace for every run. `null` clears reuse and restores one
+   * workspace per run. See ScheduleTargetSchema.
+   */
+  workspaceId: z.string().trim().min(1).nullable().optional(),
+  /**
+   * Name each run's agent conversation. `null` clears the opt-in and restores
+   * prompt-derived titles. See ScheduleTargetSchema.
+   */
+  nameRunConversations: z.boolean().nullable().optional(),
 });
 
 export const ScheduleUpdateRequestSchema = z.object({

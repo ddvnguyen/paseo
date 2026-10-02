@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { sep } from "node:path";
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -359,4 +366,71 @@ test("update_schedule patches thinking, archive behavior, and isolation for the 
   expect(agent.cwd).not.toBe(repoDir);
   expect(await activeAgentIds()).toContain(agentId);
   expect(existsSync(agent.cwd)).toBe(true);
+});
+
+function readStoredScheduleFile(scheduleId: string): Record<string, unknown> {
+  const file = path.join(realpathSync(ctx.daemon.paseoHome), "schedules", `${scheduleId}.json`);
+  return JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
+}
+
+function storedWorkspaceId(scheduleId: string): unknown {
+  const stored = readStoredScheduleFile(scheduleId);
+  const target = stored.target as { type: string; config: Record<string, unknown> };
+  return target.config.workspaceId;
+}
+
+/**
+ * `workspaceId` reached the daemon on a wire schema that did not declare it, and the
+ * update reported success anyway.
+ *
+ * A Zod object strips keys it does not declare, so a daemon built before
+ * `workspaceId` joined the update schema silently deleted the field at
+ * `WSInboundMessageSchema.safeParse` — the first thing the socket does with an
+ * inbound frame. Nothing downstream ever saw it: no error, `updatedAt` still bumped,
+ * and neither the store nor the response echo showed the workspace. The CLI read the
+ * success and reported the schedule as configured.
+ *
+ * Every link in the path is asserted, because any one of them can be the one that
+ * drops it and only the whole chain reproduces the report: the client's outbound
+ * message, the daemon's inbound envelope, the session handler's field-by-field
+ * rebuild, the service patch, the persisted file, and the echoed schedule.
+ */
+test("update_schedule round-trips workspaceId through the whole inbound path", async () => {
+  const cwd = makeTempDir("schedule-update-workspace-id-");
+  const schedule = await createNewAgentSchedule({
+    prompt: "Say done.",
+    cadence: { type: "every", everyMs: 60_000 },
+    target: {
+      type: "new-agent",
+      config: {
+        ...getFullAccessConfig("codex"),
+        cwd,
+        archiveOnFinish: true,
+        isolation: "local",
+      },
+    },
+    runOnCreate: false,
+  });
+  expect(storedWorkspaceId(schedule.id)).toBeUndefined();
+
+  const set = await updateSchedule({
+    id: schedule.id,
+    newAgentConfig: { workspaceId: "wks_shared_collector", archiveOnFinish: false },
+  });
+  // The response echo is what the CLI renders as the new configuration.
+  expect(set.target.config.workspaceId).toBe("wks_shared_collector");
+  expect(set.target.config.archiveOnFinish).toBe(false);
+  // A second read proves it was persisted, not just echoed back from the patch.
+  const afterSet = await ctx.client.scheduleInspect({ id: schedule.id });
+  expect(afterSet.schedule?.target.config.workspaceId).toBe("wks_shared_collector");
+  expect(storedWorkspaceId(schedule.id)).toBe("wks_shared_collector");
+
+  // The clear travels as a null, which is the shape an old daemon rejects loudly
+  // rather than stripping, and which must land as an absent field.
+  const cleared = await updateSchedule({
+    id: schedule.id,
+    newAgentConfig: { workspaceId: null, archiveOnFinish: true },
+  });
+  expect(cleared.target.config.workspaceId).toBeUndefined();
+  expect(storedWorkspaceId(schedule.id)).toBeUndefined();
 });

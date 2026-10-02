@@ -36,6 +36,15 @@ export function createScheduleCommand(): Command {
       .option("--cwd <path>", "Working directory (default: current; required with --host)")
       .option("--run-now", "Fire one immediate run on creation")
       .option("--max-runs <n>", "Maximum number of runs")
+      .option(
+        "--workspace-id <id>",
+        "Reuse this existing workspace for every run instead of provisioning one (implies archiveOnFinish: false)",
+      )
+      // Declared as a pair, positive first. The positive option is what keeps the
+      // default undefined instead of true; the handlers read getOptionValueSource
+      // to tell "not passed" from "passed as false".
+      .option("--name-run-conversations", "Title each run's conversation #<run> - <YYMMDD-HH>")
+      .option("--no-name-run-conversations", "Keep prompt-derived conversation titles")
       .option("--expires-in <duration>", "Time to live for the schedule"),
   ).action(withOutput(runCreateCommand));
 
@@ -94,6 +103,16 @@ export function createScheduleCommand(): Command {
       .option("--mode <mode>", "New agent provider mode (only for new-agent target)")
       .option("--cwd <path>", "New working directory (only for new-agent target)")
       .option("--max-runs <n>", "Set or change maximum number of runs")
+      .option(
+        "--workspace-id <id>",
+        "Reuse this existing workspace for every run (also sets archiveOnFinish false)",
+      )
+      .option(
+        "--no-workspace-id",
+        "Stop reusing a workspace and go back to one archived workspace per run",
+      )
+      .option("--name-run-conversations", "Title each run's conversation #<run> - <YYMMDD-HH>")
+      .option("--no-name-run-conversations", "Keep prompt-derived conversation titles")
       .option("--no-max-runs", "Clear the max-runs limit")
       .option("--expires-in <duration>", "Set or change time to live for the schedule")
       .option("--no-expires-in", "Clear the expiration"),

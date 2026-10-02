@@ -32,6 +32,24 @@ export const ScheduleTargetSchema = z.discriminatedUnion("type", [
       thinkingOptionId: z.string().trim().min(1).optional(),
       archiveOnFinish: z.boolean().optional(),
       isolation: z.enum(["local", "worktree"]).optional(),
+      /**
+       * Reuse this existing workspace for every run instead of provisioning a new
+       * one. Default (absent) keeps today's behaviour: one workspace per run.
+       *
+       * Only valid for a target that does not archive on finish — a shared
+       * workspace archived by one run disappears out from under every other run.
+       * The server rejects the unsafe combination rather than trusting config.
+       */
+      workspaceId: z.string().trim().min(1).optional(),
+      /**
+       * Title each run's agent conversation `#<ordinal> - <YYMMDD-HH>`, so a schedule
+       * that starts a fresh conversation every tick leaves rows the user can order.
+       * Absent (the default) leaves the title derived from the prompt.
+       *
+       * Opt-in because the run name is only useful to a user who reads the agent
+       * list, and it costs the prompt's own first line as a label.
+       */
+      nameRunConversations: z.boolean().optional(),
       title: z.string().trim().min(1).nullable().optional(),
       providerOptions: z.record(z.string(), z.json()).optional(),
       featureValues: z.record(z.string(), z.unknown()).optional(),
@@ -50,6 +68,18 @@ export const ScheduleRunSchema = z.object({
   status: z.enum(["running", "succeeded", "failed"]),
   agentId: z.guid().nullable(),
   workspaceId: z.string().nullable().optional(),
+  /**
+   * Where this run's workspace came from. Recorded per run rather than inferred from
+   * the target's config, because the target can be edited while a run is in flight and
+   * crash recovery reads the config long after the run ended. A workspace the run
+   * reused is never archived; one the run provisioned is this run's own.
+   *
+   * Absent on runs persisted before this field existed: those are resolved by
+   * comparing the run's workspace against the target's named workspace.
+   */
+  // COMPAT(scheduleRunWorkspaceOrigin): added in v0.8.0, remove the absent-run
+  // fallback in shouldArchiveScheduleRunWorkspace after the daemon floor is >= v0.8.0.
+  workspaceOrigin: z.enum(["reused", "provisioned"]).optional(),
   output: z.string().nullable(),
   error: z.string().nullable(),
 });
@@ -96,6 +126,10 @@ export interface UpdateScheduleNewAgentConfig {
   archiveOnFinish?: boolean;
   isolation?: "local" | "worktree";
   cwd?: string;
+  /** Set to reuse a workspace for every run; `null` clears reuse. */
+  workspaceId?: string | null;
+  /** Set to name each run's conversation; `null` restores prompt-derived titles. */
+  nameRunConversations?: boolean | null;
 }
 
 export interface UpdateScheduleInput {
