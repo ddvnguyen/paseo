@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildProviderMaxContextPatch,
   formatMaxContextTokens,
   parseMaxContextTokens,
   resolveMaxContextFieldState,
@@ -124,5 +125,30 @@ describe("resolveMaxContextFieldState", () => {
       isValid: false,
       isDirty: false,
     });
+  });
+});
+
+describe("buildProviderMaxContextPatch", () => {
+  it("writes the ceiling as a plain number", () => {
+    expect(buildProviderMaxContextPatch("omp", 128_000)).toEqual({
+      omp: { maxContextTokens: 128_000 },
+    });
+  });
+
+  it("marks a cleared ceiling with an explicit null, never an absent key", () => {
+    const patch = buildProviderMaxContextPatch("omp", undefined);
+
+    expect(patch).toEqual({ omp: { maxContextTokens: null } });
+    // An absent key is the merge's "leave it alone" signal and would silently
+    // fail to clear, which is the defect this marker exists to fix.
+    expect(Object.hasOwn(patch.omp, "maxContextTokens")).toBe(true);
+    expect(patch.omp.maxContextTokens).toBeNull();
+  });
+
+  it("does not emit an empty provider object", () => {
+    expect(Object.keys(buildProviderMaxContextPatch("omp", undefined))).toEqual(["omp"]);
+    expect(Object.keys(buildProviderMaxContextPatch("omp", undefined).omp)).toEqual([
+      "maxContextTokens",
+    ]);
   });
 });

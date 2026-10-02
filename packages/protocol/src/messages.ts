@@ -146,9 +146,25 @@ const MutableDaemonProviderConfigSchema = z
     modelPrefix: z.string().optional(),
     // Read-only for the client: the settings field seeds its textbox from the
     // ceiling the daemon applies when it serves the catalog. Same pattern as
-    // modelPrefix (T5, e92d11e60).
+    // modelPrefix (T5, e92d11e60). Not nullable here — see the patch entry
+    // schema below; a published config never carries a delete marker.
     maxContextTokens: z.number().optional(),
   })
+  .passthrough();
+
+/**
+ * The patch-side view of a provider entry. It carries one thing the published
+ * config cannot: an explicit `null` that means "remove this field".
+ *
+ * A config patch is merge-only, so an absent field means "leave it alone" and an
+ * empty provider object merges to a no-op — neither can unset a scalar. The
+ * ceiling survives the patch, the file, and every reload. `null` is the only
+ * marker that can say "remove it", and the daemon deletes the key when it sees
+ * one. Keeping the marker on the patch side alone means a client can never
+ * receive one back: the published schema has no way to express it.
+ */
+const MutableDaemonProviderConfigPatchEntrySchema = MutableDaemonProviderConfigSchema.partial()
+  .extend({ maxContextTokens: z.number().nullable().optional() })
   .passthrough();
 
 const MutableStructuredGenerationProviderSchema = z
@@ -221,9 +237,7 @@ export const MutableDaemonConfigPatchSchema = z
     relay: MutableRelayConfigSchema.partial().optional(),
     mcp: z.object({ injectIntoAgents: z.boolean().optional() }).passthrough().optional(),
     browserTools: MutableBrowserToolsConfigSchema.partial().optional(),
-    providers: z
-      .record(z.string(), MutableDaemonProviderConfigSchema.partial().passthrough())
-      .optional(),
+    providers: z.record(z.string(), MutableDaemonProviderConfigPatchEntrySchema).optional(),
     removeProviders: z.array(z.string().min(1)).optional(),
     metadataGeneration: MutableMetadataGenerationConfigSchema.partial().optional(),
     autoArchiveAfterMerge: z.boolean().optional(),

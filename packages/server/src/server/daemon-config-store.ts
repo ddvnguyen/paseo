@@ -20,7 +20,7 @@ interface SupportedMutableConfigPatch {
   relay?: { enabled?: boolean };
   mcp?: { injectIntoAgents?: boolean };
   browserTools?: { enabled?: boolean };
-  providers?: MutableDaemonConfig["providers"];
+  providers?: MutableDaemonConfigPatch["providers"];
   removeProviders?: string[];
   metadataGeneration?: MutableDaemonConfig["metadataGeneration"];
   autoArchiveAfterMerge?: boolean;
@@ -140,6 +140,84 @@ function omitMetadataGenerationProvidersFromConfig<
       providers: nextProviders,
     },
   } as T;
+}
+
+/**
+ * Provider fields a client can remove by sending an explicit `null`.
+ *
+ * A config patch is merge-only, so a field the client omits means "leave it
+ * alone" and a provider object with no keys merges to a no-op. That leaves an
+ * unsettable scalar: sending `{ provider: {} }` cannot express "remove the
+ * ceiling", and the old value survives the patch, the persisted file, and every
+ * reload. `null` is the marker that can, and only these fields read it — a
+ * `null` anywhere else stays whatever the merge made of it.
+ */
+const DELETABLE_PROVIDER_FIELDS = ["maxContextTokens"] as const;
+
+type ProviderDeleteMarker = (typeof DELETABLE_PROVIDER_FIELDS)[number];
+
+/**
+ * Splits one provider patch entry into the keys to keep and the fields the client
+ * asked to delete. The markers come out of the value that goes to
+ * `ProviderOverrideSchema.parse` as well as out of the merged override —
+ * `ProviderOverrideSchema` types these fields as `number | undefined`, so parsing
+ * a `null` would throw rather than delete anything.
+ */
+function splitProviderDeleteMarkers(providerConfig: unknown): {
+  config: Record<string, unknown>;
+  marked: ReadonlySet<ProviderDeleteMarker>;
+} {
+  const config = isRecord(providerConfig) ? providerConfig : {};
+  const marked = new Set<ProviderDeleteMarker>();
+  for (const field of DELETABLE_PROVIDER_FIELDS) {
+    if (config[field] === null) {
+      marked.add(field);
+    }
+  }
+  return { config: omitMarkedProviderFields(config, marked), marked };
+}
+
+function omitMarkedProviderFields(
+  providerConfig: Record<string, unknown>,
+  marked: ReadonlySet<ProviderDeleteMarker>,
+): Record<string, unknown> {
+  if (marked.size === 0) {
+    return providerConfig;
+  }
+  const next = { ...providerConfig };
+  for (const field of marked) {
+    delete next[field];
+  }
+  return next;
+}
+
+/**
+ * Applies the deletions to the mutable view the store hands back to clients, so a
+ * cleared ceiling reads as absent there too rather than lingering as a value the
+ * schema has to tolerate. An entry the markers emptied stays as an empty object:
+ * the provider is still declared, it just carries no overrides.
+ */
+function omitDeletedProviderFieldsFromConfig<T extends { providers?: Record<string, unknown> }>(
+  config: T,
+  mutableProviders: MutableDaemonConfigPatch["providers"] | undefined,
+): T {
+  if (!config.providers || !mutableProviders) {
+    return config;
+  }
+
+  let changed = false;
+  const nextProviders = { ...config.providers };
+  for (const [providerId, mutableProvider] of Object.entries(mutableProviders)) {
+    const { marked } = splitProviderDeleteMarkers(mutableProvider);
+    const currentOverride = nextProviders[providerId];
+    if (marked.size === 0 || !isRecord(currentOverride)) {
+      continue;
+    }
+    nextProviders[providerId] = omitMarkedProviderFields(currentOverride, marked);
+    changed = true;
+  }
+
+  return changed ? ({ ...config, providers: nextProviders } as T) : config;
 }
 
 function omitProvidersFromOverrides(
@@ -281,7 +359,7 @@ function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMut
 
 export function applyMutableProviderConfigToOverrides(
   baseOverrides: Record<string, ProviderOverride> | undefined,
-  mutableProviders: MutableDaemonConfig["providers"] | undefined,
+  mutableProviders: MutableDaemonConfigPatch["providers"] | undefined,
 ): Record<string, ProviderOverride> | undefined {
   if (!baseOverrides && (!mutableProviders || Object.keys(mutableProviders).length === 0)) {
     return undefined;
@@ -290,8 +368,9 @@ export function applyMutableProviderConfigToOverrides(
   const nextOverrides: Record<string, ProviderOverride> = { ...baseOverrides };
   for (const [providerId, providerConfig] of Object.entries(mutableProviders ?? {})) {
     const previousOverride = nextOverrides[providerId];
-    const parsedOverride = ProviderOverrideSchema.strip().parse(providerConfig);
-    nextOverrides[providerId] = {
+    const { config: keptConfig, marked } = splitProviderDeleteMarkers(providerConfig);
+    const parsedOverride = ProviderOverrideSchema.strip().parse(keptConfig);
+    const mergedOverride: Record<string, unknown> = {
       ...previousOverride,
       ...parsedOverride,
       ...(parsedOverride.paseoTools
@@ -303,6 +382,10 @@ export function applyMutableProviderConfigToOverrides(
           }
         : {}),
     };
+    nextOverrides[providerId] = omitMarkedProviderFields(
+      mergedOverride,
+      marked,
+    ) as ProviderOverride;
   }
 
   return nextOverrides;
@@ -370,7 +453,10 @@ export class DaemonConfigStore {
     if (parsedPatch.plugins !== undefined) merged.plugins = parsedPatch.plugins;
     const next = MutableDaemonConfigSchema.parse(
       omitMetadataGenerationProvidersFromConfig(
-        omitProvidersFromConfig(merged, removedProviders),
+        omitDeletedProviderFieldsFromConfig(
+          omitProvidersFromConfig(merged, removedProviders),
+          parsedPatch.providers,
+        ),
         removedProviders,
       ),
     );
