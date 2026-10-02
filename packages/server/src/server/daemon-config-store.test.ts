@@ -89,6 +89,105 @@ describe("applyMutableProviderConfigToOverrides", () => {
   });
 });
 
+describe("provider field deletion via an explicit null", () => {
+  test("removes the key from the overrides it merges onto", () => {
+    expect(
+      applyMutableProviderConfigToOverrides(
+        { omp: { extends: "omp", label: "Oh My Pi", maxContextTokens: 128_000 } },
+        { omp: { maxContextTokens: null } },
+      ),
+    ).toEqual({ omp: { extends: "omp", label: "Oh My Pi" } });
+  });
+
+  test("leaves sibling overrides on the provider alone", () => {
+    expect(
+      applyMutableProviderConfigToOverrides(
+        { omp: { extends: "omp", maxContextTokens: 128_000, env: { OPENCODE_API_KEY: "k" } } },
+        { omp: { maxContextTokens: null } },
+      ),
+    ).toEqual({ omp: { extends: "omp", env: { OPENCODE_API_KEY: "k" } } });
+  });
+
+  test("is a no-op rather than a failure when there is nothing to clear", () => {
+    expect(
+      applyMutableProviderConfigToOverrides(
+        { omp: { extends: "omp" } },
+        {
+          omp: { maxContextTokens: null },
+        },
+      ),
+    ).toEqual({ omp: { extends: "omp" } });
+  });
+
+  describe("end to end through patch, disk, and reload", () => {
+    const tempDirs: string[] = [];
+
+    afterEach(() => {
+      for (const dir of tempDirs.splice(0)) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    function createStore(paseoHome: string, providers: MutableDaemonConfig["providers"]) {
+      return new DaemonConfigStore(paseoHome, {
+        relay: { enabled: false },
+        mcp: { injectIntoAgents: false },
+        browserTools: { enabled: false },
+        providers,
+        metadataGeneration: { providers: [] },
+        autoArchiveAfterMerge: false,
+        enableTerminalAgentHooks: false,
+        appendSystemPrompt: "",
+      });
+    }
+
+    test("clearing a ceiling removes it from memory, from disk, and after a reload", () => {
+      const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-clear-max-context-"));
+      tempDirs.push(paseoHome);
+      const store = createStore(paseoHome, {
+        omp: { extends: "omp", maxContextTokens: 128_000 },
+      });
+
+      // A ceiling set through the patch path must itself survive disk, otherwise
+      // the clearing test below would pass for the wrong reason.
+      store.patch({ providers: { omp: { maxContextTokens: 100_000_000 } } });
+      expect(loadPersistedConfig(paseoHome).agents?.providers?.omp).toMatchObject({
+        maxContextTokens: 100_000_000,
+      });
+
+      store.patch({ providers: { omp: { maxContextTokens: null } } });
+
+      expect(store.get().providers.omp).not.toHaveProperty("maxContextTokens");
+      expect(store.get().providers.omp?.maxContextTokens).toBeUndefined();
+      const persistedProvider = loadPersistedConfig(paseoHome).agents?.providers?.omp;
+      expect(persistedProvider).not.toBeUndefined();
+      expect(persistedProvider).not.toHaveProperty("maxContextTokens");
+
+      // The post-reload view is the projection of whatever is on disk, which is
+      // what a daemon restart rebuilds its mutable config from. The entry the
+      // markers emptied survives as an empty override: the provider is still
+      // declared, it just carries no ceiling.
+      const afterReload = reloadableConfig(loadPersistedConfig(paseoHome));
+      expect(afterReload.providers.omp).toBeDefined();
+      expect(afterReload.providers.omp).not.toHaveProperty("maxContextTokens");
+    });
+
+    test("an empty provider object still merges to a no-op, which is why null exists", () => {
+      const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-clear-max-context-"));
+      tempDirs.push(paseoHome);
+      const store = createStore(paseoHome, { omp: { extends: "omp" } });
+      store.patch({ providers: { omp: { maxContextTokens: 128_000 } } });
+
+      store.patch({ providers: { omp: {} } });
+
+      expect(store.get().providers.omp?.maxContextTokens).toBe(128_000);
+      expect(loadPersistedConfig(paseoHome).agents?.providers?.omp).toMatchObject({
+        maxContextTokens: 128_000,
+      });
+    });
+  });
+});
+
 describe("DaemonConfigStore", () => {
   const tempDirs: string[] = [];
 

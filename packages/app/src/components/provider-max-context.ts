@@ -1,11 +1,14 @@
 /**
- * Parsing and formatting for a provider's `maxContextTokens` ceiling.
+ * Parsing, formatting, and wire encoding for a provider's `maxContextTokens`
+ * ceiling.
  *
  * Config stores a token count. Users think in "100 M" / "128 K", so the field
  * accepts a suffixed number and the config keeps the integer. Nothing here
  * touches React or the daemon — the settings sheet renders these results and
  * dispatches the save, which is the same split the schedule form uses.
  */
+
+import type { MutableDaemonConfigPatch } from "@getpaseo/protocol/messages";
 
 const THOUSAND = 1_000;
 const MILLION = 1_000_000;
@@ -75,6 +78,21 @@ export function formatMaxContextTokens(tokens: number | undefined): string {
 
 export function formatMaxContextTokenCount(tokens: number, locale: string): string {
   return tokens.toLocaleString(locale);
+}
+
+/**
+ * The provider patch that writes — or removes — a ceiling.
+ *
+ * A cleared ceiling is an explicit `null`, never an absent key. The config patch
+ * is merge-only, so `{ provider: {} }` cannot unset a scalar: it merges to a
+ * no-op and the old ceiling survives the patch, the persisted file, and every
+ * reload. The daemon deletes the key when it sees the marker.
+ */
+export function buildProviderMaxContextPatch(
+  provider: string,
+  tokens: number | undefined,
+): NonNullable<MutableDaemonConfigPatch["providers"]> {
+  return { [provider]: { maxContextTokens: tokens ?? null } };
 }
 
 export interface MaxContextFieldState {

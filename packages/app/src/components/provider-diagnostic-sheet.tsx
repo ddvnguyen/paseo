@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { ModelDisableSwitch } from "@/components/provider-model-toggle";
 import { ProviderMaxContextField } from "@/components/provider-max-context-field";
+import { buildProviderMaxContextPatch } from "@/components/provider-max-context";
 import { ScrollableCodeSurface, SurfaceCard } from "@/components/ui/scrollable-code-surface";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
@@ -734,7 +735,7 @@ export function ProviderDiagnosticSheet({
     (tokens: number | undefined) => {
       if (savingMaxContext) return;
       setSavingMaxContext(true);
-      void patchConfig({ providers: { [provider]: { maxContextTokens: tokens } } })
+      void patchConfig({ providers: buildProviderMaxContextPatch(provider, tokens) })
         // The ceiling is applied when the catalog is served, so the new value is
         // not observable until the provider is re-read.
         .then(() => refresh([provider]))
