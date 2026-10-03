@@ -71,6 +71,20 @@ export const ProviderOverrideSchema = z.object({
    * "[Go]"). Empty or absent leaves labels undecorated.
    */
   modelPrefix: z.string().optional(),
+  /**
+   * Display tags for one upstream provider inside an aggregating provider.
+   * OpenCode serves many upstream catalogs (`anthropic`, `openai`,
+   * `github-copilot`, ...) under the single `opencode` provider id, so one
+   * provider-wide tag cannot decorate them differently. Keyed by the
+   * sub-provider id an adapter reports in `metadata.providerId`; a row prefers
+   * its own key and falls back to `modelPrefix` when it has none.
+   *
+   * Additive and optional: an absent map means every row uses `modelPrefix`,
+   * which is what every config written before this field existed relies on.
+   * Keys are sub-provider ids, so they are not length-capped or
+   * charset-restricted — the live catalog carries ids like `wafer.ai`.
+   */
+  modelPrefixes: z.record(z.string(), z.string().max(24)).optional(),
   enabled: z.boolean().optional(),
   order: z.number().optional(),
 });

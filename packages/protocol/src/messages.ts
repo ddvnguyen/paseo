@@ -144,6 +144,9 @@ const MutableDaemonProviderConfigSchema = z
     // Read-only for the client: pickers derive their `[Tag]` decoration from the
     // config entry, so the model catalog stays free of display policy.
     modelPrefix: z.string().optional(),
+    // Read-only for the client for the same reason as `modelPrefix`: display
+    // policy stays in the config, not the model catalog.
+    modelPrefixes: z.record(z.string(), z.string()).optional(),
     // Read-only for the client: the settings field seeds its textbox from the
     // ceiling the daemon applies when it serves the catalog. Same pattern as
     // modelPrefix (T5, e92d11e60). Not nullable here — see the patch entry
@@ -170,6 +173,12 @@ const MutableDaemonProviderConfigPatchEntrySchema = MutableDaemonProviderConfigS
     // merges as "leave it alone", so clearing the tag must send an explicit
     // `null` for the daemon to delete the key.
     modelPrefix: z.string().max(24).nullable().optional(),
+    // The same map as the published config, except every value is nullable. The
+    // patch is merge-only, so clearing ONE sub-provider's tag needs a marker
+    // that names that key: a `null` value deletes that entry and leaves the
+    // rest of the map alone. A `null` map would be ambiguous against "leave it
+    // alone", which is why the marker lives per key.
+    modelPrefixes: z.record(z.string(), z.string().max(24).nullable()).optional(),
   })
   .passthrough();
 
