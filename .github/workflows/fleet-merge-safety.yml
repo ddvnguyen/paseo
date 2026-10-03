@@ -1,0 +1,28 @@
+name: Fleet merge safety
+
+on:
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: fleet-merge-safety-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  merge-safety:
+    name: merge-safety (plugins vs packages, turso import)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enforce paseo#31 merge-safety rules
+        run: node scripts/fleet-merge-safety.mjs --base ${{ github.event.pull_request.base.sha || 'HEAD~1' }} --head ${{ github.event.pull_request.head.sha || 'HEAD' }}
