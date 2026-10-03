@@ -18,10 +18,7 @@ import { buildProviderMaxContextPatch } from "@/components/provider-max-context"
 // @ts-expect-error - provider-model-prefix-field.ts wins extensionless resolution;
 // the component lives in the sibling .tsx and must be imported with its extension.
 import { ProviderModelPrefixField } from "@/components/provider-model-prefix-field.tsx";
-import {
-  buildProviderModelPrefixPatch,
-  buildProviderSubModelPrefixPatch,
-} from "@/components/provider-model-prefix-field";
+import { buildProviderSubModelPrefixPatch } from "@/components/provider-model-prefix-field";
 import {
   buildSubProviderModelSections,
   collectSubProviderIds,
@@ -551,8 +548,6 @@ interface ProviderModalBodyProps {
   visible: boolean;
   maxContextTokens: number | undefined;
   isSavingMaxContext: boolean;
-  modelPrefix: string | undefined;
-  isSavingModelPrefix: boolean;
   /** Stored per-sub-provider tags, keyed by sub-provider id. */
   modelPrefixes: Readonly<Record<string, string>>;
   /** Sub-provider ids with a save in flight. */
@@ -560,7 +555,6 @@ interface ProviderModalBodyProps {
   onRefresh: () => void;
   onDeleteCustom: (modelId: string) => void;
   onSaveMaxContext: (tokens: number | undefined) => void;
-  onSaveModelPrefix: (prefix: string | undefined) => void;
   onSaveSubModelPrefix: (subProviderId: string, prefix: string | undefined) => void;
   theme: { iconSize: { md: number }; colors: { foregroundMuted: string } };
 }
@@ -652,14 +646,11 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
     visible,
     maxContextTokens,
     isSavingMaxContext,
-    modelPrefix,
-    isSavingModelPrefix,
     modelPrefixes,
     savingSubModelPrefixIds,
     onRefresh,
     onDeleteCustom,
     onSaveMaxContext,
-    onSaveModelPrefix,
     onSaveSubModelPrefix,
     theme,
   } = props;
@@ -721,19 +712,15 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
           </View>
         </View>
       </View>
-      <View style={sheetStyles.section}>
-        <SectionHeader title={t("settings.providers.modelPrefix.section")} />
-        <View style={settingsStyles.card}>
-          <View style={sheetStyles.limitRow}>
-            <ProviderModelPrefixField
-              storedPrefix={modelPrefix}
-              onSave={onSaveModelPrefix}
-              isSaving={isSavingModelPrefix}
-              visible={visible}
-            />
-          </View>
-        </View>
-      </View>
+      {/*
+        Every tag field in this sheet belongs to a sub-provider. The provider-wide
+        tag has no editor here (owner directive 2026-10-03): one string cannot
+        tell an aggregating provider's catalogs apart, so a field above the
+        grouped rows offered a setting that mostly did the wrong thing. A
+        provider-wide `modelPrefix` already in the config is still honoured on
+        read — it decorates every row whose sub-provider has no tag of its own,
+        and nothing deletes it. See resolveModelPrefixTags.
+      */}
       {modelSections.map((section) =>
         // The remainder entry has no tag field to sit under — a model that
         // declares no sub-provider has no key to configure — so it renders as a
@@ -818,7 +805,6 @@ export function ProviderDiagnosticSheet({
   const [diagSheetOpen, setDiagSheetOpen] = useState(false);
   const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
   const [savingMaxContext, setSavingMaxContext] = useState(false);
-  const [savingModelPrefix, setSavingModelPrefix] = useState(false);
   // Keyed by sub-provider id rather than one flag: saving one tag must not lock
   // every other sub-provider's field on a provider that serves many.
   const [savingSubModelPrefixIds, setSavingSubModelPrefixIds] = useState<ReadonlySet<string>>(
@@ -835,7 +821,6 @@ export function ProviderDiagnosticSheet({
     [config?.providers, provider],
   );
   const maxContextTokens = config?.providers?.[provider]?.maxContextTokens;
-  const modelPrefix = config?.providers?.[provider]?.modelPrefix;
   const modelPrefixes = useMemo(
     () => config?.providers?.[provider]?.modelPrefixes ?? {},
     [config?.providers, provider],
@@ -936,25 +921,6 @@ export function ProviderDiagnosticSheet({
     [patchConfig, provider, refresh, savingMaxContext, t],
   );
 
-  const handleSaveModelPrefix = useCallback(
-    (prefix: string | undefined) => {
-      if (savingModelPrefix) return;
-      setSavingModelPrefix(true);
-      void patchConfig({ providers: buildProviderModelPrefixPatch(provider, prefix) })
-        .catch((err: unknown) => {
-          Alert.alert(
-            t("settings.providers.modelPrefix.failedToSaveTitle"),
-            err instanceof Error ? err.message : t("settings.providers.modelPrefix.failedToSave"),
-          );
-        })
-        .finally(() => {
-          void refresh([provider]);
-          setSavingModelPrefix(false);
-        });
-    },
-    [patchConfig, provider, refresh, savingModelPrefix, t],
-  );
-
   const handleSaveSubModelPrefix = useCallback(
     (subProviderId: string, prefix: string | undefined) => {
       if (savingSubModelPrefixIds.has(subProviderId)) return;
@@ -1044,14 +1010,11 @@ export function ProviderDiagnosticSheet({
           visible={visible}
           maxContextTokens={maxContextTokens}
           isSavingMaxContext={savingMaxContext}
-          modelPrefix={modelPrefix}
-          isSavingModelPrefix={savingModelPrefix}
           modelPrefixes={modelPrefixes}
           savingSubModelPrefixIds={savingSubModelPrefixIds}
           onRefresh={handleRefreshModels}
           onDeleteCustom={handleDeleteCustom}
           onSaveMaxContext={handleSaveMaxContext}
-          onSaveModelPrefix={handleSaveModelPrefix}
           onSaveSubModelPrefix={handleSaveSubModelPrefix}
           theme={theme}
         />

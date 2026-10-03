@@ -2689,7 +2689,6 @@ export const es: TranslationResources = {
         failedToSave: "Error al guardar el contexto máximo",
       },
       modelPrefix: {
-        section: "Etiqueta de modelo",
         subProviderSection: "Etiqueta de modelo · {{subProvider}}",
         label: "Prefijo de modelo",
         accessibilityLabel: "Prefijo de modelo",

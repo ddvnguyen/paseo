@@ -758,7 +758,9 @@ A model whose catalog reports no window at all is published with the ceiling as 
 }
 ```
 
-Brackets are added by the renderer, so `Go` and `[Zen]` both work. The tag renders in model-picker rows, the composer model chip, and the agent controls, all from one decorated label. Omit it — or set it to an empty string — and labels are unchanged. Searching for the tag finds the row. The tag is editable per provider in Settings → Providers (Model tag field); editing `config.json` directly remains an alternative.
+Brackets are added by the renderer, so `Go` and `[Zen]` both work. The tag renders in model-picker rows, the composer model chip, and the agent controls, all from one decorated label. Omit it — or set it to an empty string — and labels are unchanged. Searching for the tag finds the row.
+
+`modelPrefix` is set in `config.json` only. The provider sheet has no field for it: one tag cannot tell an aggregating provider's catalogs apart, so only the per-sub-provider tags below are editable there. A tag already in `config.json` keeps working — it stays the fallback for every row with no tag of its own, and nothing rewrites or deletes it.
 
 `modelPrefixes` tags one upstream provider inside an aggregating provider. OpenCode serves `anthropic`, `openai`, and `github-copilot` catalogs under the single `opencode` id, so one provider-wide tag cannot tell those rows apart:
 
@@ -775,7 +777,9 @@ Brackets are added by the renderer, so `Go` and `[Zen]` both work. The tag rende
 }
 ```
 
-Keys are the sub-provider ids OpenCode reports. The provider sheet renders one section per sub-provider the daemon actually serves, so the sections follow your credentials rather than a fixed roster, and each section lists that sub-provider's models directly beneath its field — you configure a tag against the rows it decorates. Searching narrows the rows without hiding the fields. A row prefers its own sub-provider's tag and falls back to `modelPrefix`, which keeps the provider-wide tag meaningful for every sub-provider you have not given a tag of its own and for providers that declare none. `modelPrefixes` is additive: leave it out and nothing changes.
+Keys are the sub-provider ids OpenCode reports. The provider sheet renders one section per sub-provider the daemon actually serves, so the sections follow your credentials rather than a fixed roster, and each section lists that sub-provider's models directly beneath its field — you configure a tag against the rows it decorates. Searching narrows the rows without hiding the fields. A row prefers its own sub-provider's tag and falls back to `modelPrefix`. `modelPrefixes` is additive: leave it out and nothing changes.
+
+A provider whose served models declare no sub-provider gets no section, and therefore no field. That is every shipped provider except `opencode` today: `omp` and `pi` aggregate upstream catalogs too, but their models report no sub-provider id, so their rows sit in the remainder list with no tag field. Give those providers a `modelPrefix` in `config.json`, or add the sub-provider id their models should report.
 
 ### Model definition
 

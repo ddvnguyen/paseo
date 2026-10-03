@@ -2599,7 +2599,6 @@ export const zhCN: TranslationResources = {
         failedToSave: "保存最大上下文失败",
       },
       modelPrefix: {
-        section: "模型标签",
         subProviderSection: "模型标签 · {{subProvider}}",
         label: "模型前缀",
         accessibilityLabel: "模型前缀",

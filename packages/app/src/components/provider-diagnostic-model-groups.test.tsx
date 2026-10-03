@@ -14,6 +14,11 @@
  *      cannot reach is a field you cannot edit;
  *   3. rows that name no sub-provider still render, under one list of their own.
  *
+ * Plus the one absence that has to stay absent: the provider-wide tag field,
+ * removed 2026-10-03 on the owner's directive. Every tag field belongs to a
+ * sub-provider, so a test that only counted fields would not notice it coming
+ * back.
+ *
  * What this cannot prove: jsdom computes no layout, so "directly beneath" here
  * means document order and containment, not pixels. Visual order and the card
  * seam are QC's check in a real browser.
@@ -244,6 +249,34 @@ describe("provider sheet model groups", () => {
     ).not.toBeNull();
     expect(
       container.querySelector('[data-testid="provider-model-prefix-openai-input"]'),
+    ).not.toBeNull();
+  });
+
+  it("offers no provider-wide tag field — every tag field belongs to a sub-provider", () => {
+    // Owner directive 2026-10-03. The removed field was the one rendered with
+    // NO idSuffix, which is exactly what made its testIDs unsuffixed — so their
+    // absence is the removal, in any of the field's states. A provider-wide
+    // `modelPrefix` already in the config keeps decorating rows that fall back to
+    // it; this only removes the editor.
+    const container = mountSheet([ANTHROPIC_SONNET, OPENAI_GPT, LOOSE_MODEL]);
+
+    const unsuffixedFields = queryAll(container, "[data-testid^='provider-model-prefix']").filter(
+      (field) =>
+        /^provider-model-prefix(-(input|save))?$/.test(field.getAttribute("data-testid") ?? ""),
+    );
+    expect(unsuffixedFields).toEqual([]);
+
+    // The owner-visible half of the same removal: a header reading exactly
+    // "Model tag". The per-sub-provider headers read "Model tag · <sub>".
+    const bareModelTagHeaders = [...container.querySelectorAll("*")].filter(
+      (element) => element.childElementCount === 0 && element.textContent === "Model tag",
+    );
+    expect(bareModelTagHeaders).toEqual([]);
+
+    // Both sub-provider fields are still there and still editable.
+    expect(renderedGroups(container)).toEqual(["anthropic", "openai"]);
+    expect(
+      container.querySelector('[data-testid="provider-model-prefix-anthropic-save"]'),
     ).not.toBeNull();
   });
 });

@@ -2657,7 +2657,6 @@ export const ja: TranslationResources = {
         failedToSave: "最大コンテキストの保存に失敗しました",
       },
       modelPrefix: {
-        section: "モデルタグ",
         subProviderSection: "モデルタグ · {{subProvider}}",
         label: "モデルプレフィックス",
         accessibilityLabel: "モデルプレフィックス",

@@ -2696,7 +2696,6 @@ export const fr: TranslationResources = {
         failedToSave: "Échec de l'enregistrement du contexte maximal",
       },
       modelPrefix: {
-        section: "Étiquette de modèle",
         subProviderSection: "Étiquette de modèle · {{subProvider}}",
         label: "Préfixe de modèle",
         accessibilityLabel: "Préfixe de modèle",
