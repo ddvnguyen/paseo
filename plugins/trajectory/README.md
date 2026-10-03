@@ -62,6 +62,41 @@ harness reads at launch. No hook exposes what a provider loaded, and a plugin
 cannot read an agent's workspace files. A row claiming otherwise would be
 fabricated.
 
+## Row timing
+
+A row's own duration is what the recorder measured, not what the fold inferred:
+
+- **Tool rows** carry `tool/result.data.durationMs` — wall time from the call
+  to the result — and are stamped at the **call** time. The stamp is the call
+  because the duration already spans call→result: anchored on the result, every
+  tool reads as a row that started when it finished, and the group wall span
+  (which folds `absTime + ownDuration`) lands a full duration late. dsh anchors
+  its tool cell at `callTime` for the same reason. The span comes from the
+  recorder's own clock, not from two ledger stamps — it times the call and
+  subtracts when the result lands — and the panel's `timing source` line says so.
+- **Message and thinking rows** carry the span across the run's stream events, so
+  they grow as the response streams and stop growing when it ends.
+- **A result whose call was never observed** gets a backfilled call row, so its
+  stamp is the reconstruction instant rather than a real start. The recorder
+  flags those rows (`data.backfilled`); nothing renders the flag yet.
+- **An unanswered call is the only open row**, and the only row that shows a
+  running time that ticks. A settled row keeps the duration it took: the ledger
+  records one real duration per fact, and a clock that keeps counting after a
+  row finished would report time the row did not take. Same reason no timer runs
+  at all while nothing is open. That live number is read from the VIEWER's clock
+  (the daemon's stamp is the starting point), so a device whose clock is ahead
+  reads high — there is no upper bound to clamp against, because the honest
+  expected duration is exactly what is not known yet.
+- The timeline strip above the list does not tick: an open call's bar stays
+  zero-width until its result lands.
+
+Still unmeasured, and rendered as the em dash rather than a guess: a message the
+provider emitted in a single event (no span to measure), a tool call outside any
+open turn (the recorder has no call time to subtract from), and TTFT, generation
+time and decode throughput — no provider event says when the first token of a
+response arrived. The detail view names which field is missing instead of showing
+a number.
+
 ## Reference bugs fixed by construction (paseo-fleet review, d-03af302129)
 
 1. snake_case columns cast as camelCase -> explicit SQL aliases (`agent_id AS agentId`), tested.

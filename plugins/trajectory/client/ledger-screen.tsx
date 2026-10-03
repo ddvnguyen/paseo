@@ -12,12 +12,12 @@ import { TrajectoryTimelineStrip, type TimelinePlatform } from "./trajectory-tim
 
 /**
  * Trajectory ledger screen: FlatList over the ported virtual-row projection of
- * the ported layout fold, laid out as a four-column virtual table (TIME | TYPE |
- * CONTEXT | STATS) under a sticky column header. Turn headers fold and unfold,
- * cells sit directly under them, and a heavier rule separates turns; tail-follow
- * engages only when the list is at the bottom. `compact` (phone) collapses kind
- * tags to icons and tightens paddings. Data comes from `rows` via
- * useTrajectoryDelta.
+ * the ported layout fold, laid out as a five-column virtual table (TIME | TYPE |
+ * CONTEXT | STATS | DUR) under a sticky column header. Turn headers fold and
+ * unfold, cells sit directly under them, and a heavier rule separates turns;
+ * tail-follow engages only when the list is at the bottom. `compact` (phone)
+ * collapses kind tags to icons and tightens paddings. Data comes from `rows`
+ * via useTrajectoryDelta.
  */
 
 /**

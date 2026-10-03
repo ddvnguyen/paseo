@@ -4,37 +4,49 @@ import type { TextStyle, ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { formatElapsedSeconds } from "../shared/dsh/record.js";
 import type { TrajectoryCellProps } from "../shared/dsh/record.js";
+import { useOpenElapsedMs } from "./use-elapsed-ticker.js";
 
 /**
  * Ledger row primitives, laid out as a virtual table (T3-B).
  *
- * RN Views, never an HTML <table>: every row is the same four fixed columns —
- * TIME | TYPE | CONTEXT | STATS — so the columns line up down the list and a
- * reader can scan a column without re-reading each row. The column widths live
+ * RN Views, never an HTML <table>: every row is the same five fixed columns —
+ * TIME | TYPE | CONTEXT | STATS | DUR — so the columns line up down the list and
+ * a reader can scan a column without re-reading each row. The column widths live
  * in `columnLayout` and are shared by the header and the rows, which is the only
  * thing keeping the header aligned with the body.
  *
- * CONTEXT is the one flexible column; TIME, TYPE and STATS are fixed so a long
- * tool argument can never shift the numbers sideways.
+ * CONTEXT is the one flexible column; TIME, TYPE, STATS and DUR are fixed so a
+ * long tool argument can never shift the numbers sideways.
+ *
+ * DUR is the row's OWN running time and it is populated for EVERY kind, which is
+ * the dsh row contract (dsh TrajectoryCell.tsx:89 renders `formatElapsedSeconds`
+ * outside its per-kind branch, so a Message row carries its time like a Tool
+ * row does). It used to live inside STATS and only for tool rows, which left the
+ * most common row in the ledger — a streamed assistant message — with no time at
+ * all. A row still running ticks: see `useOpenElapsedMs`.
  */
 
 /**
  * Column widths, shared by `LedgerColumnHeader` and every row.
  *
  * TIME fits `HH:MM:SS` plus a little slack. TYPE fits the widest kind tag.
- * STATS fits `token: In 1,234(56) / out 789`. CONTEXT takes the remainder.
+ * STATS fits `token: In 1,234(56) / out 789`. DUR fits the widest duration tier,
+ * which is the no-hour one: `600m0s` for a ten-hour call, five characters, and
+ * the reason the column clips rather than wraps (see `DurationText`). CONTEXT
+ * takes the remainder, and the width test pins what is left of a phone.
  */
 export function columnLayout(compact: boolean): {
   rail: number;
   time: number;
   type: number;
   stats: number;
+  dur: number;
   gap: number;
   padLeft: number;
 } {
   return compact
-    ? { rail: 3, time: 52, type: 58, stats: 84, gap: 4, padLeft: 4 }
-    : { rail: 3, time: 64, type: 68, stats: 150, gap: 8, padLeft: 6 };
+    ? { rail: 3, time: 52, type: 58, stats: 84, dur: 46, gap: 4, padLeft: 4 }
+    : { rail: 3, time: 64, type: 68, stats: 150, dur: 56, gap: 8, padLeft: 6 };
 }
 
 type Columns = ReturnType<typeof columnLayout>;
@@ -48,15 +60,18 @@ type Columns = ReturnType<typeof columnLayout>;
  * QC r18 measured the labels at x=7/39/70/122 against body values at
  * x=18/96/166/1372. Both sides now build from this, so they cannot drift.
  *
- * `context` is the one flexible column; the other three are fixed so a long tool
+ * `context` is the one flexible column; the other four are fixed so a long tool
  * argument cannot shift the numbers sideways.
  */
-function columnStyles(columns: Columns): Record<"time" | "type" | "context" | "stats", ViewStyle> {
+function columnStyles(
+  columns: Columns,
+): Record<"time" | "type" | "context" | "stats" | "dur", ViewStyle> {
   return {
     time: { width: columns.time },
     type: { width: columns.type },
     context: { flex: 1, minWidth: 0 },
     stats: { width: columns.stats },
+    dur: { width: columns.dur },
   };
 }
 
@@ -236,11 +251,17 @@ export function formatClockTime(startedAt: number | null | undefined): string {
   return match?.[1] ?? "—";
 }
 
-/** Own-duration text: the `—` when unknown (in-flight), else the shared tiers. */
+/**
+ * Own-duration text: the `—` when unknown (in-flight), else the shared tiers.
+ *
+ * `numberOfLines={1}` because this sits in a FIXED-width column: the tiers have
+ * no hour bucket, so a long call reads "600m0s", and a wrapped duration would
+ * make one row two lines tall while every other cell in the row stays one.
+ */
 export function DurationText(props: { timeSeconds: number | null; theme: PluginTheme }) {
   const { timeSeconds, theme } = props;
   return (
-    <Text style={monoStyles(theme)} testID="duration-text">
+    <Text numberOfLines={1} style={monoStyles(theme)} testID="duration-text">
       {formatElapsedSeconds(timeSeconds)}
     </Text>
   );
@@ -308,6 +329,9 @@ export function LedgerColumnHeader(props: { compact: boolean; theme: PluginTheme
       <Text style={styles.stats} testID="column-header-stats">
         STATS
       </Text>
+      <Text style={styles.dur} testID="column-header-dur">
+        DUR
+      </Text>
     </View>
   );
 }
@@ -344,6 +368,14 @@ function headerStyles(theme: PluginTheme, columns: Columns) {
       fontWeight: "600",
     },
     stats: { ...shared.stats, color: theme.colors.foregroundMuted, fontSize: 9, fontWeight: "600" },
+    // Right-aligned like the values under it, so the header sits over its column.
+    dur: {
+      ...shared.dur,
+      color: theme.colors.foregroundMuted,
+      fontSize: 9,
+      fontWeight: "600",
+      textAlign: "right",
+    },
   });
 }
 
@@ -421,7 +453,7 @@ function messageDeltaContext(cell: TrajectoryCellProps, resolvedText: string | u
   return head === "" ? `+${cell.deltaChars} chars` : `+${cell.deltaChars} chars · ${head}`;
 }
 
-/** One ledger row: TIME | TYPE | CONTEXT | STATS, the four widths shared. */
+/** One ledger row: TIME | TYPE | CONTEXT | STATS | DUR, the widths shared. */
 export function TrajectoryCellRow(props: {
   cell: TrajectoryCellProps;
   compact: boolean;
@@ -441,6 +473,14 @@ export function TrajectoryCellRow(props: {
   // increases monotonically down the list — which is exactly what a zebra needs.
   // No extra prop, and it stays correct as turns stream in.
   const zebraStep: 0 | 1 = cell.index % 2 === 1 ? 1 : 0;
+  // An open row has no end yet, so its running time comes from a clock; a
+  // settled row keeps the duration the recorder measured, formatted straight from
+  // its own seconds. Routing the settled value through milliseconds and back
+  // would floor a hair high now and then (2.4 * 1000 is 2400.0000000000005), and
+  // a duration that reads a millisecond more than it took is the one number a
+  // ledger must not overstate.
+  const openMs = useOpenElapsedMs(cell.open === true, cell.startedAt);
+  const elapsedSeconds = openMs === null ? cell.timeSeconds : openMs / 1_000;
   const styles = useMemo(
     () => cellStyles(theme, cell.isError === true, columns, zebraStep, cell.kind),
     [theme, cell.isError, columns, zebraStep, cell.kind],
@@ -477,6 +517,9 @@ export function TrajectoryCellRow(props: {
       <View style={styles.stats} testID="col-stats">
         <StatsCell cell={cell} theme={theme} />
       </View>
+      <View style={styles.dur} testID="col-dur">
+        <DurationText timeSeconds={elapsedSeconds} theme={theme} />
+      </View>
     </View>
   );
   if (onPress === undefined) return body;
@@ -492,17 +535,14 @@ export function TrajectoryCellRow(props: {
  *
  * - user: the prompt's character count.
  * - message: provider token buckets.
- * - tool: result characters and the call's own runtime.
- * Unknown values render the dsh em dash rather than a zero.
+ * - tool: the result's character count.
+ *
+ * The row's own running time is NOT here — it is the DUR column, for every kind
+ * (see the module note). Unknown values render the dsh em dash rather than a
+ * zero.
  */
 function StatsCell(props: { cell: TrajectoryCellProps; theme: PluginTheme }) {
   const { cell, theme } = props;
-  const toolStats = useMemo(
-    () => ({ flexDirection: "row" as const, alignItems: "center" as const, gap: 6 }),
-    [],
-  );
-  // A derived round carries no numbers of its own: its STATS column reports the
-  // facts that justify it — how many tool results it stands between.
   if (cell.kind === "thinking") {
     // One merged reasoning run: the count of stream events it stands for, since
     // the character total is already in CONTEXT.
@@ -514,6 +554,8 @@ function StatsCell(props: { cell: TrajectoryCellProps; theme: PluginTheme }) {
     );
   }
   if (cell.kind === "llm") {
+    // A derived round carries no numbers of its own: its STATS column reports the
+    // facts that justify it — how many tool results it stands between.
     return (
       <Text style={monoStyles(theme)} testID="stats-text" numberOfLines={1}>
         {consumedResults(cell.text)}
@@ -542,18 +584,19 @@ function StatsCell(props: { cell: TrajectoryCellProps; theme: PluginTheme }) {
       />
     );
   }
-  if (cell.kind === "tool" || cell.kind === "subtool") {
-    return (
-      <View style={toolStats}>
-        <CharsText
-          outputChars={cell.result === undefined ? null : Number.parseInt(cell.result, 10) || null}
-          theme={theme}
-        />
-        <DurationText timeSeconds={cell.timeSeconds} theme={theme} />
-      </View>
-    );
-  }
-  return <DurationText timeSeconds={cell.timeSeconds} theme={theme} />;
+  return <CharsText outputChars={charsOf(cell)} theme={theme} />;
+}
+
+/**
+ * A tool row's result size, read off the fold's `result` summary.
+ *
+ * The fold writes `"<n> chars"`, so the count is parsed back out rather than
+ * stored twice. `parseInt` returning NaN (a label a future fold shape produced)
+ * reads as unknown, which is the honest answer and the em dash.
+ */
+function charsOf(cell: TrajectoryCellProps): number | null {
+  if (cell.result === undefined) return null;
+  return Number.parseInt(cell.result, 10) || null;
 }
 
 function cellStyles(
@@ -600,5 +643,8 @@ function cellStyles(
       fontStyle: "italic",
     },
     stats: { ...shared.stats, flexDirection: "row", justifyContent: "flex-end" },
+    // Trailing edge of the row, so a reader scans one column of durations down
+    // the ledger instead of reading them out of each row's STATS cell.
+    dur: { ...shared.dur, flexDirection: "row", justifyContent: "flex-end" },
   });
 }

@@ -60,6 +60,13 @@ export interface TrajectoryFoldRow {
   label: string;
   /** Own duration ms, null while in-flight / unknown. */
   durationMs: number | null;
+  /**
+   * True while the row is still running (a tool call whose result has not
+   * arrived). dsh derives the same state from a missing output payload; we carry
+   * it explicitly so the ledger can show a running time that ticks instead of an
+   * em dash, and the detail view can say Pending.
+   */
+  open?: boolean;
   /** Tool call id linking call+result rows. */
   callId?: string;
   /** Tool rows only: failure state. */
@@ -438,9 +445,11 @@ export function deriveTrajectoryLayout(
           ...(row.outputChars !== undefined && row.outputChars !== null
             ? { result: `${row.outputChars} chars` }
             : {}),
-          // In-flight rows keep timeSeconds null and render the dsh em dash.
+          // In-flight rows keep timeSeconds null and render the dsh em dash, and
+          // stay open so the renderer can tick their running time.
           timeSeconds: rowEndSeconds(row, absTime),
           startedAt: absTime,
+          ...(row.open === true ? { open: true } : {}),
         },
       });
       continue;
@@ -516,9 +525,9 @@ function assistantMessageCell(
  * A cell for the simple row kinds: the two the recorder DERIVES (an LLM round
  * boundary, the system prompt) and provider reasoning, which is OBSERVED.
  *
- * They share one shape -- a label, no usage, no metrics, no own duration -- so
- * they build here instead of growing the fold's branch count. Returns null for
- * an ordinary row.
+ * They share one shape -- a label, no usage, no metrics -- so they build here
+ * instead of growing the fold's branch count. Only reasoning carries an own
+ * duration (see below). Returns null for an ordinary row.
  */
 function plainCell(
   row: TrajectoryFoldRow,
@@ -531,21 +540,33 @@ function plainCell(
     kind: row.kind,
     sourceSeq: row.seq,
     text: row.label,
-    // A derived boundary has no own duration: it is an inferred moment between
-    // two real records, so there is nothing to measure.
-    timeSeconds: null,
+    // The two DERIVED kinds have no own duration: a round boundary and a system
+    // prompt are inferred moments between real records, so there is nothing to
+    // measure. Reasoning is the odd one out — it is observed, and a merged run
+    // spans its stream events, so it carries the same own duration a message row
+    // does. Dropping it here is what left reasoning rows reading "—" in the
+    // ledger's running-time column while every other streamed row had one.
+    timeSeconds: row.kind === "thinking" ? rowEndSeconds(row, absTime) : null,
     startedAt: absTime,
   };
   return { cell, placed: { absTime, cell } };
+}
+
+/**
+ * Own-duration seconds for a row, folded from its stamps.
+ *
+ * Falls back to the recorded duration when the row has no usable absolute stamp:
+ * the recorder measured that span on its own clock, so losing the start does not
+ * unmeasure it. Without the fallback the ledger's column and the detail panel
+ * disagreed about the same row — one showed a dash, the other a duration.
+ */
+function rowEndSeconds(row: TrajectoryFoldRow, absTime: number | null): number | null {
+  if (absTime === null) return row.durationMs === null ? null : Math.max(0, row.durationMs / 1_000);
+  return durationSeconds(rowEndTimeMs(row, absTime), absTime);
 }
 
 /** Epoch-ms when a row with a known own-duration ends; null when unknown. */
 function rowEndTimeMs(row: TrajectoryFoldRow, absTime: number | null): number | null {
   if (row.durationMs === null || absTime === null) return null;
   return absTime + row.durationMs;
-}
-
-/** Own-duration seconds for a row, folded from its stamps. */
-function rowEndSeconds(row: TrajectoryFoldRow, absTime: number | null): number | null {
-  return durationSeconds(rowEndTimeMs(row, absTime), absTime);
 }

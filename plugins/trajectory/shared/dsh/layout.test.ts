@@ -130,6 +130,64 @@ describe("deriveTrajectoryLayout (ledger rows)", () => {
     expect(tool.callId).toBe("c9");
   });
 
+  // --- own duration at the fold, per kind (T15) ---------------------------
+
+  it("gives an OBSERVED reasoning run its measured span, unlike a derived row", () => {
+    // Reasoning streams like a message does, so the fold measured a span for it.
+    // Reading it as a derived boundary is what left reasoning rows with no
+    // running time while every other streamed row had one.
+    const turns = deriveTrajectoryLayout({
+      rows: [
+        row({
+          kind: "thinking",
+          turnId: "t1",
+          step: 1,
+          label: "reasoning · 1,200 chars total",
+          durationMs: 3_400,
+        }),
+      ],
+    });
+    const thinking = turns[0].groups[0].cells[0];
+    expect(thinking.kind).toBe("thinking");
+    expect(thinking.timeSeconds).toBeCloseTo(3.4, 5);
+  });
+
+  it("gives a derived row no duration even when it carries one", () => {
+    const turns = deriveTrajectoryLayout({
+      rows: [
+        row({
+          kind: "llm",
+          turnId: "t1",
+          label: "llm round 1 · consumed 2 results",
+          durationMs: 900,
+          derived: true,
+        }),
+      ],
+    });
+    expect(turns[0].groups[0].cells[0].timeSeconds).toBeNull();
+  });
+
+  it("reports a recorded duration even when the row has no absolute stamp", () => {
+    // The recorder measured the span on its own clock; losing the start does not
+    // unmeasure it, and the detail panel reads the same fact from the row.
+    const turns = deriveTrajectoryLayout({
+      rows: [
+        row({
+          kind: "tool",
+          turnId: "t1",
+          step: 1,
+          label: "shell",
+          callId: "c1",
+          timeMs: null,
+          durationMs: 2_400,
+        }),
+      ],
+    });
+    const tool = turns[0].groups[0].cells[0];
+    expect(tool.timeSeconds).toBeCloseTo(2.4, 5);
+    expect(tool.startedAt).toBeNull();
+  });
+
   it("numbers turns by first appearance and orders output by first cell", () => {
     const rows = [
       row({ kind: "message", turnId: "t2", step: 1, label: "a" }),

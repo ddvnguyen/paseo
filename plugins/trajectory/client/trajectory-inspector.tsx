@@ -5,19 +5,47 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import type { TrajectoryFoldRow } from "../shared/dsh/layout.js";
 import { formatDurationMillis } from "../shared/dsh/record.js";
 import { CharsText, KindTag, TokenText } from "./ledger-cells.js";
+import {
+  formatStartedAt,
+  formatUnixSeconds,
+  generationTime,
+  recordStatus,
+  statusLabel,
+  throughput,
+  timeToFirstToken,
+  timingSource,
+  tokenSplit,
+  toolArgs,
+  totalDuration,
+} from "./inspector-fields.js";
+import { useOpenElapsedMs } from "./use-elapsed-ticker.js";
 
 /**
  * Row inspector (T2.3, dsh details-panel parity, observer-only).
  *
  * `row: null` renders nothing, so the inspector is closed by default and the
- * parent owns selection state. Unknown values render the dsh em dash; in-flight
- * rows (null duration) show "—".
+ * parent owns selection state. Unknown values render the dsh em dash — or, where
+ * dsh states a reason instead of a number, that reason verbatim: "Not recorded",
+ * "First token unavailable", "Usage unavailable". A field that says WHY it is
+ * empty is worth more here than one that quietly shows nothing.
  *
  * Wide docks a 40%-width panel on the right edge — a share of the dialog, not a
  * fixed pixel width, so it stays proportionate from a laptop to a 4K display.
  * Compact covers the ledger with a full overlay (tags already collapse to icons
  * underneath). The caller reserves the matching width in its layout row, so the
  * two must stay in step.
+ *
+ * The field order and vocabulary follow dsh's summary + timing panels
+ * (`TrajectoryTable.tsx` @ afd92680f2): status, when the row started, then
+ * timing — the assistant block (total / TTFT / generation / throughput) for a
+ * message row, and duration + timing source for everything else — then the
+ * row's own facts. `inspector-fields.ts` owns every value decision; this file
+ * owns the layout.
+ *
+ * `turn id`, not `turn`: providers reuse turn ids across sessions (QC r20
+ * measured `opencode-turn-0` on two different turns), and the list numbers turns
+ * positionally, so this is the raw id and the label says so. Anyone matching a
+ * panel to a header wants the header's number, which the ledger owns.
  *
  * Message text is a DELTA summary by default. One assistant message arrives as
  * many ledger rows, so opening the inspector on any of them must not dump the
@@ -37,6 +65,9 @@ export function TrajectoryInspector(props: {
   testID?: string;
 }) {
   const { row, compact, theme, resolvedText, onClose, testID } = props;
+  // One clock for the panel: an open row's duration is the only value here that
+  // moves, and it moves in the row too, so both read the same hook.
+  const openMs = useOpenElapsedMs(row !== null && row.open === true, row?.timeMs ?? null);
   if (row === null) return null;
   return (
     <View
@@ -59,15 +90,24 @@ export function TrajectoryInspector(props: {
           <Text style={closeStyles(theme)}>close</Text>
         </Pressable>
       </View>
+      <Field label="status" theme={theme} testID="inspector-status">
+        <Text style={valueStyles(theme)} testID="inspector-status-value">
+          {statusLabel(recordStatus(row))}
+        </Text>
+      </Field>
+      <StartedAtField epochMs={row.timeMs} theme={theme} />
+      <TimingFields row={row} openMs={openMs} theme={theme} />
+      <Field label="turn id" theme={theme} testID="inspector-turn">
+        <Text style={valueStyles(theme)}>{row.turnId ?? "—"}</Text>
+      </Field>
       <Field label="seq" theme={theme} testID="inspector-seq">
         <Text style={valueStyles(theme)}>#{row.seq}</Text>
       </Field>
-      <Field label="turn" theme={theme} testID="inspector-turn">
-        <Text style={valueStyles(theme)}>{row.turnId ?? "—"}</Text>
-      </Field>
-      <Field label="duration" theme={theme} testID="inspector-duration">
-        <Text style={valueStyles(theme)}>{formatDurationMillis(row.durationMs)}</Text>
-      </Field>
+      {row.derived === true ? (
+        <Field label="origin" theme={theme} testID="inspector-origin">
+          <Text style={valueStyles(theme)}>derived by the recorder</Text>
+        </Field>
+      ) : null}
       {resolvedText !== undefined && resolvedText.length > 0 ? (
         <MessageTextSection
           theme={theme}
@@ -78,31 +118,149 @@ export function TrajectoryInspector(props: {
       ) : null}
       {row.kind === "tool" ? (
         <>
+          <ToolArgsField label={row.label} theme={theme} />
           <Field label="output" theme={theme} testID="inspector-output">
             <CharsText outputChars={row.outputChars ?? null} theme={theme} />
-          </Field>
-          <Field label="status" theme={theme} testID="inspector-error">
-            <Text style={valueStyles(theme)}>{errorLabel(row.isError)}</Text>
           </Field>
           {row.callId === undefined ? null : (
             <Field label="call" theme={theme} testID="inspector-call">
               <Text style={valueStyles(theme)}>{row.callId}</Text>
             </Field>
           )}
+          {/* dsh gives every tool record a Schema tab. Ours has no call-time
+              tool schema to show, and saying so beats an absent section that
+              reads as an oversight. */}
+          <Field label="schema" theme={theme} testID="inspector-schema">
+            <Text style={mutedValueStyles(theme)}>not recorded</Text>
+          </Field>
         </>
       ) : null}
-      {row.kind === "message" && row.usage !== undefined ? (
-        <Field label="tokens" theme={theme} testID="inspector-tokens">
-          <TokenText
-            input={row.usage.input ?? undefined}
-            cacheRead={row.usage.cacheRead ?? undefined}
-            output={row.usage.output ?? undefined}
-            think={row.usage.think ?? undefined}
-            theme={theme}
-          />
-        </Field>
-      ) : null}
+      {row.kind === "message" ? <MessageTokenFields row={row} theme={theme} /> : null}
     </View>
+  );
+}
+
+/**
+ * The timing block, split the way dsh splits it.
+ *
+ * A message row gets the assistant panel (total / TTFT / generation /
+ * throughput); every other kind gets the plainer trio dsh's `RecordTiming` shows
+ * for a non-assistant record: duration plus where the duration came from. The
+ * split is not cosmetic — a tool call has no first token, so the assistant
+ * panel's three unmeasured fields would be noise on it.
+ */
+function TimingFields(props: {
+  row: TrajectoryFoldRow;
+  /** Live ms for an open row; null once it has settled. */
+  openMs: number | null;
+  theme: PluginTheme;
+}) {
+  const { row, openMs, theme } = props;
+  if (row.kind === "message") {
+    return (
+      <>
+        <Field label="total" theme={theme} testID="inspector-total">
+          <Text style={valueStyles(theme)}>{totalDuration(row)}</Text>
+        </Field>
+        <Field label="ttft" theme={theme} testID="inspector-ttft">
+          <Text style={mutedValueStyles(theme)}>{timeToFirstToken(row)}</Text>
+        </Field>
+        <Field label="generation" theme={theme} testID="inspector-generation">
+          <Text style={mutedValueStyles(theme)}>{generationTime(row)}</Text>
+        </Field>
+        <Field label="throughput" theme={theme} testID="inspector-throughput">
+          <Text style={mutedValueStyles(theme)}>{throughput(row)}</Text>
+        </Field>
+      </>
+    );
+  }
+  return (
+    <>
+      <Field label="duration" theme={theme} testID="inspector-duration">
+        <Text style={valueStyles(theme)}>
+          {formatDurationMillis(openMs === null ? row.durationMs : openMs)}
+        </Text>
+      </Field>
+      <Field label="timing source" theme={theme} testID="inspector-timing-source">
+        <Text style={mutedValueStyles(theme)}>{timingSource(row)}</Text>
+      </Field>
+    </>
+  );
+}
+
+/**
+ * When the row started, with dsh's local/unix toggle.
+ *
+ * The stamp is the row's own start, which for a tool call is the CALL time: the
+ * fold anchors it there so the duration beside it reads call→result instead of
+ * result→result.
+ */
+function StartedAtField(props: { epochMs: number | null; theme: PluginTheme }) {
+  const { epochMs, theme } = props;
+  const [unix, setUnix] = useState(false);
+  const toggle = useCallback(() => setUnix((value) => !value), []);
+  const styles = useMemo(() => startedStyles(theme), [theme]);
+  return (
+    <Field label="started" theme={theme} testID="inspector-started">
+      <View style={styles.row}>
+        <Text style={valueStyles(theme)} testID="inspector-started-value">
+          {unix ? formatUnixSeconds(epochMs) : formatStartedAt(epochMs)}
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Toggle timestamp format"
+          onPress={toggle}
+          style={styles.toggle}
+          testID="inspector-started-toggle"
+        >
+          <Text style={styles.toggleLabel}>{unix ? "local" : "unix"}</Text>
+        </Pressable>
+      </View>
+    </Field>
+  );
+}
+
+/** A tool row's recorded call arguments: dsh's Payload, at summary fidelity. */
+function ToolArgsField(props: { label: string; theme: PluginTheme }) {
+  const { label, theme } = props;
+  const args = toolArgs(label);
+  if (args === null) return null;
+  return (
+    <Field label="args" theme={theme} testID="inspector-args">
+      <Text numberOfLines={3} style={valueStyles(theme)}>
+        {args}
+      </Text>
+    </Field>
+  );
+}
+
+/**
+ * A message row's tokens: our compact input/cache line plus dsh's split.
+ *
+ * The compact line answers "how big was this call"; the split answers "how much
+ * of the output was reasoning", which is the number a reader of a long thinking
+ * run actually wants and which the ledger records but used to hide.
+ */
+function MessageTokenFields(props: { row: TrajectoryFoldRow; theme: PluginTheme }) {
+  const { row, theme } = props;
+  const lines = tokenSplit(row);
+  return (
+    <>
+      <Field label="tokens" theme={theme} testID="inspector-tokens">
+        <TokenText
+          input={row.usage?.input ?? undefined}
+          cacheRead={row.usage?.cacheRead ?? undefined}
+          output={row.usage?.output ?? undefined}
+          think={row.usage?.think ?? undefined}
+          theme={theme}
+        />
+      </Field>
+      {lines.map((line) => (
+        <Field key={line.label} label={line.label} theme={theme} testID={`inspector-${line.label}`}>
+          <Text style={valueStyles(theme)}>{line.value}</Text>
+        </Field>
+      ))}
+    </>
   );
 }
 
@@ -185,12 +343,6 @@ function messageSectionStyles(theme: PluginTheme) {
       fontSize: 11,
     } satisfies TextStyle,
   };
-}
-
-function errorLabel(isError: boolean | undefined): string {
-  if (isError === true) return "error";
-  if (isError === false) return "ok";
-  return "—";
 }
 
 function Field(props: {
@@ -322,5 +474,41 @@ function valueStyles(theme: PluginTheme): TextStyle {
     color: theme.colors.foreground,
     fontSize: 12,
     fontVariant: ["tabular-nums"],
+  };
+}
+
+/**
+ * A field whose value is a REASON rather than a measurement.
+ *
+ * dsh's detail panel is full of these — "Not recorded", "First token
+ * unavailable", "Usage unavailable" — and they read as muted text, not as the
+ * primary value of the row. Painting them in `foreground` would make a gap look
+ * like a result.
+ */
+function mutedValueStyles(theme: PluginTheme): TextStyle {
+  return {
+    flex: 1,
+    color: theme.colors.foregroundMuted,
+    fontSize: 12,
+  };
+}
+
+/** The stamp plus its format toggle, on one line. */
+function startedStyles(theme: PluginTheme) {
+  return {
+    row: {
+      flex: 1,
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 8,
+    },
+    toggle: {
+      alignSelf: "flex-start" as const,
+      paddingVertical: 2,
+    },
+    toggleLabel: {
+      color: theme.colors.accent,
+      fontSize: 11,
+    } satisfies TextStyle,
   };
 }
