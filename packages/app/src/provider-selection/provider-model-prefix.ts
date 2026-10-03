@@ -24,23 +24,88 @@ export function formatProviderModelPrefix(prefix: string | undefined): string {
   return prefix ? `[${prefix}]` : "";
 }
 
-export type ProviderModelPrefixes = ReadonlyMap<string, string>;
+/**
+ * The tags one provider declares: a provider-wide fallback plus an optional tag
+ * per upstream sub-provider.
+ *
+ * An aggregating provider (OpenCode serves `anthropic`, `openai`,
+ * `github-copilot`, ... under one `opencode` id) cannot be decorated with a
+ * single string, so the per-sub map is what makes those rows distinguishable.
+ * `providerWide` stays because it is the fallback for rows with no per-sub
+ * entry AND the only tag every config written before `modelPrefixes` had.
+ */
+export interface ProviderModelPrefixTags {
+  providerWide: string | undefined;
+  bySubProvider: ReadonlyMap<string, string>;
+}
+
+export type ProviderModelPrefixes = ReadonlyMap<string, ProviderModelPrefixTags>;
+
+function emptyPrefixTags(): ProviderModelPrefixTags {
+  return { providerWide: undefined, bySubProvider: new Map() };
+}
 
 /**
- * Reads `modelPrefix` out of the daemon's provider overrides. The config file is
- * the single place a prefix is declared, so every picker derives it from here
+ * Reads the model tags out of the daemon's provider overrides. The config file
+ * is the single place a prefix is declared, so every picker derives it from here
  * instead of the model catalog — a catalog carries no notion of "which config
  * entry produced this row".
  */
 export function buildProviderModelPrefixes(
   config: MutableDaemonConfig | null | undefined,
 ): ProviderModelPrefixes {
-  const prefixes = new Map<string, string>();
+  const prefixes = new Map<string, ProviderModelPrefixTags>();
   for (const [providerId, override] of Object.entries(config?.providers ?? {})) {
-    const prefix = normalizeProviderModelPrefix(override.modelPrefix);
-    if (prefix) {
-      prefixes.set(providerId, prefix);
+    const providerWide = normalizeProviderModelPrefix(override.modelPrefix);
+    const bySubProvider = new Map<string, string>();
+    for (const [subProviderId, prefix] of Object.entries(override.modelPrefixes ?? {})) {
+      const normalized = normalizeProviderModelPrefix(prefix);
+      if (normalized) {
+        bySubProvider.set(subProviderId, normalized);
+      }
+    }
+    if (providerWide || bySubProvider.size > 0) {
+      prefixes.set(providerId, { providerWide, bySubProvider });
     }
   }
   return prefixes;
+}
+
+/**
+ * The sub-provider a model belongs to, or undefined when it declares none.
+ *
+ * Read from `metadata.providerId`, which an adapter sets when it serves several
+ * upstream catalogs under one Paseo provider id. Deliberately NOT derived from
+ * the model's id: a leading path segment is not a sub-provider id in general, and
+ * guessing one would silently tag a model with another sub-provider's tag. An
+ * absent or non-string value simply means "no sub-provider", which routes the row
+ * to the provider-wide fallback.
+ */
+export function readModelSubProviderId(model: {
+  id: string;
+  metadata?: Record<string, unknown>;
+}): string | undefined {
+  const subProviderId = model.metadata?.providerId;
+  if (typeof subProviderId !== "string") {
+    return undefined;
+  }
+  const trimmed = subProviderId.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * The tag one model row renders: its own sub-provider's tag when it declares
+ * one, otherwise the provider-wide tag. A provider with no tags at all resolves
+ * to undefined, which leaves the label undecorated.
+ */
+export function resolveModelPrefixTags(
+  tags: ProviderModelPrefixTags | undefined,
+  model: { id: string; metadata?: Record<string, unknown> },
+): string | undefined {
+  if (!tags) {
+    return undefined;
+  }
+  const subProviderId = readModelSubProviderId(model);
+  const perSubProvider = subProviderId ? tags.bySubProvider.get(subProviderId) : undefined;
+  return perSubProvider ?? tags.providerWide;
 }

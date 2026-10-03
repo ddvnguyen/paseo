@@ -515,7 +515,7 @@ describe("provider model prefix tags", () => {
     const [provider] = buildSelectableProviderSelectorProviders(
       [entryFor([goModel])],
       undefined,
-      new Map([["omp", "Go"]]),
+      new Map([["omp", { providerWide: "Go", bySubProvider: new Map() }]]),
     );
 
     expect(formatProviderModelLabel(getProviderModelRows(provider!)[0]!)).toBe(
@@ -543,12 +543,55 @@ describe("provider model prefix tags", () => {
     const [provider] = buildProviderSelectorProviders({
       providerDefinitions: [definition],
       modelsByProvider: new Map([["omp", [goModel]]]),
-      modelPrefixesByProvider: new Map([["omp", "Go"]]),
+      modelPrefixesByProvider: new Map([["omp", { providerWide: "Go", bySubProvider: new Map() }]]),
     });
 
     expect(formatProviderModelLabel(getProviderModelRows(provider!)[0]!)).toBe(
       "[Go] GLM-5.3-Flash",
     );
+  });
+
+  it("tags each row by its own sub-provider and falls back per row, not per provider", () => {
+    // The case the per-sub map exists for: one Paseo provider serving two
+    // upstream sub-providers that want different tags.
+    const anthropicModel: AgentModelDefinition = {
+      provider: "opencode",
+      id: "anthropic/claude-sonnet-4",
+      label: "Claude Sonnet 4",
+      metadata: { providerId: "anthropic" },
+    };
+    const openaiModel: AgentModelDefinition = {
+      provider: "opencode",
+      id: "openai/gpt-5.4",
+      label: "GPT-5.4",
+      metadata: { providerId: "openai" },
+    };
+
+    const [provider] = buildSelectableProviderSelectorProviders(
+      [
+        {
+          provider: "opencode",
+          status: "ready",
+          enabled: true,
+          models: [anthropicModel, openaiModel],
+        },
+      ],
+      undefined,
+      new Map([
+        [
+          "opencode",
+          {
+            providerWide: "Go",
+            bySubProvider: new Map([["anthropic", "Ant"]]),
+          },
+        ],
+      ]),
+    );
+
+    expect(getProviderModelRows(provider!).map((row) => formatProviderModelLabel(row))).toEqual([
+      "[Ant] Claude Sonnet 4",
+      "[Go] GPT-5.4",
+    ]);
   });
 
   it("matches a search for the tag alone", () => {

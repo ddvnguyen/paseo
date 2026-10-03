@@ -9,7 +9,12 @@ import type { DraftCommandConfig } from "@/hooks/use-agent-commands-query";
 import { i18n } from "@/i18n/i18next";
 import { compareMatchScores, scoreTextFields } from "@getpaseo/protocol/search/text-match";
 import { filterSelectableModels } from "./model-catalog";
-import { formatProviderModelPrefix, type ProviderModelPrefixes } from "./provider-model-prefix";
+import {
+  formatProviderModelPrefix,
+  type ProviderModelPrefixTags,
+  type ProviderModelPrefixes,
+  resolveModelPrefixTags,
+} from "./provider-model-prefix";
 
 export interface ProviderSelectionModelRow {
   /**
@@ -71,18 +76,24 @@ function buildModelRows(
   provider: string,
   providerLabel: string,
   models: AgentModelDefinition[],
-  modelPrefix: string | undefined,
+  modelPrefixTags: ProviderModelPrefixTags | undefined,
 ): ProviderSelectionModelRow[] {
-  return models.map((model) => ({
-    favoriteKey: buildModelRowKey(provider, model.id),
-    provider,
-    providerLabel,
-    modelId: model.id,
-    modelLabel: model.label,
-    ...(modelPrefix ? { modelPrefix } : {}),
-    description: model.description ?? model.id,
-    isDefault: model.isDefault,
-  }));
+  return models.map((model) => {
+    // Resolved per row: a provider that serves several upstream sub-providers
+    // tags each of them differently, and a row with no sub-provider entry falls
+    // back to the provider-wide tag.
+    const modelPrefix = resolveModelPrefixTags(modelPrefixTags, model);
+    return {
+      favoriteKey: buildModelRowKey(provider, model.id),
+      provider,
+      providerLabel,
+      modelId: model.id,
+      modelLabel: model.label,
+      ...(modelPrefix ? { modelPrefix } : {}),
+      description: model.description ?? model.id,
+      isDefault: model.isDefault,
+    };
+  });
 }
 
 function buildSyntheticDefaultRow(
@@ -105,7 +116,7 @@ function buildModelSelection(
   providerLabel: string,
   models: AgentModelDefinition[] | null,
   excludedModelIds?: ReadonlySet<string>,
-  modelPrefix?: string,
+  modelPrefixTags?: ProviderModelPrefixTags,
 ): ProviderModelSelection {
   if (models === null) {
     return { kind: "loading" };
@@ -116,7 +127,7 @@ function buildModelSelection(
   }
   return {
     kind: "models",
-    rows: buildModelRows(provider, providerLabel, selectableModels, modelPrefix),
+    rows: buildModelRows(provider, providerLabel, selectableModels, modelPrefixTags),
   };
 }
 
@@ -124,7 +135,7 @@ function buildEntryModelSelection(
   entry: ProviderSnapshotEntry,
   label: string,
   excludedModelIds?: ReadonlySet<string>,
-  modelPrefix?: string,
+  modelPrefixTags?: ProviderModelPrefixTags,
 ): ProviderModelSelection {
   if ((entry.models?.length ?? 0) > 0) {
     return buildModelSelection(
@@ -132,7 +143,7 @@ function buildEntryModelSelection(
       label,
       entry.models ?? null,
       excludedModelIds,
-      modelPrefix,
+      modelPrefixTags,
     );
   }
   if (entry.status === "ready") {
@@ -141,7 +152,7 @@ function buildEntryModelSelection(
       label,
       entry.models ?? null,
       excludedModelIds,
-      modelPrefix,
+      modelPrefixTags,
     );
   }
   if (entry.status === "loading") {
