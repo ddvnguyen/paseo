@@ -775,7 +775,7 @@ Brackets are added by the renderer, so `Go` and `[Zen]` both work. The tag rende
 }
 ```
 
-Keys are the sub-provider ids OpenCode reports. The provider sheet renders one field per section for them, and only for the sub-providers the daemon actually serves, so the sections follow your credentials rather than a fixed roster. A row prefers its own sub-provider's tag and falls back to `modelPrefix`, which keeps the provider-wide tag meaningful for every sub-provider you have not given a tag of its own and for providers that declare none. `modelPrefixes` is additive: leave it out and nothing changes.
+Keys are the sub-provider ids OpenCode reports. The provider sheet renders one section per sub-provider the daemon actually serves, so the sections follow your credentials rather than a fixed roster, and each section lists that sub-provider's models directly beneath its field — you configure a tag against the rows it decorates. Searching narrows the rows without hiding the fields. A row prefers its own sub-provider's tag and falls back to `modelPrefix`, which keeps the provider-wide tag meaningful for every sub-provider you have not given a tag of its own and for providers that declare none. `modelPrefixes` is additive: leave it out and nothing changes.
 
 ### Model definition
 

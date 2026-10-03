@@ -22,7 +22,11 @@ import {
   buildProviderModelPrefixPatch,
   buildProviderSubModelPrefixPatch,
 } from "@/components/provider-model-prefix-field";
-import { collectSubProviderIds } from "@/provider-selection/provider-model-prefix";
+import {
+  buildSubProviderModelSections,
+  collectSubProviderIds,
+  type SubProviderModelSection,
+} from "@/provider-selection/provider-model-prefix";
 import { ScrollableCodeSurface, SurfaceCard } from "@/components/ui/scrollable-code-surface";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
@@ -72,7 +76,7 @@ export function DiscoveredModelRow({
   catalogIds: string[];
 }) {
   return (
-    <View style={sheetStyles.modelRow}>
+    <View style={sheetStyles.modelRow} testID={`provider-sheet-model-row-${model.id}`}>
       <Text style={sheetStyles.modelTitle} numberOfLines={1}>
         {model.label}
       </Text>
@@ -131,7 +135,7 @@ export function CustomModelRow({
   );
 
   return (
-    <View style={sheetStyles.modelRow}>
+    <View style={sheetStyles.modelRow} testID={`provider-sheet-custom-model-row-${model.id}`}>
       <Text style={sheetStyles.modelTitle} numberOfLines={1}>
         {model.label}
       </Text>
@@ -168,25 +172,41 @@ export function CustomModelRow({
 }
 
 /**
- * One tag section per sub-provider the provider serves.
+ * One sub-provider's block: its tag field with that sub-provider's models listed
+ * directly beneath it.
  *
  * Its own component rather than an inline block in the map so the save callback
  * is created once per sub-provider instead of on every render of the sheet,
  * which would re-render every tag field whenever anything else in the modal
- * moved.
+ * moved. The rows come along for the ride, but their array identity only changes
+ * when the served models or the search query do — both memoized upstream — so the
+ * sheet's "fetched at" clock tick cannot re-render every row.
+ *
+ * The field and the rows share one card on purpose: the card style carries a
+ * border radius and a border, so a second card underneath would draw a doubled
+ * rounded seam. Model rows already separate themselves with a top hairline, which
+ * is exactly the rule the field needs above the first row.
  */
-function ProviderSubModelPrefixSection({
+function ProviderSubModelGroup({
   subProviderId,
+  models,
   storedPrefix,
   onSave,
   isSaving,
   visible,
+  serverId,
+  provider,
+  catalogIds,
 }: {
   subProviderId: string;
+  models: readonly AgentModelDefinition[];
   storedPrefix: string | undefined;
   onSave: (subProviderId: string, prefix: string | undefined) => void;
   isSaving: boolean;
   visible: boolean;
+  serverId: string;
+  provider: string;
+  catalogIds: string[];
 }) {
   const { t } = useTranslation();
   const handleSave = useCallback(
@@ -197,11 +217,20 @@ function ProviderSubModelPrefixSection({
   );
 
   return (
-    <View style={sheetStyles.section}>
+    <View
+      style={sheetStyles.section}
+      // The group is the unit a user reads and QC counts: one per sub-provider,
+      // containing both the tag field and the rows that field governs.
+      testID={`provider-model-sub-section-${subProviderId}`}
+    >
       <SectionHeader
         title={t("settings.providers.modelPrefix.subProviderSection", {
           subProvider: subProviderId,
         })}
+        // Absent rather than zero while a search hides every row: a "0" reads as
+        // "this sub-provider serves nothing", which is not what an empty search
+        // result means.
+        count={models.length > 0 ? models.length : undefined}
       />
       <View style={settingsStyles.card}>
         <View style={sheetStyles.limitRow}>
@@ -213,6 +242,15 @@ function ProviderSubModelPrefixSection({
             idSuffix={subProviderId}
           />
         </View>
+        {models.map((model) => (
+          <DiscoveredModelRow
+            key={model.id}
+            model={model}
+            serverId={serverId}
+            provider={provider}
+            catalogIds={catalogIds}
+          />
+        ))}
       </View>
     </View>
   );
@@ -500,7 +538,14 @@ interface ProviderModalBodyProps {
   providerErrorMessage: string | null;
   modelsRefreshing: boolean;
   searchActive: boolean;
-  filteredDiscovered: AgentModelDefinition[];
+  /**
+   * The models list already grouped by sub-provider: one entry per served
+   * sub-provider carrying its own rows, plus a remainder entry for models that
+   * declare none. A single source for both "which fields render" and "which rows
+   * render under them" — deriving them separately is how a row ends up under a
+   * header that does not exist.
+   */
+  modelSections: SubProviderModelSection<AgentModelDefinition>[];
   filteredCustom: ProviderProfileModel[];
   deletingModelId: string | null;
   visible: boolean;
@@ -508,8 +553,6 @@ interface ProviderModalBodyProps {
   isSavingMaxContext: boolean;
   modelPrefix: string | undefined;
   isSavingModelPrefix: boolean;
-  /** Sub-provider ids the served models declare, deduplicated and sorted. */
-  subProviderIds: string[];
   /** Stored per-sub-provider tags, keyed by sub-provider id. */
   modelPrefixes: Readonly<Record<string, string>>;
   /** Sub-provider ids with a save in flight. */
@@ -603,7 +646,7 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
     providerErrorMessage,
     modelsRefreshing,
     searchActive,
-    filteredDiscovered,
+    modelSections,
     filteredCustom,
     deletingModelId,
     visible,
@@ -611,7 +654,6 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
     isSavingMaxContext,
     modelPrefix,
     isSavingModelPrefix,
-    subProviderIds,
     modelPrefixes,
     savingSubModelPrefixIds,
     onRefresh,
@@ -621,6 +663,13 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
     onSaveSubModelPrefix,
     theme,
   } = props;
+
+  // The whole grouped list, counted for the empty states below. Derived rather
+  // than passed separately so the states and the rendered rows cannot disagree.
+  const filteredDiscoveredCount = modelSections.reduce(
+    (total, section) => total + section.models.length,
+    0,
+  );
 
   if (discoveredCount === 0 && additionalCount === 0 && providerSnapshotRefreshing) {
     return (
@@ -643,7 +692,7 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
       </View>
     );
   }
-  if (filteredDiscovered.length === 0 && filteredCustom.length === 0 && searchActive) {
+  if (filteredDiscoveredCount === 0 && filteredCustom.length === 0 && searchActive) {
     return (
       <View style={sheetStyles.emptyState}>
         <Text style={sheetStyles.mutedText}>{t("settings.providers.models.noSearchMatches")}</Text>
@@ -685,35 +734,49 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
           </View>
         </View>
       </View>
-      {subProviderIds.map((subProviderId) => (
-        <ProviderSubModelPrefixSection
-          key={subProviderId}
-          subProviderId={subProviderId}
-          storedPrefix={modelPrefixes[subProviderId]}
-          onSave={onSaveSubModelPrefix}
-          isSaving={savingSubModelPrefixIds.has(subProviderId)}
-          visible={visible}
-        />
-      ))}
-      {filteredDiscovered.length > 0 ? (
-        <View style={sheetStyles.section}>
-          <SectionHeader
-            title={t("settings.providers.models.discovered")}
-            count={filteredDiscovered.length}
-          />
-          <View style={settingsStyles.card}>
-            {filteredDiscovered.map((model) => (
-              <DiscoveredModelRow
-                key={model.id}
-                model={model}
-                serverId={serverId}
-                provider={provider}
-                catalogIds={catalogIds}
-              />
-            ))}
+      {modelSections.map((section) =>
+        // The remainder entry has no tag field to sit under — a model that
+        // declares no sub-provider has no key to configure — so it renders as a
+        // plain list under the header the flat list already used. A provider with
+        // no sub-providers lands here alone and looks exactly as it did before
+        // grouping existed.
+        section.subProviderId === undefined ? (
+          <View
+            key={REMAINDER_SECTION_KEY}
+            style={sheetStyles.section}
+            testID={REMAINDER_SECTION_TEST_ID}
+          >
+            <SectionHeader
+              title={t("settings.providers.models.discovered")}
+              count={section.models.length}
+            />
+            <View style={settingsStyles.card}>
+              {section.models.map((model) => (
+                <DiscoveredModelRow
+                  key={model.id}
+                  model={model}
+                  serverId={serverId}
+                  provider={provider}
+                  catalogIds={catalogIds}
+                />
+              ))}
+            </View>
           </View>
-        </View>
-      ) : null}
+        ) : (
+          <ProviderSubModelGroup
+            key={section.subProviderId}
+            subProviderId={section.subProviderId}
+            models={section.models}
+            serverId={serverId}
+            provider={provider}
+            catalogIds={catalogIds}
+            storedPrefix={modelPrefixes[section.subProviderId]}
+            onSave={onSaveSubModelPrefix}
+            isSaving={savingSubModelPrefixIds.has(section.subProviderId)}
+            visible={visible}
+          />
+        ),
+      )}
       {filteredCustom.length > 0 ? (
         <View style={sheetStyles.section}>
           <SectionHeader
@@ -795,11 +858,11 @@ export function ProviderDiagnosticSheet({
   });
   stableDiscoveredRef.current = nextDiscoveredCache;
 
-  // One tag section per sub-provider this provider actually serves. Derived from
-  // the served models rather than a static list, so the sections appear and
+  // One tag field per sub-provider this provider actually serves. Derived from
+  // the served models rather than a static list, so the fields appear and
   // disappear with the user's credentials and nothing has to be maintained by
-  // hand. Deliberately NOT derived from `filteredDiscovered`: a search box must
-  // not make a configured tag unreachable.
+  // hand. Deliberately NOT derived from the search-filtered models: a search box
+  // must not make a configured tag unreachable.
   const subProviderIds = useMemo(() => collectSubProviderIds(discoveredModels), [discoveredModels]);
 
   const [clockTick, setClockTick] = useState(0);
@@ -830,6 +893,12 @@ export function ProviderDiagnosticSheet({
   const filteredCustom = useMemo(
     () => rankModels(additionalModels, q, (m) => [m.label, m.id]),
     [additionalModels, q],
+  );
+  // The fields come from the unfiltered models and the rows from the filtered
+  // ones, so a search narrows the list without narrowing what is configurable.
+  const modelSections = useMemo(
+    () => buildSubProviderModelSections(subProviderIds, filteredDiscovered),
+    [subProviderIds, filteredDiscovered],
   );
   const catalogIds = useMemo(
     () => [
@@ -969,7 +1038,7 @@ export function ProviderDiagnosticSheet({
           providerErrorMessage={providerErrorMessage}
           modelsRefreshing={modelsRefreshing}
           searchActive={Boolean(q)}
-          filteredDiscovered={filteredDiscovered}
+          modelSections={modelSections}
           filteredCustom={filteredCustom}
           deletingModelId={deletingModelId}
           visible={visible}
@@ -977,7 +1046,6 @@ export function ProviderDiagnosticSheet({
           isSavingMaxContext={savingMaxContext}
           modelPrefix={modelPrefix}
           isSavingModelPrefix={savingModelPrefix}
-          subProviderIds={subProviderIds}
           modelPrefixes={modelPrefixes}
           savingSubModelPrefixIds={savingSubModelPrefixIds}
           onRefresh={handleRefreshModels}
@@ -1169,3 +1237,8 @@ const sheetStyles = StyleSheet.create((theme) => ({
 const MAIN_SNAP_POINTS = ["65%", "92%"];
 const ADD_SNAP_POINTS = ["40%"];
 const DIAGNOSTIC_SNAP_POINTS = ["50%", "85%"];
+// React keys, and a sub-provider id can never be this. Keeps the remainder
+// section distinct from every sub-provider group without widening the section
+// type with a sentinel id that would then reach a tag field.
+const REMAINDER_SECTION_KEY = "__no-sub-provider__";
+const REMAINDER_SECTION_TEST_ID = "provider-model-remainder-section";
