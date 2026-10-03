@@ -2686,6 +2686,7 @@ export const es: TranslationResources = {
       },
       modelPrefix: {
         section: "Etiqueta de modelo",
+        subProviderSection: "Etiqueta de modelo · {{subProvider}}",
         label: "Prefijo de modelo",
         accessibilityLabel: "Prefijo de modelo",
         placeholder: "Go",

@@ -2677,6 +2677,7 @@ export const ru: TranslationResources = {
       },
       modelPrefix: {
         section: "Тег модели",
+        subProviderSection: "Тег модели · {{subProvider}}",
         label: "Префикс модели",
         accessibilityLabel: "Префикс модели",
         placeholder: "Go",

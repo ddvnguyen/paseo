@@ -2642,6 +2642,7 @@ export const ko: TranslationResources = {
       },
       modelPrefix: {
         section: "모델 태그",
+        subProviderSection: "모델 태그 · {{subProvider}}",
         label: "모델 접두사",
         accessibilityLabel: "모델 접두사",
         placeholder: "Go",

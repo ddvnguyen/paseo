@@ -2627,6 +2627,7 @@ export const ar: TranslationResources = {
       },
       modelPrefix: {
         section: "وسم النموذج",
+        subProviderSection: "وسم النموذج · {{subProvider}}",
         label: "بادئة النموذج",
         accessibilityLabel: "بادئة النموذج",
         placeholder: "Go",

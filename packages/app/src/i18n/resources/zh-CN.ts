@@ -2596,6 +2596,7 @@ export const zhCN: TranslationResources = {
       },
       modelPrefix: {
         section: "模型标签",
+        subProviderSection: "模型标签 · {{subProvider}}",
         label: "模型前缀",
         accessibilityLabel: "模型前缀",
         placeholder: "Go",

@@ -629,7 +629,10 @@ function ControlledAgentControls({
       buildFallbackModelSelectorProviders(
         provider,
         modelOptions,
-        fallbackModelPrefixes.get(provider),
+        // These options carry only an id and a label, with no metadata to read a
+        // sub-provider from, so the provider-wide tag is the only one that can be
+        // applied honestly here. Per-sub-provider tags need the model catalog.
+        fallbackModelPrefixes.get(provider)?.providerWide,
       ),
     [fallbackModelPrefixes, modelOptions, provider],
   );

@@ -3,6 +3,7 @@ import type { MutableDaemonConfig } from "@getpaseo/protocol/messages";
 
 import {
   buildProviderModelPrefixes,
+  collectSubProviderIds,
   formatProviderModelPrefix,
   normalizeProviderModelPrefix,
   readModelSubProviderId,
@@ -153,5 +154,48 @@ describe("resolveModelPrefixTags", () => {
 
   test("resolves to undefined for a provider that declares no tags at all", () => {
     expect(resolveModelPrefixTags(undefined, anthropicModel)).toBeUndefined();
+  });
+});
+
+describe("collectSubProviderIds", () => {
+  const model = (id: string, providerId?: unknown) => ({
+    id,
+    ...(providerId === undefined ? {} : { metadata: { providerId } }),
+  });
+
+  test("lists each sub-provider once, sorted", () => {
+    // One tag section renders per entry, so a duplicate would render two fields
+    // editing the same key and the order must not churn between refreshes.
+    expect(
+      collectSubProviderIds([
+        model("openai/gpt-5.4", "openai"),
+        model("anthropic/claude-sonnet-4", "anthropic"),
+        model("openai/gpt-5.4-mini", "openai"),
+      ]),
+    ).toEqual(["anthropic", "openai"]);
+  });
+
+  test("is empty for a provider whose models declare no sub-provider", () => {
+    // The non-aggregating providers must render exactly what they render today.
+    expect(collectSubProviderIds([model("claude-sonnet-4"), model("claude-opus-4")])).toEqual([]);
+  });
+
+  test("ignores blank and non-string sub-provider ids rather than listing them", () => {
+    expect(
+      collectSubProviderIds([
+        model("a/1", ""),
+        model("b/1", "  "),
+        model("c/1", 7),
+        model("d/1", "anthropic"),
+      ]),
+    ).toEqual(["anthropic"]);
+  });
+
+  test("keeps ids that are not plain slugs", () => {
+    expect(collectSubProviderIds([model("wafer.ai/1", "wafer.ai")])).toEqual(["wafer.ai"]);
+  });
+
+  test("handles an empty catalog", () => {
+    expect(collectSubProviderIds([])).toEqual([]);
   });
 });

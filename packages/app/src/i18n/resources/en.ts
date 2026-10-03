@@ -2755,6 +2755,7 @@ export const en = {
       },
       modelPrefix: {
         section: "Model tag",
+        subProviderSection: "Model tag · {{subProvider}}",
         label: "Model prefix",
         accessibilityLabel: "Model prefix",
         placeholder: "Go",

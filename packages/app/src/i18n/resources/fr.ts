@@ -2693,6 +2693,7 @@ export const fr: TranslationResources = {
       },
       modelPrefix: {
         section: "Étiquette de modèle",
+        subProviderSection: "Étiquette de modèle · {{subProvider}}",
         label: "Préfixe de modèle",
         accessibilityLabel: "Préfixe de modèle",
         placeholder: "Go",

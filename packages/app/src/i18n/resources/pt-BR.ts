@@ -2669,6 +2669,7 @@ export const ptBR: TranslationResources = {
       },
       modelPrefix: {
         section: "Etiqueta do modelo",
+        subProviderSection: "Etiqueta do modelo · {{subProvider}}",
         label: "Prefixo do modelo",
         accessibilityLabel: "Prefixo do modelo",
         placeholder: "Go",

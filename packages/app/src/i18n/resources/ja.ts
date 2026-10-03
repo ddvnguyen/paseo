@@ -2654,6 +2654,7 @@ export const ja: TranslationResources = {
       },
       modelPrefix: {
         section: "モデルタグ",
+        subProviderSection: "モデルタグ · {{subProvider}}",
         label: "モデルプレフィックス",
         accessibilityLabel: "モデルプレフィックス",
         placeholder: "Go",

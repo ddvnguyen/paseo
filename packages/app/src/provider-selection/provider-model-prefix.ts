@@ -90,6 +90,27 @@ export function readModelSubProviderId(model: {
 }
 
 /**
+ * The distinct sub-providers a provider's models declare, sorted.
+ *
+ * This is what decides how many tag sections the settings sheet renders. Derived
+ * from the models the daemon actually serves rather than a static list, so the
+ * sections follow the user's credentials instead of a hand-maintained roster.
+ */
+export function collectSubProviderIds(
+  models: readonly { id: string; metadata?: Record<string, unknown> }[],
+): string[] {
+  const ids = new Set<string>();
+  for (const model of models) {
+    const subProviderId = readModelSubProviderId(model);
+    if (subProviderId) {
+      ids.add(subProviderId);
+    }
+  }
+  // Sorted so the sections keep a stable order across refreshes.
+  return [...ids].sort((a, b) => a.localeCompare(b));
+}
+
+/**
  * The tag one model row renders: its own sub-provider's tag when it declares
  * one, otherwise the provider-wide tag. A provider with no tags at all resolves
  * to undefined, which leaves the label undecorated.
