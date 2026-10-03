@@ -796,6 +796,31 @@ function extractOpenCodeModelOutputLimit(model: unknown): number | undefined {
   return readPositiveFiniteNumber(limit?.output);
 }
 
+/**
+ * The non-context halves of a catalog model's `limit`, kept only to build the
+ * injected config fragment. Undefined fields mean the catalog entry does not
+ * declare them, and the fragment then leaves them absent rather than inventing one.
+ * Key names match `OpenCodeModelContextCap` so the spread at the cap call sites
+ * lines up field-for-field (`outputLimit`/`inputLimit`, never `output`/`input`).
+ */
+interface OpenCodeModelResidualLimits {
+  outputLimit?: number;
+  inputLimit?: number;
+}
+
+/**
+ * OpenCode's `limit.input`, which is the number its compaction predicate actually
+ * reads — see `context-cap.ts`. Absent on catalog entries that do not declare one,
+ * which is what keeps `usable()` falling back to `limit.context` for them.
+ */
+function extractOpenCodeModelInputLimit(model: unknown): number | undefined {
+  if (!model || typeof model !== "object") {
+    return undefined;
+  }
+  const limit = (model as { limit?: { input?: unknown } }).limit;
+  return readPositiveFiniteNumber(limit?.input);
+}
+
 function buildOpenCodeModelDefinition(
   provider: {
     id: string;
@@ -874,10 +899,13 @@ function resolveOpenCodeSelectedModelContextWindow(
 }
 
 /**
- * Both limits come from the same catalog entry, so they are collected in one walk.
- * The output limit is what makes a model cappable at all: OpenCode's config schema
- * requires `limit: { context, output }` in full, so a model without one cannot be
- * capped without inventing a number.
+ * All three limits come from the same catalog entry, so they are collected in one walk.
+ *
+ * `output` is what makes a model cappable at all: OpenCode's config schema requires
+ * `limit: { context, output }` in full, so a model without one cannot be capped
+ * without inventing a number. `input` is what makes the cap bite: OpenCode's own
+ * compaction threshold reads `limit.input` in preference to `limit.context`, so a
+ * model whose catalog entry has one needs it capped too or the cap is inert.
  */
 function buildOpenCodeModelLimitLookup(
   providers:
@@ -891,11 +919,14 @@ function buildOpenCodeModelLimitLookup(
       }
     | null
     | undefined,
-): { contextWindows: Map<string, number>; outputLimits: Map<string, number> } {
+): {
+  contextWindows: Map<string, number>;
+  residualLimits: Map<string, OpenCodeModelResidualLimits>;
+} {
   const contextWindows = new Map<string, number>();
-  const outputLimits = new Map<string, number>();
+  const residualLimits = new Map<string, OpenCodeModelResidualLimits>();
   if (!providers) {
-    return { contextWindows, outputLimits };
+    return { contextWindows, residualLimits };
   }
 
   const connectedProviderIds = new Set(providers.connected ?? []);
@@ -912,14 +943,22 @@ function buildOpenCodeModelLimitLookup(
         continue;
       }
       contextWindows.set(lookupKey, contextWindow);
+      const residual: OpenCodeModelResidualLimits = {};
       const outputLimit = extractOpenCodeModelOutputLimit(modelDefinition);
       if (outputLimit !== undefined) {
-        outputLimits.set(lookupKey, outputLimit);
+        residual.outputLimit = outputLimit;
+      }
+      const inputLimit = extractOpenCodeModelInputLimit(modelDefinition);
+      if (inputLimit !== undefined) {
+        residual.inputLimit = inputLimit;
+      }
+      if (residual.outputLimit !== undefined || residual.inputLimit !== undefined) {
+        residualLimits.set(lookupKey, residual);
       }
     }
   }
 
-  return { contextWindows, outputLimits };
+  return { contextWindows, residualLimits };
 }
 
 function resolveOpenCodeModelLookupKeyFromAssistantMessage(
@@ -1431,7 +1470,7 @@ export class OpenCodeAgentClient implements AgentClient {
   private readonly logger: Logger;
   private readonly runtimeSettings?: ProviderRuntimeSettings;
   private readonly modelContextWindows = new Map<string, number>();
-  private readonly modelOutputLimits = new Map<string, number>();
+  private readonly modelResidualLimits = new Map<string, OpenCodeModelResidualLimits>();
   private readonly bridge?: OpenCodeBridge;
   private readonly maxContextTokens?: number;
 
@@ -1648,7 +1687,7 @@ export class OpenCodeAgentClient implements AgentClient {
         providerId: lookupKey.slice(0, separator),
         modelId: lookupKey.slice(separator + 1),
         contextCap: this.maxContextTokens,
-        outputLimit: this.modelOutputLimits.get(lookupKey),
+        ...this.modelResidualLimits.get(lookupKey),
       });
     }
     if (caps.length === 0) return;
@@ -1920,7 +1959,7 @@ export class OpenCodeAgentClient implements AgentClient {
 
     const models: AgentModelDefinition[] = [];
     const contextWindows = new Map<string, number>();
-    const outputLimits = new Map<string, number>();
+    const residualLimits = new Map<string, OpenCodeModelResidualLimits>();
     for (const provider of providers.all) {
       if (!isAccessible(provider)) {
         continue;
@@ -1933,9 +1972,17 @@ export class OpenCodeAgentClient implements AgentClient {
         if (contextWindowMaxTokens !== undefined) {
           contextWindows.set(lookupKey, contextWindowMaxTokens);
         }
+        const residual: OpenCodeModelResidualLimits = {};
         const outputLimit = extractOpenCodeModelOutputLimit(model);
         if (outputLimit !== undefined) {
-          outputLimits.set(lookupKey, outputLimit);
+          residual.outputLimit = outputLimit;
+        }
+        const inputLimit = extractOpenCodeModelInputLimit(model);
+        if (inputLimit !== undefined) {
+          residual.inputLimit = inputLimit;
+        }
+        if (residual.outputLimit !== undefined || residual.inputLimit !== undefined) {
+          residualLimits.set(lookupKey, residual);
         }
         models.push(definition);
       }
@@ -1944,8 +1991,8 @@ export class OpenCodeAgentClient implements AgentClient {
     context?.signal.throwIfAborted();
     this.modelContextWindows.clear();
     for (const [key, value] of contextWindows) this.modelContextWindows.set(key, value);
-    this.modelOutputLimits.clear();
-    for (const [key, value] of outputLimits) this.modelOutputLimits.set(key, value);
+    this.modelResidualLimits.clear();
+    for (const [key, value] of residualLimits) this.modelResidualLimits.set(key, value);
 
     return models;
   }
@@ -1998,9 +2045,9 @@ export class OpenCodeAgentClient implements AgentClient {
     for (const [modelLookupKey, contextWindowMaxTokens] of lookup.contextWindows.entries()) {
       this.modelContextWindows.set(modelLookupKey, contextWindowMaxTokens);
     }
-    this.modelOutputLimits.clear();
-    for (const [modelLookupKey, outputLimit] of lookup.outputLimits.entries()) {
-      this.modelOutputLimits.set(modelLookupKey, outputLimit);
+    this.modelResidualLimits.clear();
+    for (const [modelLookupKey, residual] of lookup.residualLimits.entries()) {
+      this.modelResidualLimits.set(modelLookupKey, residual);
     }
   }
 }

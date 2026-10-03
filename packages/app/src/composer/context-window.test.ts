@@ -7,6 +7,19 @@ function configWithProviders(providers: MutableDaemonConfig["providers"]): Mutab
   return { providers } as MutableDaemonConfig;
 }
 
+/** The resolved pair for numeric input, narrowed past the unknown branch. */
+function resolveCapped(rawMax: number, rawUsed: number, cap: number) {
+  const { contextWindowMaxTokens, contextWindowUsedTokens } = resolveContextWindowValues(
+    rawMax,
+    rawUsed,
+    cap,
+  );
+  if (contextWindowMaxTokens === null || contextWindowUsedTokens === null) {
+    throw new Error(`expected a resolved pair for rawMax=${rawMax} rawUsed=${rawUsed} cap=${cap}`);
+  }
+  return { max: contextWindowMaxTokens, used: contextWindowUsedTokens };
+}
+
 describe("resolveConfiguredContextCap", () => {
   test("reads the ceiling the config declares for the provider", () => {
     const config = configWithProviders({ omp: { maxContextTokens: 128_000 } });
@@ -67,6 +80,36 @@ describe("resolveContextWindowValues", () => {
     });
   });
 
+  test("pins the displayed usage to the cap when the harness reports past it", () => {
+    // The 113% report. A harness counting 56.4 K against a 50 K cap is
+    // describing a window the user already ruled out. Holding the raw 56.4 K
+    // against the capped 50 K prints a label at
+    // 56400 / 50000 = 112.8% -> 113% while the ring, clamped at 100%, already
+    // sits full: the two halves of one meter disagreeing. Resolving usage to
+    // the cap gives 50000 / 50000 = 100% and both halves read the same.
+    expect(resolveContextWindowValues(200_000, 56_400, 50_000)).toEqual({
+      contextWindowMaxTokens: 50_000,
+      contextWindowUsedTokens: 50_000,
+    });
+  });
+
+  test("keeps the implied percentage at or under 100% across the capped range", () => {
+    // The invariant the printed label leans on: used / max never exceeds 1, so
+    // the rounded percentage can never read above 100.
+    for (const rawUsed of [0, 25_000, 49_999, 50_000, 50_001, 56_400, 500_000]) {
+      const { max, used } = resolveCapped(200_000, rawUsed, 50_000);
+      expect(used, `used ${rawUsed}`).toBeLessThanOrEqual(max);
+      expect(Math.round((used / max) * 100), `used ${rawUsed}`).toBeLessThanOrEqual(100);
+    }
+  });
+
+  test("leaves usage below the displayed maximum untouched", () => {
+    expect(resolveContextWindowValues(200_000, 49_999, 50_000)).toEqual({
+      contextWindowMaxTokens: 50_000,
+      contextWindowUsedTokens: 49_999,
+    });
+  });
+
   test("returns the runtime pair unchanged when the provider declares no cap", () => {
     expect(resolveContextWindowValues(200_000, 100_000)).toEqual({
       contextWindowMaxTokens: 200_000,
@@ -75,6 +118,20 @@ describe("resolveContextWindowValues", () => {
     expect(resolveContextWindowValues(200_000, 100_000, null)).toEqual({
       contextWindowMaxTokens: 200_000,
       contextWindowUsedTokens: 100_000,
+    });
+  });
+
+  test("passes usage above the runtime maximum through when no cap is declared", () => {
+    // The regression guard for the uncapped path: a harness reporting more than
+    // the window it reported keeps reporting it verbatim. Only a cap may pin
+    // the meter, and this pair is what shipped before the numerator clamp.
+    expect(resolveContextWindowValues(50_000, 56_400)).toEqual({
+      contextWindowMaxTokens: 50_000,
+      contextWindowUsedTokens: 56_400,
+    });
+    expect(resolveContextWindowValues(50_000, 56_400, null)).toEqual({
+      contextWindowMaxTokens: 50_000,
+      contextWindowUsedTokens: 56_400,
     });
   });
 
@@ -108,6 +165,24 @@ describe("resolveContextWindowValues", () => {
     expect(resolveContextWindowValues(Number.POSITIVE_INFINITY, 100_000, 128_000)).toEqual({
       contextWindowMaxTokens: 128_000,
       contextWindowUsedTokens: 100_000,
+    });
+  });
+
+  test("leaves usage alone when the displayed maximum cannot be divided by", () => {
+    // There is no ratio to clamp against, so the usage count stays a real
+    // number. Clamping against a NaN or zero maximum would turn it into NaN and
+    // hand the meter a worse version of the unknown it already draws.
+    expect(resolveContextWindowValues(Number.NaN, 56_400, 50_000)).toEqual({
+      contextWindowMaxTokens: Number.NaN,
+      contextWindowUsedTokens: 56_400,
+    });
+    expect(resolveContextWindowValues(0, 56_400, 50_000)).toEqual({
+      contextWindowMaxTokens: 0,
+      contextWindowUsedTokens: 56_400,
+    });
+    expect(resolveContextWindowValues(-1, 56_400, 50_000)).toEqual({
+      contextWindowMaxTokens: -1,
+      contextWindowUsedTokens: 56_400,
     });
   });
 });
