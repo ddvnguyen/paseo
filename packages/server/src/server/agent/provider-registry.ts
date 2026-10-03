@@ -25,7 +25,10 @@ import {
   resolveDefaultAgentCreateConfig,
 } from "./create-agent-mode.js";
 import { normalizeAgentModelDefinition } from "./agent-sdk-types.js";
-import { applyProviderContextCap } from "./provider-model-context-cap.js";
+import {
+  applyProviderContextCap,
+  resolveProviderContextCap,
+} from "./provider-model-context-cap.js";
 import { runProviderRefreshActivity } from "./provider-refresh-deadline.js";
 import type { WorkspaceGitService } from "../workspace-git-service.js";
 import type { ManagedProcessRegistry } from "../managed-processes/managed-processes.js";
@@ -123,6 +126,12 @@ interface ProviderClientFactoryOptions extends Pick<
 > {
   openCodeBridge?: OpenCodeBridge;
   providerParams?: unknown;
+  /**
+   * The provider's configured context ceiling. Populated from the same
+   * `override.maxContextTokens` the model mapper uses, so the number Paseo
+   * advertises and the number the harness enforces cannot drift apart.
+   */
+  maxContextTokens?: number;
   customProvider?: {
     id: string;
     label: string;
@@ -197,10 +206,11 @@ const HUB_E2E_PROVIDER_CONTRACT: ProviderContract = {
 };
 
 const PROVIDER_CLIENT_FACTORIES: Record<string, ProviderClientFactory> = {
-  claude: (logger, runtimeSettings) =>
+  claude: (logger, runtimeSettings, options) =>
     new ClaudeAgentClient({
       logger,
       runtimeSettings,
+      maxContextTokens: options?.maxContextTokens,
     }),
   codex: (logger, runtimeSettings, options) =>
     new CodexAppServerAgentClient(logger, runtimeSettings, {
@@ -222,6 +232,7 @@ const PROVIDER_CLIENT_FACTORIES: Record<string, ProviderClientFactory> = {
     new OpenCodeAgentClient(logger, runtimeSettings, {
       managedProcesses: options?.managedProcesses,
       bridge: options?.openCodeBridge,
+      maxContextTokens: options?.maxContextTokens,
     }),
   pi: (logger, runtimeSettings, options) =>
     new PiRpcAgentClient({
@@ -760,6 +771,7 @@ function buildResolvedBuiltinProviders(
           ompRuntime: options.ompRuntime,
           openCodeBridge: options.openCodeBridge,
           providerParams: override?.params,
+          maxContextTokens: resolveProviderContextCap(override?.maxContextTokens),
         }),
       contract: PROVIDER_CONTRACTS[definition.id] ?? UNSUPPORTED_PROVIDER_CONTRACT,
     });
@@ -874,6 +886,9 @@ function addDerivedProviders(
           managedProcesses: options.managedProcesses,
           openCodeBridge: options.openCodeBridge,
           providerParams,
+          maxContextTokens: resolveProviderContextCap(
+            override.maxContextTokens ?? baseProvider.maxContextTokens,
+          ),
           customProvider: {
             id: providerId,
             label: override.label ?? providerId,

@@ -59,6 +59,16 @@ export class TestOpenCodeHarness implements OpenCodeServerManagerLike {
     return url === this.server.url ? this.recordAcquisition({ kind: "existing", url }) : null;
   }
 
+  /**
+   * Defaults to "no caps", which is what every pre-cap test wants: the agent only
+   * asks for a new generation when it has caps that this generation lacks.
+   */
+  currentContextCapsKey = "";
+
+  getCurrentContextCapsKey(): string {
+    return this.currentContextCapsKey;
+  }
+
   private recordAcquisition(input: {
     kind: "current" | "new" | "dedicated" | "existing";
     env?: Record<string, string>;

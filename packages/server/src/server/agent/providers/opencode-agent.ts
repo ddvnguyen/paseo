@@ -83,6 +83,7 @@ import {
   type OpenCodeServerManagerLike,
 } from "./opencode/server-manager.js";
 import type { OpenCodeBridge } from "./opencode/bridge.js";
+import type { OpenCodeModelContextCap } from "./opencode/context-cap.js";
 import {
   OpenCodeEventConsumer,
   type OpenCodeEventStreamDiagnostics,
@@ -1385,6 +1386,11 @@ interface OpenCodeAgentClientDeps {
   resolveHomeDir?: () => string;
   managedProcesses?: ManagedProcessRegistry;
   bridge?: OpenCodeBridge;
+  /**
+   * The provider's configured context ceiling, resolved by the registry. Injected into
+   * OpenCode's config so the harness compacts at the cap instead of at the catalog value.
+   */
+  maxContextTokens?: number;
 }
 
 type OpenCodeClientFactory = (options: { baseUrl: string; directory: string }) => OpencodeClient;
@@ -1406,6 +1412,7 @@ export class OpenCodeAgentClient implements AgentClient {
   private readonly runtimeSettings?: ProviderRuntimeSettings;
   private readonly modelContextWindows = new Map<string, number>();
   private readonly bridge?: OpenCodeBridge;
+  private readonly maxContextTokens?: number;
 
   constructor(
     logger: Logger,
@@ -1419,6 +1426,7 @@ export class OpenCodeAgentClient implements AgentClient {
       ...(this.bridge ? { supportsNativePaseoTools: true } : {}),
     };
     this.runtimeSettings = runtimeSettings;
+    this.maxContextTokens = deps.maxContextTokens;
     this.createOpenCodeClient = deps.createClient ?? createSdkOpenCodeClient;
     this.serverManager =
       deps.serverManager ??
@@ -1434,6 +1442,9 @@ export class OpenCodeAgentClient implements AgentClient {
           }),
         decorateServerEnv: this.bridge
           ? (env) => this.bridge?.decorateServerEnv(env) ?? env
+          : undefined,
+        resolveContextCapsKey: this.bridge
+          ? () => this.bridge?.getModelContextCapsKey() ?? ""
           : undefined,
       });
     this.resolveHomeDir = deps.resolveHomeDir ?? resolveOpenCodeHomeDir;
@@ -1587,7 +1598,39 @@ export class OpenCodeAgentClient implements AgentClient {
         ? this.serverManager.acquireDedicated(launchContext.env)
         : this.serverManager.acquireCurrent();
     }
+    // Caps are written into OpenCode's config at spawn, so a generation that started
+    // before the cap set was known cannot carry them. Ask for a fresh generation
+    // rather than silently running uncapped until something else restarts the server.
+    this.syncModelContextCaps();
+    const desiredCapsKey = this.bridge.getModelContextCapsKey();
+    if (
+      desiredCapsKey.length > 0 &&
+      this.serverManager.getCurrentContextCapsKey() !== desiredCapsKey
+    ) {
+      return this.serverManager.acquireNew();
+    }
     return this.serverManager.acquireCurrent();
+  }
+
+  /**
+   * Publishes a cap for every model this server is known to serve. Only models seen in
+   * the runtime catalog are capped, so no `provider.models` entry is invented for a
+   * model OpenCode does not have.
+   */
+  private syncModelContextCaps(): void {
+    if (!this.bridge || this.maxContextTokens === undefined) return;
+    const caps: OpenCodeModelContextCap[] = [];
+    for (const lookupKey of this.modelContextWindows.keys()) {
+      const separator = lookupKey.indexOf("/");
+      if (separator <= 0) continue;
+      caps.push({
+        providerId: lookupKey.slice(0, separator),
+        modelId: lookupKey.slice(separator + 1),
+        contextCap: this.maxContextTokens,
+      });
+    }
+    if (caps.length === 0) return;
+    this.bridge.setModelContextCaps(caps);
   }
 
   private bindBridgeSession(

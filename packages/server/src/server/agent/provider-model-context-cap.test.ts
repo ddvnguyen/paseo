@@ -1,7 +1,10 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, it, test } from "vitest";
 
 import type { AgentModelDefinition } from "./agent-sdk-types.js";
-import { applyProviderContextCap } from "./provider-model-context-cap.js";
+import {
+  applyProviderContextCap,
+  resolveProviderContextCap,
+} from "./provider-model-context-cap.js";
 
 function modelWithWindow(contextWindowMaxTokens: number | undefined): AgentModelDefinition {
   return {
@@ -77,5 +80,29 @@ describe("applyProviderContextCap", () => {
 
     expect(capped.metadata?.limit).toBe("unavailable");
     expect(capped.contextWindowMaxTokens).toBe(128_000);
+  });
+});
+
+describe("resolveProviderContextCap", () => {
+  it("passes a usable ceiling through", () => {
+    expect(resolveProviderContextCap(280_000)).toBe(280_000);
+  });
+
+  // The registry mapper and the harness injection must agree, so both read the cap
+  // through this one function. A non-positive or non-finite value means "no ceiling".
+  it("treats non-positive and non-finite values as no ceiling", () => {
+    expect(resolveProviderContextCap(0)).toBeUndefined();
+    expect(resolveProviderContextCap(-1)).toBeUndefined();
+    expect(resolveProviderContextCap(Number.NaN)).toBeUndefined();
+    expect(resolveProviderContextCap(Number.POSITIVE_INFINITY)).toBeUndefined();
+    expect(resolveProviderContextCap(undefined)).toBeUndefined();
+  });
+
+  it("agrees with the model cap for the same input", () => {
+    const cap = resolveProviderContextCap(50_000);
+    expect(
+      applyProviderContextCap({ id: "m", label: "M", provider: "opencode" }, cap)
+        .contextWindowMaxTokens,
+    ).toBe(50_000);
   });
 });

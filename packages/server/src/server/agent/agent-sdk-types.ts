@@ -623,6 +623,12 @@ export interface AgentSessionConfig {
    * They are used for ephemeral system tasks like commit/PR generation.
    */
   internal?: boolean;
+  /**
+   * The provider's configured context ceiling, resolved by the registry and carried
+   * to the harness. Set here by the provider client rather than by callers, so a
+   * per-provider cap reaches every session without each caller repeating the lookup.
+   */
+  maxContextTokens?: number;
 }
 
 export interface AgentLaunchContext {

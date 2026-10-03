@@ -424,6 +424,11 @@ interface ClaudeAgentClientOptions {
   resolveVersion?: (signal?: AbortSignal) => Promise<string>;
   configDir?: string;
   rewindSdk?: ClaudeRewindSdk;
+  /**
+   * The provider's configured context ceiling, resolved once by the registry.
+   * Injected into every session config so the harness is actually told the cap.
+   */
+  maxContextTokens?: number;
 }
 
 interface ClaudeAgentSessionOptions {
@@ -1521,6 +1526,7 @@ export class ClaudeAgentClient implements AgentClient {
   private readonly resolveVersion: (signal?: AbortSignal) => Promise<string>;
   private readonly configDir?: string;
   private readonly rewindSdk: ClaudeRewindSdk;
+  private readonly maxContextTokens?: number;
 
   constructor(options: ClaudeAgentClientOptions) {
     this.defaults = options.defaults;
@@ -1533,6 +1539,7 @@ export class ClaudeAgentClient implements AgentClient {
       ((signal) => resolveClaudeCodeVersion(this.runtimeSettings, signal));
     this.configDir = options.configDir;
     this.rewindSdk = options.rewindSdk ?? realClaudeRewindSdk;
+    this.maxContextTokens = options.maxContextTokens;
   }
 
   resolveConfiguredModel(model: AgentModelDefinition): AgentModelDefinition {
@@ -1713,6 +1720,12 @@ export class ClaudeAgentClient implements AgentClient {
       provider: "claude",
       model: model || undefined,
       providerOptions,
+      // The registry already resolved the provider's ceiling; carry it onto every
+      // session config so `buildOptions` can hand it to the CLI. An explicit
+      // per-session value wins, so a caller can still override for one agent.
+      ...(this.maxContextTokens !== undefined && config.maxContextTokens === undefined
+        ? { maxContextTokens: this.maxContextTokens }
+        : {}),
     };
   }
 }
