@@ -193,7 +193,7 @@ describe("ledger cells", () => {
     expect(merged.backgroundColor).toBe(THEME.colors.accent);
   });
 
-  it("puts a tool row's result size and runtime in the STATS column", () => {
+  it("puts a tool row's result size in STATS and its runtime in DUR", () => {
     render(
       <TrajectoryCellRow
         cell={cell({ kind: "tool", result: "1520" })}
@@ -202,7 +202,10 @@ describe("ledger cells", () => {
       />,
     );
     expect(document.querySelector('[data-testid="chars-text"]')?.textContent).toBe("1,520 chars");
-    expect(document.querySelector('[data-testid="duration-text"]')?.textContent).toBe("1s");
+    // The runtime moved OUT of STATS into the row's own DUR column, so every
+    // kind shows its time the same way.
+    expect(document.querySelector('[data-testid="col-stats"]')?.textContent).toBe("1,520 chars");
+    expect(document.querySelector('[data-testid="col-dur"]')?.textContent).toBe("1s");
   });
 
   it("reports the em dash for a tool row whose size and runtime are unknown", () => {
@@ -214,7 +217,93 @@ describe("ledger cells", () => {
       />,
     );
     expect(document.querySelector('[data-testid="chars-text"]')?.textContent).toBe("chars: —");
-    expect(document.querySelector('[data-testid="duration-text"]')?.textContent).toBe("—");
+    expect(document.querySelector('[data-testid="col-dur"]')?.textContent).toBe("—");
+  });
+
+  it("gives EVERY kind its own running time, not just tools", () => {
+    // The owner gap: a streamed assistant message is the most common row in the
+    // ledger and it carried no time at all. dsh renders the duration outside
+    // its per-kind branch, so every kind has one.
+    const kinds = ["message", "user", "tool", "llm", "thinking", "systemPrompt"] as const;
+    for (const kind of kinds) {
+      const view = document.createElement("div");
+      document.body.appendChild(view);
+      const rowRoot = createRoot(view);
+      act(() =>
+        rowRoot.render(
+          <TrajectoryCellRow
+            cell={cell({ kind, timeSeconds: 1.5, textLength: 12, result: "12" })}
+            compact={false}
+            theme={THEME}
+          />,
+        ),
+      );
+      expect(view.querySelector('[data-testid="col-dur"]')?.textContent).toBe("1s");
+      act(() => rowRoot.unmount());
+      view.remove();
+    }
+  });
+
+  it("ticks an open row's running time and leaves a settled row alone", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-10-03T00:00:00Z"));
+      const startedAt = Date.parse("2026-10-03T00:00:00Z");
+      const openCell = cell({ kind: "tool", open: true, timeSeconds: null, startedAt });
+      const settledCell = cell({ kind: "tool", timeSeconds: 2.4, startedAt });
+      render(
+        <>
+          <TrajectoryCellRow cell={openCell} compact={false} theme={THEME} testID="cell-open" />
+          <TrajectoryCellRow
+            cell={settledCell}
+            compact={false}
+            theme={THEME}
+            testID="cell-settled"
+          />
+        </>,
+      );
+      const openDur = () =>
+        document.querySelector('[data-testid="cell-open"] [data-testid="col-dur"]');
+      expect(openDur()?.textContent).toBe("0 ms");
+
+      // Three seconds of wall clock: the open row counts them, the settled row
+      // keeps the duration it actually took.
+      act(() => {
+        vi.advanceTimersByTime(3_000);
+      });
+      expect(openDur()?.textContent).toBe("3s");
+      const settled = document.querySelector(
+        '[data-testid="cell-settled"] [data-testid="col-dur"]',
+      );
+      expect(settled?.textContent).toBe("2s");
+      act(() => {
+        vi.advanceTimersByTime(10_000);
+      });
+      expect(settled?.textContent).toBe("2s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never renders a negative duration when the clock reads behind the row", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-26T23:59:00Z"));
+      const startedAt = Date.parse("2026-09-27T00:00:00Z");
+      render(
+        <TrajectoryCellRow
+          cell={cell({ kind: "tool", open: true, timeSeconds: null, startedAt })}
+          compact={false}
+          theme={THEME}
+          testID="cell-skew"
+        />,
+      );
+      expect(
+        document.querySelector('[data-testid="cell-skew"] [data-testid="col-dur"]')?.textContent,
+      ).toBe("0 ms");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("puts a user row's prompt characters in the STATS column", () => {
@@ -309,9 +398,9 @@ describe("ledger cells", () => {
 
   // --- T3-B: the virtual table -------------------------------------------
 
-  it("renders the four sticky column headers", () => {
+  it("renders the five sticky column headers", () => {
     render(<LedgerColumnHeader compact={false} theme={THEME} />);
-    for (const name of ["time", "type", "context", "stats"]) {
+    for (const name of ["time", "type", "context", "stats", "dur"]) {
       expect(document.querySelector(`[data-testid="column-header-${name}"]`)?.textContent).toBe(
         name.toUpperCase(),
       );
@@ -326,8 +415,11 @@ describe("ledger cells", () => {
     expect(wide.time).toBeGreaterThan(0);
     expect(wide.type).toBeGreaterThan(0);
     expect(wide.stats).toBeGreaterThan(0);
-    // Compact must still fit its three fixed columns inside a phone width.
-    expect(compactColumns.time + compactColumns.type + compactColumns.stats).toBeLessThan(390);
+    expect(wide.dur).toBeGreaterThan(0);
+    // Compact must still fit its fixed columns inside a phone width.
+    expect(
+      compactColumns.time + compactColumns.type + compactColumns.stats + compactColumns.dur,
+    ).toBeLessThan(390);
     expect(compactColumns.stats).toBeLessThan(wide.stats);
   });
 

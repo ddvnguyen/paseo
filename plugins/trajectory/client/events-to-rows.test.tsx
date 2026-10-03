@@ -46,6 +46,35 @@ describe("eventsToFoldRows", () => {
     expect(rows[1]).toMatchObject({ kind: "tool", label: "edit", durationMs: null, callId: "c2" });
   });
 
+  it("anchors a tool row at its CALL time, and marks an unanswered call open", () => {
+    const rows = eventsToFoldRows([
+      event({ seq: 1, type: "tool/call", data: { callId: "c1", name: "shell" } }),
+      event({
+        seq: 2,
+        type: "tool/result",
+        data: { callId: "c1", name: "shell", durationMs: 2_400 },
+      }),
+      event({ seq: 3, type: "tool/call", data: { callId: "c2", name: "edit" } }),
+    ]);
+    // The result row carries the CALL stamp, because its own duration already
+    // spans call->result. Anchored on the result time it read as a row that
+    // started when it finished, and it dragged the group wall span one full
+    // duration late.
+    expect(rows[0]?.timeMs).toBe(T0 + 1_000);
+    expect(rows[0]?.open).toBeUndefined();
+    // The open call keeps the stamp it started from and is the ONLY row the
+    // ledger may show a live running time for.
+    expect(rows[1]).toMatchObject({ kind: "tool", callId: "c2", durationMs: null, open: true });
+    expect(rows[1]?.timeMs).toBe(T0 + 3_000);
+  });
+
+  it("anchors a tool result whose call was never observed at its own event time", () => {
+    const rows = eventsToFoldRows([
+      event({ seq: 5, type: "tool/result", data: { callId: "c9", name: "read", durationMs: 900 } }),
+    ]);
+    expect(rows[0]).toMatchObject({ kind: "tool", callId: "c9", timeMs: T0 + 5_000 });
+  });
+
   it("attaches turn/end usage buckets to the turn's last message row", () => {
     const rows = eventsToFoldRows([
       event({ seq: 1, type: "user/message", data: { textLength: 12 } }),

@@ -60,6 +60,13 @@ export interface TrajectoryFoldRow {
   label: string;
   /** Own duration ms, null while in-flight / unknown. */
   durationMs: number | null;
+  /**
+   * True while the row is still running (a tool call whose result has not
+   * arrived). dsh derives the same state from a missing output payload; we carry
+   * it explicitly so the ledger can show a running time that ticks instead of an
+   * em dash, and the detail view can say Pending.
+   */
+  open?: boolean;
   /** Tool call id linking call+result rows. */
   callId?: string;
   /** Tool rows only: failure state. */
@@ -438,9 +445,11 @@ export function deriveTrajectoryLayout(
           ...(row.outputChars !== undefined && row.outputChars !== null
             ? { result: `${row.outputChars} chars` }
             : {}),
-          // In-flight rows keep timeSeconds null and render the dsh em dash.
+          // In-flight rows keep timeSeconds null and render the dsh em dash, and
+          // stay open so the renderer can tick their running time.
           timeSeconds: rowEndSeconds(row, absTime),
           startedAt: absTime,
+          ...(row.open === true ? { open: true } : {}),
         },
       });
       continue;

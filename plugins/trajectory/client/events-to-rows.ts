@@ -11,8 +11,10 @@ import type { TrajectoryFoldRow } from "../shared/dsh/layout.js";
  *   arrives at `turn/end`, so it is attached to the turn's LAST message row
  *   (dsh hangs usage on Message cells).
  * - `tool/call` + `tool/result` pair by callId: a result row renders the
- *   paired label; a call with no result in the window stays in-flight (null
- *   duration -> em dash). call rows are consumed, never double-rendered.
+ *   paired label and is stamped at the CALL time (its own duration already
+ *   spans call->result); a call with no result in the window stays in-flight
+ *   (null duration, marked `open`, so the ledger can tick it). call rows are
+ *   consumed, never double-rendered.
  * - `turn/start` / `step/*` / `turn/end` carry structure or turn-level data,
  *   not rows; step numbers come from the message rows' `step` field.
  */
@@ -273,7 +275,13 @@ function toolRow(event: TrajectoryEvent, call: OpenToolCall | null): TrajectoryF
   const argSummary = call?.argSummary ?? null;
   return {
     seq: event.seq,
-    timeMs: timeOf(event),
+    // The CALL time, not the result time: a tool row's own duration already
+    // spans call->result, so pairing it with the result stamp made every tool
+    // look like it started when it finished (and put the group's wall span one
+    // duration too late). dsh anchors a tool cell at `callTime` for the same
+    // reason (dsh layout.ts:454). An orphan terminal with no observed call has no
+    // call stamp, so its own event time is the only honest anchor.
+    timeMs: call?.timeMs ?? timeOf(event),
     kind: "tool",
     label: toolLabel(name, argSummary),
     durationMs: typeof event.data.durationMs === "number" ? event.data.durationMs : null,
@@ -292,6 +300,9 @@ function inFlightRow(call: OpenToolCall): TrajectoryFoldRow {
     kind: "tool",
     label: toolLabel(call.name, call.argSummary),
     durationMs: null,
+    // Observed start, no result yet: the one row whose running time is still
+    // climbing, so it is the one row allowed to show a live elapsed.
+    open: true,
     callId: "",
     turnId: call.turnId,
     step: null,

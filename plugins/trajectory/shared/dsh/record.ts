@@ -134,6 +134,15 @@ export interface TrajectoryCellProps {
   timeSeconds: number | null;
   /** Unix epoch milliseconds when this operation actually started, when known. */
   startedAt?: number | null;
+  /**
+   * True while the record is still running: the call was observed, its result
+   * has not arrived. Not an upstream field — dsh infers the same state from a
+   * missing output payload, and marks in-flight cells through `streamingCells`
+   * rather than on the record. We carry it because the ledger's own running time
+   * has to tick while a row is open, and a viewer wants the same Pending status
+   * dsh's detail panel shows.
+   */
+  open?: boolean;
   /** Message-only prompt token count. */
   input?: number;
   /** Message-only input tokens served from a provider cache. */
