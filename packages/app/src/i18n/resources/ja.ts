@@ -2643,7 +2643,7 @@ export const ja: TranslationResources = {
         section: "コンテキスト上限",
         label: "最大コンテキスト",
         accessibilityLabel: "最大コンテキスト",
-        placeholder: "100 M",
+        placeholder: "280 K",
         preview: "= {{tokens}} トークン",
         unlimited: "無制限",
         invalid: "数値を入力し、必要に応じて K または M を付けてください",

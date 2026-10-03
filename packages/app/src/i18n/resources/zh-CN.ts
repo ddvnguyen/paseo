@@ -2585,7 +2585,7 @@ export const zhCN: TranslationResources = {
         section: "上下文上限",
         label: "最大上下文",
         accessibilityLabel: "最大上下文",
-        placeholder: "100 M",
+        placeholder: "280 K",
         preview: "= {{tokens}} 个 token",
         unlimited: "无上限",
         invalid: "请输入数字，可选择以 K 或 M 结尾",

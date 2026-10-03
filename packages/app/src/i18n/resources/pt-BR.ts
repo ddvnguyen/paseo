@@ -2658,7 +2658,7 @@ export const ptBR: TranslationResources = {
         section: "Limite de contexto",
         label: "Contexto máximo",
         accessibilityLabel: "Contexto máximo",
-        placeholder: "100 M",
+        placeholder: "280 K",
         preview: "= {{tokens}} tokens",
         unlimited: "Sem limite",
         invalid: "Informe um número, opcionalmente seguido de K ou M",

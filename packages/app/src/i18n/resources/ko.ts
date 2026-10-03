@@ -2631,7 +2631,7 @@ export const ko: TranslationResources = {
         section: "컨텍스트 한도",
         label: "최대 컨텍스트",
         accessibilityLabel: "최대 컨텍스트",
-        placeholder: "100 M",
+        placeholder: "280 K",
         preview: "= {{tokens}} 토큰",
         unlimited: "무제한",
         invalid: "숫자를 입력하고 필요하면 K 또는 M을 붙여주세요",

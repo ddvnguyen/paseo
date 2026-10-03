@@ -2675,7 +2675,7 @@ export const es: TranslationResources = {
         section: "Límite de contexto",
         label: "Contexto máximo",
         accessibilityLabel: "Contexto máximo",
-        placeholder: "100 M",
+        placeholder: "280 K",
         preview: "= {{tokens}} tokens",
         unlimited: "Sin límite",
         invalid: "Introduce un número, opcionalmente seguido de K o M",

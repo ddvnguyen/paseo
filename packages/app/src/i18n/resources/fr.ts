@@ -2682,7 +2682,7 @@ export const fr: TranslationResources = {
         section: "Limite de contexte",
         label: "Contexte maximal",
         accessibilityLabel: "Contexte maximal",
-        placeholder: "100 M",
+        placeholder: "280 K",
         preview: "= {{tokens}} jetons",
         unlimited: "Sans limite",
         invalid: "Saisissez un nombre, éventuellement suivi de K ou M",

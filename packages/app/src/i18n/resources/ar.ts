@@ -2616,7 +2616,7 @@ export const ar: TranslationResources = {
         section: "حد السياق",
         label: "أقصى سياق",
         accessibilityLabel: "أقصى سياق",
-        placeholder: "100 M",
+        placeholder: "280 K",
         preview: "= {{tokens}} رمز",
         unlimited: "بلا حد",
         invalid: "أدخل رقمًا، متبوعًا اختياريًا بـ K أو M",

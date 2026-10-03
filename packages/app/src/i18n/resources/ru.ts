@@ -2666,7 +2666,7 @@ export const ru: TranslationResources = {
         section: "Ограничение контекста",
         label: "Максимальный контекст",
         accessibilityLabel: "Максимальный контекст",
-        placeholder: "100 M",
+        placeholder: "280 K",
         preview: "= {{tokens}} токенов",
         unlimited: "Без ограничения",
         invalid: "Введите число, при желании с суффиксом K или M",
