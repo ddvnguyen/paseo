@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildProviderModelPrefixPatch,
+  buildProviderSubModelPrefixPatch,
   resolveModelPrefixFieldState,
 } from "./provider-model-prefix-field";
 
@@ -119,5 +120,40 @@ describe("buildProviderModelPrefixPatch", () => {
     expect(Object.keys(buildProviderModelPrefixPatch("omp", undefined).omp)).toEqual([
       "modelPrefix",
     ]);
+  });
+});
+
+describe("buildProviderSubModelPrefixPatch", () => {
+  it("writes one sub-provider's tag without touching its siblings", () => {
+    // The patch carries only the edited key: the map is merge-only, so naming
+    // one sub-provider must not read as "the provider has only this tag".
+    expect(buildProviderSubModelPrefixPatch("opencode", "anthropic", "Ant")).toEqual({
+      opencode: { modelPrefixes: { anthropic: "Ant" } },
+    });
+  });
+
+  it("marks a cleared sub-provider tag with an explicit null", () => {
+    const patch = buildProviderSubModelPrefixPatch("opencode", "anthropic", undefined);
+
+    expect(patch).toEqual({ opencode: { modelPrefixes: { anthropic: null } } });
+    // An absent key would leave the stored tag in place forever; a null map
+    // would be ambiguous with "leave the whole map alone".
+    expect(Object.hasOwn(patch.opencode, "modelPrefixes")).toBe(true);
+    expect(Object.hasOwn(patch.opencode.modelPrefixes!, "anthropic")).toBe(true);
+    expect(patch.opencode.modelPrefixes!.anthropic).toBeNull();
+  });
+
+  it("never sends the provider-wide key alongside a per-sub-provider one", () => {
+    // Sending both would let a per-sub save silently rewrite the fallback.
+    expect(
+      Object.keys(buildProviderSubModelPrefixPatch("opencode", "anthropic", "Ant").opencode),
+    ).toEqual(["modelPrefixes"]);
+  });
+
+  it("carries a sub-provider id that is not a plain slug", () => {
+    // Real ids include dots and long names, so the key must not be sanitized.
+    expect(buildProviderSubModelPrefixPatch("opencode", "wafer.ai", "W")).toEqual({
+      opencode: { modelPrefixes: { "wafer.ai": "W" } },
+    });
   });
 });

@@ -14,6 +14,15 @@ export interface ProviderModelPrefixFieldProps {
   /** Mirrors the save in flight so the control can hold itself disabled. */
   isSaving: boolean;
   visible: boolean;
+  /**
+   * Distinguishes this instance's testIDs and input key.
+   *
+   * A provider that serves several sub-providers renders one field per
+   * sub-provider, and React Native testIDs are document-wide: without a suffix
+   * every instance would answer to `provider-model-prefix-input` and a query
+   * would match the first one regardless of which sub-provider was asked for.
+   */
+  idSuffix?: string;
 }
 
 /**
@@ -30,8 +39,10 @@ export function ProviderModelPrefixField({
   onSave,
   isSaving,
   visible,
+  idSuffix,
 }: ProviderModelPrefixFieldProps) {
   const { t } = useTranslation();
+  const testIdBase = `provider-model-prefix${idSuffix ? `-${idSuffix}` : ""}`;
   const controlSize = useIsCompactFormFactor() ? "md" : "sm";
   const [draft, setDraft] = useState<string | null>(null);
 
@@ -78,31 +89,33 @@ export function ProviderModelPrefixField({
         onPress={handleSave}
         disabled={!fieldState.isDirty || !fieldState.isValid}
         loading={isSaving}
-        testID="provider-model-prefix-save"
+        testID={`${testIdBase}-save`}
         accessibilityLabel={t("settings.providers.modelPrefix.saveAccessibility")}
       >
         {t("settings.providers.modelPrefix.save")}
       </Button>
     ),
-    [fieldState.isDirty, fieldState.isValid, handleSave, isSaving, t],
+    [fieldState.isDirty, fieldState.isValid, handleSave, isSaving, t, testIdBase],
   );
 
   // Deliberately excludes the draft: the editing surface already holds what the
   // user typed, and re-seeding on every keystroke would fight its IME. It moves
   // when the field reopens or when the stored value changes underneath it.
-  const resetKey = `provider-modelPrefix-${visible ? "open" : "closed"}-${storedPrefix ?? "none"}`;
+  // Scoped by idSuffix too: two sub-provider fields can hold different drafts,
+  // and one shared reset key would let one instance re-seed the other.
+  const resetKey = `provider-modelPrefix-${testIdBase}-${visible ? "open" : "closed"}-${storedPrefix ?? "none"}`;
 
   return (
     <Field
       label={t("settings.providers.modelPrefix.label")}
-      testID="provider-model-prefix"
+      testID={testIdBase}
       hint={preview}
       error={fieldState.isValid ? null : t("settings.providers.modelPrefix.invalid")}
       trailing={saveAction}
     >
       <FormTextInput
         size={controlSize}
-        testID="provider-model-prefix-input"
+        testID={`${testIdBase}-input`}
         accessibilityLabel={t("settings.providers.modelPrefix.accessibilityLabel")}
         initialValue={text}
         resetKey={resetKey}

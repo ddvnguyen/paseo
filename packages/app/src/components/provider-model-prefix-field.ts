@@ -32,6 +32,22 @@ export function buildProviderModelPrefixPatch(
   return { [provider]: { modelPrefix: prefix ?? null } };
 }
 
+/**
+ * The provider patch that writes — or removes — one sub-provider's tag.
+ *
+ * The same explicit-`null` rule as the provider-wide tag, applied per key: the
+ * map is merge-only too, so an absent key would leave the old tag in place and
+ * an empty map would be ambiguous with "leave the whole map alone". The daemon
+ * drops the marked key and keeps its siblings.
+ */
+export function buildProviderSubModelPrefixPatch(
+  provider: string,
+  subProviderId: string,
+  prefix: string | undefined,
+): NonNullable<MutableDaemonConfigPatch["providers"]> {
+  return { [provider]: { modelPrefixes: { [subProviderId]: prefix ?? null } } };
+}
+
 export interface ModelPrefixFieldState {
   /** True when saving would change the stored value. */
   isDirty: boolean;
