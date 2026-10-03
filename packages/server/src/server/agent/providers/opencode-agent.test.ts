@@ -827,7 +827,7 @@ describe("OpenCodeAgentClient adapter smoke tests", () => {
     });
 
     await client.fetchCatalog({ scope: "global", force: false });
-    runtime.currentContextCapsKey = "opencode/big-pickle=50000/32000";
+    runtime.currentContextCapsKey = "opencode/big-pickle=50000/32000/";
     const before = runtime.acquisitions.length;
     await client.createSession({ provider: "opencode", cwd: paseoHome, providerOptions: {} });
 
@@ -1390,7 +1390,7 @@ describe("OpenCode adapter normalization", () => {
     });
 
     expect(lookup.contextWindows.get("pi/pi-model-1")).toBe(200_000);
-    expect(lookup.outputLimits.get("pi/pi-model-1")).toBe(64_000);
+    expect(lookup.residualLimits.get("pi/pi-model-1")).toEqual({ outputLimit: 64_000 });
   });
 
   test("excludes non-api-source providers absent from connected in context window lookup", () => {

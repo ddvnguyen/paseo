@@ -32,6 +32,78 @@ describe("opencode context cap injection", () => {
     });
   });
 
+  // OpenCode's usable() prefers limit.input over limit.context, so capping context
+  // alone leaves the compaction threshold on the catalog window and the cap inert.
+  it("caps limit.input to the same ceiling when the model declares one", () => {
+    const capped = applyOpenCodeContextCaps({}, [
+      {
+        providerId: "opencode",
+        modelId: "big-pickle",
+        contextCap: 50_000,
+        outputLimit: 32_000,
+        inputLimit: 160_000,
+      },
+    ]);
+
+    expect(limitOf(capped, "opencode", "big-pickle")).toEqual({
+      context: 50_000,
+      input: 50_000,
+      output: 32_000,
+    });
+  });
+
+  // Inventing an input limit for a model that declares none would change how a
+  // model that already compacts correctly is treated.
+  it("leaves limit.input absent for a model that declares none", () => {
+    const capped = applyOpenCodeContextCaps({}, [
+      {
+        providerId: "opencode",
+        modelId: "ling",
+        contextCap: 50_000,
+        outputLimit: 32_768,
+      },
+    ]);
+
+    expect(limitOf(capped, "opencode", "ling")).toEqual({ context: 50_000, output: 32_768 });
+    expect(limitOf(capped, "opencode", "ling")).not.toHaveProperty("input");
+  });
+
+  it("never raises an input the config already set lower than the cap", () => {
+    const base: OpenCodeContextCapConfig = {
+      provider: {
+        p: { models: { m: { limit: { context: 900_000, output: 8_192, input: 9_000 } } } },
+      },
+    };
+
+    const capped = applyOpenCodeContextCaps(base, [
+      {
+        providerId: "p",
+        modelId: "m",
+        contextCap: 50_000,
+        outputLimit: 64_000,
+        inputLimit: 160_000,
+      },
+    ]);
+
+    expect(limitOf(capped, "p", "m")).toEqual({ context: 50_000, input: 9_000, output: 8_192 });
+  });
+
+  // An input window wider than the cap we just wrote would be incoherent, and it is
+  // the one case where "never raise" and "never exceed the window" disagree.
+  it("never writes an input window above the capped context", () => {
+    const capped = applyOpenCodeContextCaps({}, [
+      {
+        providerId: "p",
+        modelId: "m",
+        contextCap: 50_000,
+        outputLimit: 32_000,
+        inputLimit: 900_000,
+      },
+    ]);
+
+    expect(limitOf(capped, "p", "m")?.input).toBe(50_000);
+  });
+
   it("preserves an output limit the config already set instead of clobbering it", () => {
     const base: OpenCodeContextCapConfig = {
       provider: { anthropic: { models: { m: { limit: { context: 900_000, output: 8_192 } } } } },
@@ -168,15 +240,17 @@ describe("opencode context cap injection", () => {
   // A model that only becomes cappable once its catalog entry reports an output
   // limit needs a fresh generation, or the cap stays inert until something else
   // happens to restart OpenCode.
-  it("changes the fingerprint when a model's output limit appears", () => {
-    const withoutOutput = openCodeContextCapsKey([
-      { providerId: "p", modelId: "m", contextCap: 1_000 },
-    ]);
+  it("changes the fingerprint when a model's output or input limit appears", () => {
+    const bare = openCodeContextCapsKey([{ providerId: "p", modelId: "m", contextCap: 1_000 }]);
     const withOutput = openCodeContextCapsKey([
       { providerId: "p", modelId: "m", contextCap: 1_000, outputLimit: 2_000 },
     ]);
+    const withInput = openCodeContextCapsKey([
+      { providerId: "p", modelId: "m", contextCap: 1_000, outputLimit: 2_000, inputLimit: 3_000 },
+    ]);
 
-    expect(withOutput).not.toBe(withoutOutput);
+    expect(withOutput).not.toBe(bare);
+    expect(withInput).not.toBe(withOutput);
   });
 
   it("keys a model by provider and model id", () => {

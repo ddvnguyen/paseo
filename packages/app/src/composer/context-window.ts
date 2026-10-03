@@ -4,10 +4,11 @@
  * Two numbers can claim to be the window. The agent's `lastUsage` carries the
  * number its harness reported, and the daemon config carries the ceiling the
  * user set for the provider. They are written by different processes and never
- * cross-checked, so the meter has to reconcile them here — and it may only ever
- * take the lower of the two. A cap that raised the ceiling would claim headroom
- * the harness never agreed to, and a meter that drew more than the smaller of
- * the two could never saturate, which is the only visual proof the cap is real.
+ * cross-checked, so the meter has to reconcile them here — it takes the lower
+ * of the two for the ceiling, and for the usage. A cap that raised the ceiling
+ * would claim headroom the harness never agreed to, and usage past the ceiling
+ * draws as a full meter. A meter pinned at 100% is the visible proof the cap
+ * is real.
  */
 
 import type { MutableDaemonConfig } from "@getpaseo/protocol/messages";
@@ -41,12 +42,17 @@ export function resolveConfiguredContextCap(
 }
 
 /**
- * The pair the meter renders, with the maximum lowered to the configured cap
- * whenever the provider has one.
+ * The pair the meter renders, both halves held to the configured cap whenever
+ * the provider has one.
  *
  * `min`, never `max`: a cap is a ceiling the user imposed, so it can lower a
  * harness-reported window but never inflate one. With no cap this returns the
- * runtime pair unchanged.
+ * runtime pair verbatim, so only a cap can pin the meter.
+ *
+ * Usage above the displayed maximum resolves to the displayed maximum. That
+ * keeps the percentage at or under 100% and stops the ring and the label
+ * disagreeing about how full the window is: a harness reporting more than the
+ * user's ceiling has already crossed it.
  *
  * An unknown runtime value stays unknown. Both halves of the pair are nulled
  * together because a percentage needs both, and a maximum on its own would draw
@@ -64,8 +70,17 @@ export function resolveContextWindowValues(
     typeof configuredCap === "number" && Number.isFinite(configuredCap) && configuredCap > 0
       ? configuredCap
       : null;
+  // No cap means no reconciliation: hand back the runtime pair exactly as it
+  // arrived, over-100% usage included. The meter clamps its own ring sweep.
+  if (cap === null) {
+    return { contextWindowMaxTokens: rawMax, contextWindowUsedTokens: rawUsed };
+  }
+  const displayMax = Math.min(rawMax, cap);
+  // A maximum nobody can divide by leaves the usage count alone; clamping
+  // against it would manufacture a NaN the meter already reads as unknown.
+  const displayUsed = displayMax > 0 ? Math.min(rawUsed, displayMax) : rawUsed;
   return {
-    contextWindowMaxTokens: cap === null ? rawMax : Math.min(rawMax, cap),
-    contextWindowUsedTokens: rawUsed,
+    contextWindowMaxTokens: displayMax,
+    contextWindowUsedTokens: displayUsed,
   };
 }
