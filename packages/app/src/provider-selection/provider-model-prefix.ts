@@ -41,10 +41,6 @@ export interface ProviderModelPrefixTags {
 
 export type ProviderModelPrefixes = ReadonlyMap<string, ProviderModelPrefixTags>;
 
-function emptyPrefixTags(): ProviderModelPrefixTags {
-  return { providerWide: undefined, bySubProvider: new Map() };
-}
-
 /**
  * Reads the model tags out of the daemon's provider overrides. The config file
  * is the single place a prefix is declared, so every picker derives it from here
