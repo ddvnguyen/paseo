@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type pino from "pino";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AgentManager } from "../agent/agent-manager.js";
 import { AgentStorage } from "../agent/agent-storage.js";
@@ -40,7 +41,11 @@ import {
   type ScheduleServiceOptions,
 } from "./service.js";
 import { ScheduleStore } from "./store.js";
-import type { ScheduleExecutionResult, StoredSchedule } from "@getpaseo/protocol/schedule/types";
+import {
+  StoredScheduleSchema,
+  type ScheduleExecutionResult,
+  type StoredSchedule,
+} from "@getpaseo/protocol/schedule/types";
 
 interface ScheduleServiceInternals {
   executeSchedule(schedule: StoredSchedule, runId: string): Promise<ScheduleExecutionResult>;
@@ -267,6 +272,49 @@ async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promi
         }
       },
   };
+}
+
+/**
+ * Workspaces still visible to the user. A schedule whose runs each leave one behind
+ * shows up here as a growing count, which is the only end state that matters: an
+ * archived workspace is not a leak even though it still exists on disk.
+ */
+async function activeWorkspaces(
+  registry: FileBackedWorkspaceRegistry,
+  exceptWorkspaceId?: string,
+): Promise<PersistedWorkspaceRecord[]> {
+  return (await registry.list()).filter(
+    (workspace) => !workspace.archivedAt && workspace.workspaceId !== exceptWorkspaceId,
+  );
+}
+
+/**
+ * Rewrite a schedule on disk so it looks like a run that was in flight when the
+ * daemon died, written by a build that predates `workspaceOrigin`. Recovery reads
+ * this file through a fresh service, so the fallback branch is what decides the
+ * workspace's fate.
+ */
+async function writeLegacyInterruptedRun(
+  rootDir: string,
+  scheduleId: string,
+  run: { workspaceId: string; agentId: string | null },
+): Promise<void> {
+  const file = join(rootDir, "schedules", `${scheduleId}.json`);
+  const stored = JSON.parse(await readFile(file, "utf-8"));
+  stored.runs = [
+    {
+      id: "run_legacy",
+      scheduledFor: "2026-01-01T00:00:00.000Z",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      endedAt: null,
+      status: "running",
+      agentId: run.agentId,
+      workspaceId: run.workspaceId,
+      output: null,
+      error: null,
+    },
+  ];
+  await writeFile(file, JSON.stringify(stored, null, 2));
 }
 
 function buildAgentRecord(params: {
@@ -681,7 +729,12 @@ describe("ScheduleService", () => {
         type: "new-agent",
         // archiveOnFinish omitted, so it defaults to true. Reuse would let whichever
         // run finishes first archive the workspace out from under the others.
-        config: { provider: "claude", model: "test-model", cwd: tempDir, workspaceId: shared.workspaceId },
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          workspaceId: shared.workspaceId,
+        },
       },
     });
 
@@ -689,8 +742,20 @@ describe("ScheduleService", () => {
     // usable: the run falls back to a dedicated workspace instead of failing.
     await service.tick();
     const inspected = await service.inspect(created.id);
-    const agent = await agentStorage.get(inspected.runs[0]!.agentId!);
+    expect(inspected.runs).toHaveLength(1);
+    const run = inspected.runs[0]!;
+    // The run must actually happen. Refusing reuse is a config problem, not a lost
+    // workspace: the run has to succeed against a workspace of its own.
+    expect(run.status).toBe("succeeded");
+    expect(run.agentId).not.toBeNull();
+    const agent = await agentStorage.get(run.agentId!);
+    expect(agent?.workspaceId).toMatch(/^wks_/);
     expect(agent?.workspaceId).not.toBe(shared.workspaceId);
+    // Completing the schedule here would be a one-way door: the run above is
+    // reported as a dead target, and finishRun reads that as "permanently gone".
+    // Every future tick would be skipped, so the schedule has to stay live.
+    expect(inspected.status).not.toBe("completed");
+    expect(inspected.nextRunAt).not.toBeNull();
     // The critical safety property: refusing reuse must leave the named workspace
     // intact, so the schedule stays usable instead of pointing at a deleted workspace.
     const named = (await workspaceRegistry.list()).find(
@@ -700,10 +765,8 @@ describe("ScheduleService", () => {
   });
 
   test("target workspaceId that does not exist falls back to a new workspace", async () => {
-    const {
-      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
-      createArchiveWorkspace,
-    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const { createDirectoryWorkspace: createScheduleDirectoryWorkspace, createArchiveWorkspace } =
+      await createRegistryBackedScheduleWorkspaceDeps(tempDir);
     const manager = new AgentManager({
       logger: createTestLogger(),
       clients: createTestAgentClients(),
@@ -747,11 +810,126 @@ describe("ScheduleService", () => {
     expect(agent?.workspaceId).not.toBe("wks_does_not_exist");
   });
 
-  test("target workspaceId whose cwd differs from the target cwd is refused", async () => {
+  test("target workspaceId matches a cwd that only spells the same directory differently", async () => {
     const {
+      workspaceRegistry,
       createDirectoryWorkspace: createScheduleDirectoryWorkspace,
       createArchiveWorkspace,
     } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const nested = join(tempDir, "nested");
+    await mkdir(nested, { recursive: true });
+    const shared = await createScheduleDirectoryWorkspace({
+      cwd: nested,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      archiveWorkspace: createArchiveWorkspace({ agentManager: manager, agentStorage }),
+      seedWorkspaces: [shared],
+      now: () => now,
+    });
+
+    // Same directory, three spellings a user can type. A false mismatch is not
+    // loud: reuse is refused and every run quietly gets a workspace of its own,
+    // which is the feature silently not working.
+    // Built as raw strings, not through path.join: join would normalise these
+    // away while constructing them, and the test would pass for the wrong reason.
+    for (const [index, spelling] of [
+      `${nested}/../nested`,
+      `${nested}/`,
+      `${tempDir}/./nested`,
+    ].entries()) {
+      const created = await service.create({
+        prompt: `cwd spelling ${index}`,
+        cadence: { type: "every", everyMs: 60_000 },
+        target: {
+          type: "new-agent",
+          config: {
+            provider: "claude",
+            model: "test-model",
+            cwd: spelling,
+            archiveOnFinish: false,
+            workspaceId: shared.workspaceId,
+          },
+        },
+      });
+      now = new Date(`2026-01-01T00:0${index + 1}:00.000Z`);
+      await service.tick();
+      const run = (await service.inspect(created.id)).runs[0]!;
+      expect(run.status).toBe("succeeded");
+      expect(run.workspaceId).toBe(shared.workspaceId);
+      const agent = await agentStorage.get(run.agentId!);
+      expect(agent?.workspaceId).toBe(shared.workspaceId);
+      expect(run.workspaceOrigin).toBe("reused");
+      // And the shared workspace is still the user's, not archived by the run.
+      const named = (await workspaceRegistry.list()).find(
+        (workspace) => workspace.workspaceId === shared.workspaceId,
+      );
+      expect(named?.archivedAt ?? null).toBeNull();
+    }
+  });
+
+  test("target workspaceId matches a cwd reached through a symlink", async () => {
+    const { createDirectoryWorkspace: createScheduleDirectoryWorkspace } =
+      await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const real = join(tempDir, "real-target");
+    await mkdir(real, { recursive: true });
+    const link = join(tempDir, "linked-target");
+    await symlink(real, link);
+    const shared = await createScheduleDirectoryWorkspace({
+      cwd: real,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      seedWorkspaces: [shared],
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "cwd through a symlink",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: link,
+          archiveOnFinish: false,
+          workspaceId: shared.workspaceId,
+        },
+      },
+    });
+
+    await service.tick();
+    const run = (await service.inspect(created.id)).runs[0]!;
+    expect(run.status).toBe("succeeded");
+    expect(run.workspaceOrigin).toBe("reused");
+  });
+
+  test("target workspaceId whose cwd differs from the target cwd is refused", async () => {
+    const { createDirectoryWorkspace: createScheduleDirectoryWorkspace, createArchiveWorkspace } =
+      await createRegistryBackedScheduleWorkspaceDeps(tempDir);
     const shared = await createScheduleDirectoryWorkspace({
       cwd: `${tempDir}/elsewhere`,
       firstAgentContext: { prompt: "pre-existing workspace" },
@@ -795,8 +973,699 @@ describe("ScheduleService", () => {
     // would quietly run the schedule in the wrong place.
     await service.tick();
     const inspected = await service.inspect(created.id);
-    const agent = await agentStorage.get(inspected.runs[0]!.agentId!);
+    expect(inspected.runs).toHaveLength(1);
+    const run = inspected.runs[0]!;
+    expect(run.status).toBe("succeeded");
+    expect(run.agentId).not.toBeNull();
+    const agent = await agentStorage.get(run.agentId!);
+    expect(agent?.workspaceId).toMatch(/^wks_/);
     expect(agent?.workspaceId).not.toBe(shared.workspaceId);
+    // A rejected reuse is a warning, not a dead target — completing the schedule
+    // would silently stop every future run of it.
+    expect(inspected.status).not.toBe("completed");
+    expect(inspected.nextRunAt).not.toBeNull();
+  });
+
+  test("target workspaceId that is already archived provisions instead of reusing", async () => {
+    const { createDirectoryWorkspace: createScheduleDirectoryWorkspace } =
+      await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const shared = await createScheduleDirectoryWorkspace({
+      cwd: tempDir,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      seedWorkspaces: [{ ...shared, archivedAt: "2026-01-01T00:00:00.000Z" }],
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "reuse an archived workspace",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: false,
+          workspaceId: shared.workspaceId,
+        },
+      },
+    });
+
+    // An archived id still resolves in the registry, so reuse has to reject it
+    // explicitly. Dropping agents into an archived workspace hides them from the
+    // workspace list and re-archives a workspace the user already retired.
+    await service.tick();
+    const inspected = await service.inspect(created.id);
+    const run = inspected.runs[0]!;
+    expect(run.status).toBe("succeeded");
+    expect(run.agentId).not.toBeNull();
+    const agent = await agentStorage.get(run.agentId!);
+    expect(agent?.workspaceId).not.toBe(shared.workspaceId);
+    expect(inspected.status).not.toBe("completed");
+  });
+
+  test("crash recovery never archives a legacy run's shared workspace", async () => {
+    // A run persisted before workspaceOrigin existed has no record of where its
+    // workspace came from, so the recovery path falls back to comparing the run's
+    // workspace against the target's named one. Guessing wrong here deletes a
+    // workspace the user still owns, which is not recoverable the way a leak is.
+    const {
+      workspaceRegistry,
+      createDirectoryWorkspace: createRegistryDirectoryWorkspace,
+      createArchiveWorkspace,
+    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const shared = await createRegistryDirectoryWorkspace({
+      cwd: tempDir,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const deps = {
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createRegistryDirectoryWorkspace,
+      archiveWorkspace: createArchiveWorkspace({ agentManager: manager, agentStorage }),
+    };
+    const service = createScheduleService({ ...deps, seedWorkspaces: [shared], now: () => now });
+    const created = await service.create({
+      prompt: "legacy in-flight run",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: false,
+          workspaceId: shared.workspaceId,
+        },
+      },
+    });
+    // agentId null: the daemon died after the workspace was chosen but before the
+    // agent was created. That is the reachable state where "no agent" would
+    // normally force an archive, and it is exactly the case the shared workspace
+    // must survive.
+    await writeLegacyInterruptedRun(tempDir, created.id, {
+      workspaceId: shared.workspaceId,
+      agentId: null,
+    });
+
+    // A fresh service, so recovery reads the hand-written file off disk.
+    const restarted = createScheduleService({ ...deps, seedWorkspaces: [shared], now: () => now });
+    await restarted.start();
+    await restarted.stop();
+
+    const named = (await workspaceRegistry.list()).find(
+      (workspace) => workspace.workspaceId === shared.workspaceId,
+    );
+    expect(named?.archivedAt ?? null).toBeNull();
+    const inspected = await restarted.inspect(created.id);
+    expect(inspected.runs[0]!.status).toBe("failed");
+  });
+
+  test("crash recovery archives a legacy run that did not use the shared workspace", async () => {
+    const {
+      workspaceRegistry,
+      createDirectoryWorkspace: createRegistryDirectoryWorkspace,
+      createArchiveWorkspace,
+    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const shared = await createRegistryDirectoryWorkspace({
+      cwd: tempDir,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const runWorkspace = await createRegistryDirectoryWorkspace({
+      cwd: `${tempDir}/run-own`,
+      firstAgentContext: { prompt: "run workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const deps = {
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createRegistryDirectoryWorkspace,
+      archiveWorkspace: createArchiveWorkspace({ agentManager: manager, agentStorage }),
+    };
+    const service = createScheduleService({ ...deps, seedWorkspaces: [shared], now: () => now });
+    const created = await service.create({
+      prompt: "legacy run with its own workspace",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: true,
+          workspaceId: shared.workspaceId,
+        },
+      },
+    });
+    await writeLegacyInterruptedRun(tempDir, created.id, {
+      workspaceId: runWorkspace.workspaceId,
+      agentId: "22222222-2222-4222-8222-222222222222",
+    });
+
+    const restarted = createScheduleService({ ...deps, seedWorkspaces: [shared], now: () => now });
+    await restarted.start();
+    await restarted.stop();
+
+    // The run's own workspace goes, per the schedule's archiveOnFinish...
+    const runRecord = (await workspaceRegistry.list()).find(
+      (workspace) => workspace.workspaceId === runWorkspace.workspaceId,
+    );
+    expect(runRecord?.archivedAt ?? null).not.toBeNull();
+    // ...and the workspace the schedule still names is untouched.
+    const named = (await workspaceRegistry.list()).find(
+      (workspace) => workspace.workspaceId === shared.workspaceId,
+    );
+    expect(named?.archivedAt ?? null).toBeNull();
+  });
+
+  test("crash recovery keeps a legacy run's own workspace when archiveOnFinish is false", async () => {
+    const {
+      workspaceRegistry,
+      createDirectoryWorkspace: createRegistryDirectoryWorkspace,
+      createArchiveWorkspace,
+    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const shared = await createRegistryDirectoryWorkspace({
+      cwd: tempDir,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const runWorkspace = await createRegistryDirectoryWorkspace({
+      cwd: `${tempDir}/run-own`,
+      firstAgentContext: { prompt: "run workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const deps = {
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createRegistryDirectoryWorkspace,
+      archiveWorkspace: createArchiveWorkspace({ agentManager: manager, agentStorage }),
+    };
+    const service = createScheduleService({ ...deps, seedWorkspaces: [shared], now: () => now });
+    const created = await service.create({
+      prompt: "legacy run keeping its workspace",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: false,
+          workspaceId: shared.workspaceId,
+        },
+      },
+    });
+    await writeLegacyInterruptedRun(tempDir, created.id, {
+      workspaceId: runWorkspace.workspaceId,
+      agentId: "33333333-3333-4333-8333-333333333333",
+    });
+
+    const restarted = createScheduleService({ ...deps, seedWorkspaces: [shared], now: () => now });
+    await restarted.start();
+    await restarted.stop();
+
+    // The fallback honours the flag for a workspace that is not the named one.
+    const runRecord = (await workspaceRegistry.list()).find(
+      (workspace) => workspace.workspaceId === runWorkspace.workspaceId,
+    );
+    expect(runRecord?.archivedAt ?? null).toBeNull();
+  });
+
+  test("crash recovery archives a legacy run's own workspace even with no agent", async () => {
+    const {
+      workspaceRegistry,
+      createDirectoryWorkspace: createRegistryDirectoryWorkspace,
+      createArchiveWorkspace,
+    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const shared = await createRegistryDirectoryWorkspace({
+      cwd: tempDir,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const runWorkspace = await createRegistryDirectoryWorkspace({
+      cwd: `${tempDir}/run-own`,
+      firstAgentContext: { prompt: "run workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const deps = {
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createRegistryDirectoryWorkspace,
+      archiveWorkspace: createArchiveWorkspace({ agentManager: manager, agentStorage }),
+    };
+    const service = createScheduleService({ ...deps, seedWorkspaces: [shared], now: () => now });
+    const created = await service.create({
+      prompt: "legacy run with no agent",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: false,
+          workspaceId: shared.workspaceId,
+        },
+      },
+    });
+    await writeLegacyInterruptedRun(tempDir, created.id, {
+      workspaceId: runWorkspace.workspaceId,
+      agentId: null,
+    });
+
+    const restarted = createScheduleService({ ...deps, seedWorkspaces: [shared], now: () => now });
+    await restarted.start();
+    await restarted.stop();
+
+    // The mirror of the shared-workspace case: this run's own workspace, created
+    // and then abandoned before an agent existed, leaves nothing behind.
+    const runRecord = (await workspaceRegistry.list()).find(
+      (workspace) => workspace.workspaceId === runWorkspace.workspaceId,
+    );
+    expect(runRecord?.archivedAt ?? null).not.toBeNull();
+    const named = (await workspaceRegistry.list()).find(
+      (workspace) => workspace.workspaceId === shared.workspaceId,
+    );
+    expect(named?.archivedAt ?? null).toBeNull();
+  });
+
+  test("a run already in flight when reuse is cleared still archives its workspace", async () => {
+    const {
+      workspaceRegistry,
+      createDirectoryWorkspace: createRegistryDirectoryWorkspace,
+      createArchiveWorkspace,
+    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const shared = await createRegistryDirectoryWorkspace({
+      cwd: `${tempDir}/elsewhere`,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    let service!: ScheduleService;
+    let cleared = false;
+    // The clear lands while the run is executing, between the reuse check and the
+    // agent starting. The run is mid-flight against a config that is about to stop
+    // naming a workspace, so the archive decision must not read the new one.
+    const clearMidRun: typeof createRegistryDirectoryWorkspace = async (input) => {
+      const workspace = await createRegistryDirectoryWorkspace(input);
+      if (!cleared) {
+        cleared = true;
+        await service.update({
+          id: createdId,
+          newAgentConfig: { workspaceId: null, archiveOnFinish: true },
+        });
+      }
+      return workspace;
+    };
+    let createdId = "";
+    service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: clearMidRun,
+      archiveWorkspace: createArchiveWorkspace({ agentManager: manager, agentStorage }),
+      seedWorkspaces: [shared],
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "clear lands mid-run",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: false,
+          workspaceId: shared.workspaceId,
+        },
+      },
+    });
+    createdId = created.id;
+
+    await service.tick();
+    expect(cleared).toBe(true);
+    const inspected = await service.inspect(created.id);
+    expect(inspected.runs[0]!.status).toBe("succeeded");
+    // The config on disk now says "no named workspace, archive on finish", which is
+    // what later runs get. This run's workspace was provisioned while the schedule
+    // still named one, and it must not be left behind.
+    const config = inspected.target.type === "new-agent" ? inspected.target.config : null;
+    expect(config?.workspaceId).toBeUndefined();
+    expect(config?.archiveOnFinish).toBe(true);
+    expect(await activeWorkspaces(workspaceRegistry, shared.workspaceId)).toEqual([]);
+  });
+
+  test("a refused reuse leaves no active workspace behind on any run", async () => {
+    const {
+      workspaceRegistry,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      createArchiveWorkspace,
+    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const shared = await createScheduleDirectoryWorkspace({
+      cwd: `${tempDir}/elsewhere`,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      archiveWorkspace: createArchiveWorkspace({ agentManager: manager, agentStorage }),
+      seedWorkspaces: [shared],
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "refused reuse, three runs",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          // Reuse is refused for the cwd mismatch, and this is the flag the CLI
+          // pins whenever a workspace is named.
+          archiveOnFinish: false,
+          workspaceId: shared.workspaceId,
+        },
+      },
+    });
+
+    // The end state that matters is the workspace list the user sees. A refused
+    // reuse falls back to a workspace of the run's own, which has to be archived
+    // when the run ends: honouring archiveOnFinish here leaked one per run, and a
+    // --every 5m schedule never archived any of them.
+    for (const tickAt of ["00:01", "00:02", "00:03"]) {
+      now = new Date(`2026-01-01T${tickAt}:00.000Z`);
+      await service.tick();
+      // The named workspace is the user's own and stays active; nothing else may.
+      expect(await activeWorkspaces(workspaceRegistry, shared.workspaceId)).toEqual([]);
+    }
+    const inspected = await service.inspect(created.id);
+    expect(inspected.runs).toHaveLength(3);
+    expect(inspected.runs.every((run) => run.status === "succeeded")).toBe(true);
+    // Every run recorded where its workspace came from, so a restart mid-run
+    // reaches the same decision.
+    expect(inspected.runs.map((run) => run.workspaceOrigin)).toEqual([
+      "provisioned",
+      "provisioned",
+      "provisioned",
+    ]);
+    // The named workspace is never the casualty.
+    const named = (await workspaceRegistry.list()).find(
+      (workspace) => workspace.workspaceId === shared.workspaceId,
+    );
+    expect(named?.archivedAt ?? null).toBeNull();
+  });
+
+  test("a refused reuse on a legacy archiveOnFinish schedule also archives its fallback", async () => {
+    const {
+      workspaceRegistry,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      createArchiveWorkspace,
+    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const shared = await createScheduleDirectoryWorkspace({
+      cwd: `${tempDir}/elsewhere`,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      archiveWorkspace: createArchiveWorkspace({ agentManager: manager, agentStorage }),
+      seedWorkspaces: [shared],
+      now: () => now,
+    });
+
+    // A schedule stored before the CLI pinned the pairing: reuse configured and
+    // archiveOnFinish left at its default. The refusal is the same, and so is the
+    // fallback's fate.
+    const created = await service.create({
+      prompt: "legacy reuse config",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: true,
+          workspaceId: shared.workspaceId,
+        },
+      },
+    });
+
+    now = new Date("2026-01-01T00:01:00.000Z");
+    await service.tick();
+    expect(await activeWorkspaces(workspaceRegistry, shared.workspaceId)).toEqual([]);
+    const inspected = await service.inspect(created.id);
+    expect(inspected.runs[0]!.status).toBe("succeeded");
+    const named = (await workspaceRegistry.list()).find(
+      (workspace) => workspace.workspaceId === shared.workspaceId,
+    );
+    expect(named?.archivedAt ?? null).toBeNull();
+  });
+
+  test("a reused workspace is never archived no matter how many runs finish", async () => {
+    const {
+      workspaceRegistry,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      createArchiveWorkspace,
+    } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const shared = await createScheduleDirectoryWorkspace({
+      cwd: tempDir,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      archiveWorkspace: createArchiveWorkspace({ agentManager: manager, agentStorage }),
+      seedWorkspaces: [shared],
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "happy reuse path",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: false,
+          workspaceId: shared.workspaceId,
+        },
+      },
+    });
+
+    for (const tickAt of ["00:01", "00:02", "00:03"]) {
+      now = new Date(`2026-01-01T${tickAt}:00.000Z`);
+      await service.tick();
+    }
+    const inspected = await service.inspect(created.id);
+    expect(inspected.runs.map((run) => run.workspaceOrigin)).toEqual([
+      "reused",
+      "reused",
+      "reused",
+    ]);
+    // Only the shared workspace is active, and it is still there.
+    expect(await activeWorkspaces(workspaceRegistry)).toHaveLength(1);
+    const stillLive = (await workspaceRegistry.list()).find(
+      (workspace) => workspace.workspaceId === shared.workspaceId,
+    );
+    expect(stillLive?.archivedAt ?? null).toBeNull();
+  });
+
+  test("a run whose workspace is archived between resolution and the agent falls back", async () => {
+    const { createDirectoryWorkspace: createScheduleDirectoryWorkspace } =
+      await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const shared = await createScheduleDirectoryWorkspace({
+      cwd: tempDir,
+      firstAgentContext: { prompt: "pre-existing workspace" },
+    });
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    // Someone archives the named workspace in the window between the reuse check
+    // and createAgent. The run must not drop its agent in there.
+    let reads = 0;
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      getWorkspace: async (id) => {
+        if (id !== shared.workspaceId) return null;
+        reads += 1;
+        return reads === 1 ? shared : { ...shared, archivedAt: "2026-01-01T00:00:30.000Z" };
+      },
+      now: () => now,
+    });
+
+    const created = await service.create({
+      prompt: "workspace archived mid-run",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          archiveOnFinish: false,
+          workspaceId: shared.workspaceId,
+        },
+      },
+    });
+
+    await service.tick();
+    expect(reads).toBeGreaterThanOrEqual(2);
+    const inspected = await service.inspect(created.id);
+    const run = inspected.runs[0]!;
+    expect(run.status).toBe("succeeded");
+    // Origin follows the workspace actually used, so the archive decision matches
+    // it rather than the one that was retired underneath the run.
+    expect(run.workspaceOrigin).toBe("provisioned");
+    expect(run.workspaceId).not.toBe(shared.workspaceId);
+    const agent = await agentStorage.get(run.agentId!);
+    expect(agent?.workspaceId).not.toBe(shared.workspaceId);
+  });
+
+  test("a refused reuse is warned about once per schedule, not once per run", async () => {
+    const { createDirectoryWorkspace: createScheduleDirectoryWorkspace } =
+      await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const warnings: string[] = [];
+    const baseLogger = createTestLogger();
+    const recordingLogger = Object.create(baseLogger, {
+      child: { value: () => recordingLogger },
+      warn: {
+        value: (...args: unknown[]) => {
+          warnings.push(args.map((arg) => String(arg)).join(" "));
+        },
+      },
+    }) as pino.Logger;
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: recordingLogger as never,
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: createScheduleDirectoryWorkspace,
+      now: () => now,
+    });
+    const config = {
+      provider: "claude",
+      model: "test-model",
+      cwd: tempDir,
+      archiveOnFinish: false,
+      workspaceId: "wks_never_registered",
+    } as const;
+
+    const first = await service.create({
+      prompt: "noisy schedule",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "new-agent", config },
+    });
+    const second = await service.create({
+      prompt: "second noisy schedule",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "new-agent", config },
+    });
+
+    for (const tickAt of ["00:01", "00:02", "00:03"]) {
+      now = new Date(`2026-01-01T${tickAt}:00.000Z`);
+      await service.tick();
+    }
+    const reuseWarnings = warnings.filter((line) => line.includes("schedule workspace reuse"));
+    // Three ticks, two schedules: one line each. A 5-minute schedule would
+    // otherwise bury every other warning in the log for as long as it stays
+    // misconfigured.
+    expect(reuseWarnings).toHaveLength(2);
+    // The reason still travels with the warning, so it is diagnosable.
+    expect(reuseWarnings[0]).toContain("id not found");
+    expect((await service.inspect(first.id)).runs).toHaveLength(3);
+    expect((await service.inspect(second.id)).runs).toHaveLength(3);
   });
 
   test("archiveOnFinish=false local runs create one active workspace per run", async () => {
@@ -2697,6 +3566,48 @@ describe("ScheduleService", () => {
 
     const renamed = await service.update({ id: created.id, name: "again" });
     expect(renamed.name).toBe("again");
+  });
+
+  test("update clears workspace reuse without persisting a null", async () => {
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      runner: async () => ({ agentId: null, output: "ok" }),
+    });
+
+    const created = await service.create({
+      prompt: "p",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          cwd: tempDir,
+          archiveOnFinish: false,
+          workspaceId: "wks_shared",
+        },
+      },
+    });
+
+    const cleared = await service.update({ id: created.id, newAgentConfig: { workspaceId: null } });
+    const config = cleared.target.type === "new-agent" ? cleared.target.config : null;
+    // Absent, not null. target.config.workspaceId is optional-but-not-nullable, so a
+    // persisted null would make StoredScheduleSchema reject the file and take
+    // store.list() down for every schedule on the daemon, not just this one.
+    expect(config?.workspaceId).toBeUndefined();
+    expect(JSON.stringify(cleared)).not.toContain('"workspaceId":null');
+    expect(() => StoredScheduleSchema.parse(cleared)).not.toThrow();
+
+    // And it survives a reload, which is where a stored null would surface.
+    const reloaded = await service.inspect(created.id);
+    const reloadedWorkspaceId =
+      reloaded.target.type === "new-agent" ? reloaded.target.config.workspaceId : "wrong-target";
+    expect(reloadedWorkspaceId).toBeUndefined();
+    expect(StoredScheduleSchema.safeParse(reloaded).success).toBe(true);
   });
 
   test("update rejects new-agent fields on agent-target schedules", async () => {

@@ -97,6 +97,33 @@ paseo schedule update <id> --every 10m --max-runs 6
 paseo schedule delete <id>
 ```
 
+## Workspace per run
+
+Each run of a new-agent schedule provisions its own workspace by default. Pass `--workspace-id <id>` to run every tick in one workspace you already have, so the schedule's history collects in a single place instead of a directory per run:
+
+```bash
+paseo schedule create --every 30m --cwd ~/dev/my-app \
+  --workspace-id wks_abc123 \
+  "Triage new issues."
+```
+
+Naming a workspace also stops the schedule archiving one per run; an archived workspace is not shared with anything. `--workspace-id` is safe to change later, and `--no-workspace-id` goes back to a workspace per run:
+
+```bash
+paseo schedule update <id> --workspace-id wks_def456
+paseo schedule update <id> --no-workspace-id
+```
+
+`--no-workspace-id` goes back to a workspace per run, and those are archived again when the run ends. Reuse is what turned archiving off, so clearing it turns archiving back on.
+
+The daemon re-checks reuse on every run rather than trusting the stored config, and refuses reuse — falling back to a workspace of that run's own, archived when the run ends — when the workspace is archived, when it does not exist, or when its directory differs from `--cwd`. A refused run logs a warning once per schedule, and the schedule keeps running.
+
+Clearing reuse needs a daemon that understands it. Against an older daemon the command fails and asks you to update rather than sending a request it would reject.
+
+### Sharing one workspace between schedules
+
+Two schedules can name the same workspace, and `paseo schedule create` / `update` warn when another schedule already uses it. Nothing serialises the two: their runs are independent, so agents from both can be working in the same directory at once, and a run that finishes does not wait for the other. Two schedules that write to the same files will collide. Give each schedule its own workspace, or use one schedule with a longer cadence.
+
 ## Cadence
 
 Use `--cron "<expr>"` for a 5-field cron expression. For common cron-compatible cadences, `--every <duration>` accepts presets such as `5m` or `1h` and compiles them to cron. It does not create a rolling interval anchored to creation time.

@@ -155,6 +155,181 @@ try {
     assert.strictEqual(JSON.parse(deleted.stdout).id, createdJson.id);
     console.log("compatibility agent-target schedules remain deletable\n");
   }
+  {
+    console.log("Test 1e: schedule create --workspace-id pins archiveOnFinish false");
+    // The id does not have to resolve here; whether a run can safely reuse it is
+    // the daemon's decision at tick time and is covered by the server schedule
+    // tests. This asserts the CLI half — what actually reaches the daemon.
+    const created = await ctx.paseo(
+      [
+        "schedule",
+        "create",
+        "Review in one shared workspace",
+        "--every",
+        "5m",
+        "--provider",
+        "claude",
+        "--cwd",
+        ctx.workDir,
+        "--workspace-id",
+        "wks_e2e_shared",
+        "--json",
+      ],
+      { timeout: 30000 },
+    );
+    assert.strictEqual(created.exitCode, 0, created.stderr);
+    const createdJson = JSON.parse(created.stdout);
+
+    const inspected = await ctx.paseo(["schedule", "inspect", createdJson.id, "--json"]);
+    assert.strictEqual(inspected.exitCode, 0, inspected.stderr);
+    const config = JSON.parse(inspected.stdout).target.config;
+    assert.strictEqual(config.workspaceId, "wks_e2e_shared");
+    // A workspace that is archived per run is not shared at all, so asking for one
+    // workspace has to turn archiving off.
+    assert.strictEqual(config.archiveOnFinish, false);
+
+    const deleted = await ctx.paseo(["schedule", "delete", createdJson.id, "--json"]);
+    assert.strictEqual(deleted.exitCode, 0, deleted.stderr);
+    console.log("schedule create --workspace-id pins archiveOnFinish false\n");
+  }
+
+  {
+    console.log("Test 1f: schedule update sets, replaces, and clears workspace reuse");
+    const created = await ctx.paseo(
+      [
+        "schedule",
+        "create",
+        "Update workspace reuse",
+        "--every",
+        "5m",
+        "--provider",
+        "claude",
+        "--cwd",
+        ctx.workDir,
+        "--json",
+      ],
+      { timeout: 30000 },
+    );
+    assert.strictEqual(created.exitCode, 0, created.stderr);
+    const id = JSON.parse(created.stdout).id;
+
+    const readConfig = async () => {
+      const inspected = await ctx.paseo(["schedule", "inspect", id, "--json"]);
+      assert.strictEqual(inspected.exitCode, 0, inspected.stderr);
+      return JSON.parse(inspected.stdout).target.config;
+    };
+
+    const set = await ctx.paseo(
+      ["schedule", "update", id, "--workspace-id", "wks_e2e_first", "--json"],
+      { timeout: 30000 },
+    );
+    assert.strictEqual(set.exitCode, 0, set.stderr);
+    let config = await readConfig();
+    assert.strictEqual(config.workspaceId, "wks_e2e_first");
+    assert.strictEqual(
+      config.archiveOnFinish,
+      false,
+      "update --workspace-id must also stop the schedule archiving the shared workspace",
+    );
+
+    const replaced = await ctx.paseo(
+      ["schedule", "update", id, "--workspace-id", "wks_e2e_second", "--json"],
+      { timeout: 30000 },
+    );
+    assert.strictEqual(replaced.exitCode, 0, replaced.stderr);
+    config = await readConfig();
+    assert.strictEqual(config.workspaceId, "wks_e2e_second");
+
+    // Without a clear flag a set id could never be removed, so the schedule would
+    // keep sharing that workspace for the rest of its life.
+    const cleared = await ctx.paseo(["schedule", "update", id, "--no-workspace-id", "--json"], {
+      timeout: 30000,
+    });
+    assert.strictEqual(cleared.exitCode, 0, cleared.stderr);
+    config = await readConfig();
+    assert.strictEqual(
+      config.workspaceId,
+      undefined,
+      "--no-workspace-id must drop the shared workspace",
+    );
+    // Clearing also restores archiving. Reuse is what pinned archiveOnFinish
+    // false; leaving it false would give every later run a workspace that is
+    // never archived.
+    assert.strictEqual(
+      config.archiveOnFinish,
+      true,
+      "--no-workspace-id must restore archiving so per-run workspaces are retired",
+    );
+
+    const deleted = await ctx.paseo(["schedule", "delete", id, "--json"]);
+    assert.strictEqual(deleted.exitCode, 0, deleted.stderr);
+    console.log("schedule update sets, replaces, and clears workspace reuse\n");
+  }
+
+  {
+    console.log("Test 1g: schedule rejects an empty --workspace-id");
+    const created = await ctx.paseo(
+      [
+        "schedule",
+        "create",
+        "Empty workspace id",
+        "--every",
+        "5m",
+        "--provider",
+        "claude",
+        "--cwd",
+        ctx.workDir,
+        "--workspace-id",
+        "   ",
+        "--json",
+      ],
+      { timeout: 30000 },
+    );
+    assert.notStrictEqual(created.exitCode, 0, "should fail for an empty --workspace-id");
+    const output = created.stdout + created.stderr;
+    assert(
+      output.includes("--workspace-id cannot be empty"),
+      `should explain the empty workspace id, got: ${output}`,
+    );
+    console.log("schedule rejects an empty --workspace-id\n");
+  }
+  {
+    console.log("Test 1h: schedule create warns when another schedule shares the workspace");
+    const args = (workspaceId: string) => [
+      "schedule",
+      "create",
+      "Shared workspace",
+      "--every",
+      "5m",
+      "--provider",
+      "claude",
+      "--cwd",
+      ctx.workDir,
+      "--workspace-id",
+      workspaceId,
+      "--json",
+    ];
+
+    const first = await ctx.paseo(args("wks_e2e_shared_pair"), { timeout: 30000 });
+    assert.strictEqual(first.exitCode, 0, first.stderr);
+    const firstJson = JSON.parse(first.stdout);
+
+    // Nothing excludes one schedule's run from another's, so the CLI says so
+    // instead of letting two schedules quietly share a directory.
+    const second = await ctx.paseo(args("wks_e2e_shared_pair"), { timeout: 30000 });
+    assert.strictEqual(second.exitCode, 0, second.stderr);
+    assert(
+      second.stderr.includes("already use workspace wks_e2e_shared_pair"),
+      `should warn about the shared workspace, got: ${second.stderr}`,
+    );
+    const secondJson = JSON.parse(second.stdout);
+
+    for (const id of [firstJson.id, secondJson.id]) {
+      const deleted = await ctx.paseo(["schedule", "delete", id, "--json"]);
+      assert.strictEqual(deleted.exitCode, 0, deleted.stderr);
+    }
+    console.log("schedule create warns when another schedule shares the workspace\n");
+  }
 } finally {
   await ctx.stop();
   await rm(ctx.paseoHome, { recursive: true, force: true });

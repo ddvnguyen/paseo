@@ -50,6 +50,74 @@ export function toScheduleCommandError(code: string, action: string, error: unkn
   };
 }
 
+/**
+ * Refuse to send a workspace-reuse clear to a daemon that cannot read it.
+ *
+ * Clearing reuse is a `null` in `newAgentConfig.workspaceId`. A daemon that predates
+ * the field rejects the whole update with a Zod message ("expected string, received
+ * null") that says nothing about which flag caused it, so the user would see a
+ * schema error for something they typed as `--no-workspace-id`. The capability check
+ * happens here, once, before the request goes out.
+ *
+ * COMPAT(scheduleWorkspaceReuseClear): added in v0.8.0, remove after 2027-09-30.
+ */
+export function assertDaemonSupportsWorkspaceReuseClear(client: ScheduleDaemonClient): void {
+  const features = client.getLastServerInfoMessage?.()?.features;
+  // A client that has not seen server_info yet cannot rule the daemon out, so the
+  // request goes out and the daemon has the final say.
+  if (!features) return;
+  if (features.scheduleWorkspaceReuseClear === true) return;
+  throw {
+    code: "DAEMON_TOO_OLD",
+    message:
+      "This daemon is too old to clear workspace reuse. Update the Paseo daemon, then retry.",
+  } satisfies CommandError;
+}
+
+/**
+ * Translate a daemon that rejected the null clear anyway. Reached when server_info
+ * had not arrived, so the capability check could not rule the daemon out first.
+ *
+ * COMPAT(scheduleWorkspaceReuseClear): added in v0.8.0, remove after 2027-09-30.
+ */
+export function isWorkspaceReuseClearRejection(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("workspaceId") && /expected string, received null|received null/.test(message)
+  );
+}
+
+/**
+ * Warn when another schedule already names the same workspace. Two schedules sharing
+ * one workspace run concurrently with no exclusion, so their agents can interleave in
+ * the same directory. Best effort: a list failure is not worth failing the command
+ * over, and the daemon does not serialise runs across schedules.
+ */
+export async function warnOnSharedWorkspace(
+  client: ScheduleDaemonClient,
+  workspaceId: string | undefined,
+  currentScheduleId?: string,
+): Promise<void> {
+  if (!workspaceId) return;
+  try {
+    const payload = await client.scheduleList();
+    if (payload.error || !payload.schedules) return;
+    const sharing = payload.schedules.filter(
+      (schedule) =>
+        schedule.id !== currentScheduleId &&
+        schedule.target.type === "new-agent" &&
+        schedule.target.config.workspaceId === workspaceId,
+    );
+    if (sharing.length === 0) return;
+    process.stderr.write(
+      `Warning: ${sharing.length} other schedule(s) already use workspace ${workspaceId}. ` +
+        `Their runs are not serialised against yours and can interleave in the same directory.\n`,
+    );
+  } catch {
+    // Advisory only. Never block a schedule change on a failed best-effort check.
+  }
+}
+
 export async function requireNewAgentSchedule(
   client: ScheduleDaemonClient,
   id: string,
@@ -205,9 +273,11 @@ export function parseScheduleCreateInput(options: {
         ...(resolvedProviderModel.model ? { model: resolvedProviderModel.model } : {}),
         ...(modeId ? { modeId } : {}),
         ...(thinkingOptionId ? { thinkingOptionId } : {}),
-        // Reuse is meaningless unless the workspace is not archived per run; refuse
-        // the unsafe pair at the CLI rather than at run time, so the user learns
-        // before the schedule exists rather than on its first tick.
+        // Reuse is meaningless unless the workspace survives the run, so asking for
+        // a workspaceId also pins archiveOnFinish false rather than refusing the
+        // combination. The user asked for one workspace; archiving it per run would
+        // silently give them a new one each time, which is the behaviour they were
+        // trying to avoid. The daemon re-checks the pair on every run regardless.
         ...(options.workspaceId
           ? { workspaceId: parseWorkspaceId(options.workspaceId), archiveOnFinish: false }
           : {}),
@@ -258,6 +328,8 @@ export interface ScheduleUpdateOptionsInput {
   cwd?: string;
   /** Reuse an existing workspace for every run; omit to keep per-run workspaces. */
   workspaceId?: string;
+  /** Drop workspace reuse and go back to one workspace per run. */
+  clearWorkspaceId?: boolean;
   maxRuns?: string;
   expiresIn?: string;
   clearMaxRuns?: boolean;
@@ -446,15 +518,26 @@ function buildNewAgentConfigPatch(
     }
     patch.cwd = trimmed;
   }
+  if (options.workspaceId !== undefined && options.clearWorkspaceId) {
+    throw {
+      code: "CONFLICTING_WORKSPACE_ID",
+      message: "Use either --workspace-id <id> or --no-workspace-id, not both",
+    } satisfies CommandError;
+  }
   if (options.workspaceId !== undefined) {
-    const trimmed = options.workspaceId.trim();
-    if (!trimmed) {
-      throw {
-        code: "INVALID_WORKSPACE_ID",
-        message: "--workspace-id cannot be empty; omit the flag to keep provisioning a new workspace",
-      } satisfies CommandError;
-    }
-    patch.workspaceId = trimmed;
+    // Same pairing as create: naming a workspace also stops the schedule archiving
+    // one per run. Without this an update could leave the unsafe pair in place on a
+    // schedule that was created before --workspace-id existed, or on one whose
+    // archiveOnFinish was left at its default.
+    patch.workspaceId = parseWorkspaceId(options.workspaceId);
+    patch.archiveOnFinish = false;
+  } else if (options.clearWorkspaceId) {
+    patch.workspaceId = null;
+    // Clearing reuse restores the per-run workspace behaviour, and that includes
+    // archiving each one. Reuse is what pins archiveOnFinish false; leaving it
+    // false here would rebuild the leak this feature exists to avoid — one
+    // never-archived workspace per run, accumulating for the life of the schedule.
+    patch.archiveOnFinish = true;
   }
   return Object.keys(patch).length > 0 ? patch : undefined;
 }
