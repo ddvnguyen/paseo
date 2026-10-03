@@ -70,6 +70,7 @@ import {
 } from "../diagnostic-utils.js";
 import { appendOrReplaceGrowingAssistantMessage, runProviderTurn } from "../provider-runner.js";
 import {
+  applyClaudeContextCap,
   applyClaudeToolPolicy,
   ClaudeProviderOptionsSchema,
   type ClaudeProviderOptions,
@@ -395,6 +396,18 @@ function classifyClaudeSlashCommand(commandName: string): AgentSlashCommand["kin
 type ClaudeAgentConfig = Omit<AgentSessionConfig, "providerOptions"> & {
   provider: "claude";
   providerOptions: ClaudeProviderOptions;
+  /**
+   * Provider-level context ceiling, enforced by lowering Claude Code's auto-compact window — see
+   * `applyClaudeContextCap` for the range the flag accepts and the 100k floor it cannot go below.
+   *
+   * Nothing populates this yet. `maxContextTokens` is a provider config field, and the registry
+   * applies it to the model catalog only (`applyProviderContextCap` in
+   * `provider-model-context-cap.ts`), so no harness is told. Carrying it on the session config —
+   * which is the seam the registry hands to `createSession`, and which `assertConfig` already
+   * spreads through verbatim — is what turns the catalog cap into real enforcement. Until that
+   * lands the field is undefined and no `autocompact` flag is emitted.
+   */
+  maxContextTokens?: number;
 };
 
 export interface ClaudeContentChunk {
@@ -3265,9 +3278,9 @@ class ClaudeAgentSession implements AgentSession {
   private async buildOptions(): Promise<ClaudeOptions> {
     const { thinking, effort, ultracode } = this.resolveThinkingConfig();
     const appendedSystemPrompt = this.buildAppendedSystemPrompt();
-    const providerOptions = applyClaudeToolPolicy(
-      this.config.providerOptions,
-      this.config.toolPolicy,
+    const providerOptions = applyClaudeContextCap(
+      applyClaudeToolPolicy(this.config.providerOptions, this.config.toolPolicy),
+      this.config.maxContextTokens,
     );
     const settingsOptions = this.buildSettingsOptions(providerOptions, { ultracode });
     const sdkEnv = this.buildSdkEnv();
