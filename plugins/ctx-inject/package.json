@@ -1,0 +1,22 @@
+{
+  "name": "paseo-plugin-ctx-inject",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Context-inject chip: what context was configured for an agent when its session opened",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "^0.9.2",
+    "@getpaseo/protocol": "^0.9.2",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10",
+    "zod": "4.4.3"
+  },
+  "overrides": {
+    "zod": "4.4.3"
+  }
+}

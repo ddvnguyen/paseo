@@ -32,6 +32,7 @@ import {
 } from "@/components/adaptive-modal-sheet-layout";
 import { ScrollView } from "@/components/ui/scroll-view";
 import { isWeb } from "@/constants/platform";
+import { SPACING } from "@/styles/theme";
 import { useKeyboardVisibility } from "@/hooks/use-keyboard-visibility";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AdaptiveTextInput } from "@/components/adaptive-text-input";
@@ -47,6 +48,25 @@ export const SHEET_HORIZONTAL_PADDING_SCALE = 6;
 // trailing rail is the content inset plus this padding. Rows whose trailing
 // glyph should line up with the X must reach the same rail.
 export const SHEET_HEADER_CLOSE_PADDING_SCALE = 2;
+
+/** Glyph size of the edge-to-edge floating close control. */
+const FLOATING_CLOSE_GLYPH_SIZE = 16;
+
+/** Padding around that glyph; mirrors theme.spacing[SHEET_HEADER_CLOSE_PADDING_SCALE]. */
+const FLOATING_CLOSE_PADDING = 8;
+
+/** Painted box of the floating close: the glyph plus padding on each side. */
+const FLOATING_CLOSE_BUTTON_SIZE = FLOATING_CLOSE_GLYPH_SIZE + 2 * FLOATING_CLOSE_PADDING;
+
+/**
+ * Takes the painted box up to the 44px minimum touch target without enlarging
+ * the button the caller actually sees — the same derived-inset convention the
+ * workspace label and terminal profile controls use.
+ */
+const FLOATING_CLOSE_HIT_SLOP = (44 - FLOATING_CLOSE_BUTTON_SIZE) / 2;
+
+/** Clearance between the floating close and the card's top and right edges. */
+const FLOATING_CLOSE_EDGE_INSET_SCALE = 3;
 
 export interface SheetHeaderSearch {
   onChange: (value: string) => void;
@@ -136,6 +156,20 @@ const styles = StyleSheet.create((theme) => ({
     padding: theme.spacing[SHEET_HEADER_CLOSE_PADDING_SCALE],
     borderRadius: theme.borderRadius.lg,
   },
+  // Edge-to-edge replacement for closeButton, floating over the content because
+  // there is no header bar to sit in. It gets an opaque surface fill rather than
+  // a translucent one: translucent fills are reserved for interaction states
+  // (docs/design.md), and this is a resting surface that has to stay legible
+  // over whatever the caller's content paints behind it. Placement is the
+  // floatingCloseLayer's job — this is just the painted button.
+  floatingClose: {
+    padding: FLOATING_CLOSE_PADDING,
+    borderRadius: theme.borderRadius.lg,
+    backgroundColor: theme.colors.surface2,
+  },
+  floatingClosePressed: {
+    backgroundColor: theme.colors.interactionHighlight,
+  },
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -197,6 +231,32 @@ const styles = StyleSheet.create((theme) => ({
   sheetContent: {
     padding: theme.spacing[SHEET_HORIZONTAL_PADDING_SCALE],
     gap: theme.spacing[4],
+  },
+  // Edge-to-edge reset: only zeroes the sheet's own inset, and a caller's own
+  // padding still wins because it is applied after this. Scoped to the mode so
+  // every other sheet keeps the inset it had.
+  edgeToEdgeContent: {
+    padding: 0,
+  },
+  edgeToEdgeOverlay: {
+    padding: 0,
+  },
+  // Positioning layer for the edge-to-edge close control. It spans the card's
+  // top edge and lays the button out with padding, so the button needs no
+  // offsets of its own. box-none lets touches fall through to the content
+  // underneath; zIndex keeps it painted above the body and footer, which are
+  // its later siblings and would otherwise cover it. The top padding is added
+  // by SheetHeaderView, which owns the safe-area inset.
+  floatingCloseLayer: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 1,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    paddingRight: theme.spacing[FLOATING_CLOSE_EDGE_INSET_SCALE],
+    pointerEvents: "box-none" as const,
   },
   contentGrow: {
     flexGrow: 1,
@@ -295,19 +355,34 @@ function BottomSheetVisibleContent({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * The sheet header, or — in edge-to-edge mode — the floating close control that
+ * replaces it.
+ *
+ * Edge-to-edge returns the control inside a `box-none` absolute layer instead of
+ * the header bar, and drops the bar entirely so the caller's content starts at
+ * 0,0. `layerTestID` is how the compact branch keeps its sheet testable: the bar
+ * used to carry `testID`, and the desktop branch already carries it on the
+ * overlay, so passing it here would duplicate it.
+ */
 export function SheetHeaderView({
   header,
   onClose,
   showCloseButton = true,
   testID,
+  edgeToEdge = false,
+  layerTestID,
 }: {
   header: SheetHeader;
   onClose: () => void;
   showCloseButton?: boolean;
   testID?: string;
+  edgeToEdge?: boolean;
+  layerTestID?: string;
 }) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
   const titleStyle = useMemo(
     () => [styles.title, { color: theme.colors.foreground }],
     [theme.colors.foreground],
@@ -321,6 +396,44 @@ export function SheetHeaderView({
     },
     [search],
   );
+  // Hoisted so the Pressable does not get a fresh style function every render.
+  const floatingCloseStyle = useCallback(
+    ({ pressed }: { pressed: boolean }) => [
+      styles.floatingClose,
+      pressed && styles.floatingClosePressed,
+    ],
+    [],
+  );
+  // An edge-to-edge sheet runs full-screen under the status bar on compact, so
+  // the control has to take the inset the header bar never did. SPACING is a
+  // module constant, so reading it here costs no theme subscription.
+  const floatingCloseLayerStyle = useMemo(
+    () => [styles.floatingCloseLayer, { paddingTop: insets.top + SPACING[3] }],
+    [insets.top],
+  );
+
+  if (edgeToEdge) {
+    if (!showCloseButton) return null;
+    return (
+      <View style={floatingCloseLayerStyle} testID={layerTestID}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("common.actions.close")}
+          onPress={onClose}
+          hitSlop={FLOATING_CLOSE_HIT_SLOP}
+          style={floatingCloseStyle}
+          testID="sheet-header-close"
+        >
+          {({ pressed }) => (
+            <X
+              size={FLOATING_CLOSE_GLYPH_SIZE}
+              color={pressed ? theme.colors.foreground : theme.colors.foregroundMuted}
+            />
+          )}
+        </Pressable>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.headerContainer} testID={testID}>
@@ -473,6 +586,31 @@ export interface AdaptiveModalSheetProps {
   sizeContentToCurrentSnapPoint?: boolean;
   /** Re-establishes caller-owned contexts inside the compact bottom-sheet portal. */
   contextBridge?: ContextBridge | null;
+  /**
+   * Render the body flush to the card edges with no header bar: the close
+   * control becomes a floating top-right overlay and the sheet's own content
+   * inset resets to zero. For callers that draw their own full-bleed surface
+   * and already paint their own padding.
+   */
+  edgeToEdge?: boolean;
+  /**
+   * The caller's content paints its own close control (a toolbar X, say), so the
+   * sheet's own one steps aside — on EVERY form factor, not just wide.
+   *
+   * The bar is where this control normally lives, so on a non-edge-to-edge sheet
+   * the two would simply sit side by side and the caller's would be the one a
+   * reader aims at. In `edgeToEdge` there is no bar at all: the control floats
+   * over the content, and on compact that means `insets.top + spacing` BELOW the
+   * first row of a surface that starts at 0,0. It then lands on whatever the
+   * caller painted there — a ledger's column header and timeline strip — which
+   * is what a second close control costs when the caller's already covers every
+   * state.
+   *
+   * So the caller's close has to be genuinely always-present before setting this:
+   * a fixed row, not one that scrolls away. Absent reads as false, so every
+   * existing caller keeps the control it has today.
+   */
+  surfaceOwnsClose?: boolean;
 }
 
 export function AdaptiveModalSheet({
@@ -493,6 +631,8 @@ export function AdaptiveModalSheet({
   bodyStyle,
   sizeContentToCurrentSnapPoint = true,
   contextBridge = null,
+  edgeToEdge = false,
+  surfaceOwnsClose,
 }: AdaptiveModalSheetProps) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
@@ -557,7 +697,11 @@ export function AdaptiveModalSheet({
   const desktopCardStyle = useMemo(
     () => [
       styles.desktopCard,
-      desktopHeight != null && { height: desktopHeight },
+      // An explicit height also governs the ceiling, otherwise the card's own
+      // maxHeight: "85%" silently clamps a caller asking for more and the sheet
+      // never fills the viewport. A caller that passes no height — or the same
+      // "85%" the default already was — is byte-identical to before.
+      desktopHeight != null && { height: desktopHeight, maxHeight: desktopHeight },
       desktopMaxWidth != null && { maxWidth: desktopMaxWidth },
     ],
     [desktopMaxWidth, desktopHeight],
@@ -565,6 +709,7 @@ export function AdaptiveModalSheet({
   const desktopOverlayStyle = useMemo(
     () => [
       styles.desktopOverlay,
+      edgeToEdge && styles.edgeToEdgeOverlay,
       isWeb && {
         zIndex: modalLayer,
         opacity: isWebClosing ? 0 : 1,
@@ -573,7 +718,7 @@ export function AdaptiveModalSheet({
         transitionTimingFunction: "ease",
       },
     ],
-    [isWebClosing, modalLayer],
+    [edgeToEdge, isWebClosing, modalLayer],
   );
 
   const handleWebOverlayKeyDown = useCallback(
@@ -621,30 +766,54 @@ export function AdaptiveModalSheet({
     return () => clearTimeout(timeout);
   }, [visible, isMobile, notifyNativeModalDismiss]);
 
+  const edgeToEdgeContentStyle = useMemo(
+    () => (edgeToEdge ? styles.edgeToEdgeContent : undefined),
+    [edgeToEdge],
+  );
+  // A surface that draws its own close does so on EVERY form factor. See
+  // `surfaceOwnsClose` for why the compact exception was a mistake.
+  const showSheetClose = surfaceOwnsClose !== true;
+
   if (isMobile) {
-    const sheetContent = (
-      <>
-        <SheetHeaderView header={header} onClose={onClose} testID={testID} />
-        <View style={[styles.compactStaticContent, bodyStyle]}>
-          {scrollable ? (
-            <ScrollView
-              style={styles.bottomSheetVisibleScroll}
-              contentContainerStyle={SCROLL_CONTENT_GROW}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              <View style={[styles.contentGrow, bodyClearanceStyle]}>
-                <SheetContent style={[styles.contentGrow, contentStyle]}>{children}</SheetContent>
-              </View>
-            </ScrollView>
-          ) : (
-            <View style={[styles.compactStaticContent, bodyClearanceStyle]}>
-              <SheetContent style={[styles.compactStaticContent, contentStyle]}>
+    const body = (
+      <View style={[styles.compactStaticContent, bodyStyle]}>
+        {scrollable ? (
+          <ScrollView
+            style={styles.bottomSheetVisibleScroll}
+            contentContainerStyle={SCROLL_CONTENT_GROW}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={[styles.contentGrow, bodyClearanceStyle]}>
+              <SheetContent style={[styles.contentGrow, contentStyle, edgeToEdgeContentStyle]}>
                 {children}
               </SheetContent>
             </View>
-          )}
-        </View>
+          </ScrollView>
+        ) : (
+          <View style={[styles.compactStaticContent, bodyClearanceStyle]}>
+            <SheetContent
+              style={[styles.compactStaticContent, contentStyle, edgeToEdgeContentStyle]}
+            >
+              {children}
+            </SheetContent>
+          </View>
+        )}
+      </View>
+    );
+    // In edge-to-edge the bar is gone, so the layer it would have rendered in
+    // takes over the compact branch's testID and keeps the sheet queryable.
+    const sheetContent = (
+      <>
+        <SheetHeaderView
+          header={header}
+          onClose={onClose}
+          testID={testID}
+          edgeToEdge={edgeToEdge}
+          layerTestID={testID}
+          showCloseButton={showSheetClose}
+        />
+        {body}
         {footerView}
       </>
     );
@@ -680,7 +849,12 @@ export function AdaptiveModalSheet({
     desktopHeight == null ? styles.desktopStaticContent : styles.compactStaticContent;
   const cardInner = (
     <OverlayLayerProvider layer={modalLayer}>
-      <SheetHeaderView header={header} onClose={onClose} />
+      <SheetHeaderView
+        header={header}
+        onClose={onClose}
+        edgeToEdge={edgeToEdge}
+        showCloseButton={showSheetClose}
+      />
       <View style={[scrollable ? styles.desktopScrollContainer : desktopStaticStyle, bodyStyle]}>
         {scrollable ? (
           <ScrollView
@@ -689,10 +863,14 @@ export function AdaptiveModalSheet({
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator
           >
-            <SheetContent style={[styles.contentGrow, contentStyle]}>{children}</SheetContent>
+            <SheetContent style={[styles.contentGrow, contentStyle, edgeToEdgeContentStyle]}>
+              {children}
+            </SheetContent>
           </ScrollView>
         ) : (
-          <SheetContent style={[desktopStaticStyle, contentStyle]}>{children}</SheetContent>
+          <SheetContent style={[desktopStaticStyle, contentStyle, edgeToEdgeContentStyle]}>
+            {children}
+          </SheetContent>
         )}
       </View>
       {footerView}

@@ -115,7 +115,8 @@ describe("startLogin", () => {
       expiresAt: "2030-01-01T00:00:00.000Z",
       label: "Work",
     });
-    // Output carries the login URL and the server's expiry, nothing else.
+    // Output carries the handshake key, the login URL and the server's expiry.
+    expect(result.id).toBe("work");
     expect(result.loginUrl).toContain("https://");
     expect(result.expiresAt).toBe("2030-01-01T00:00:00.000Z");
   });
@@ -144,12 +145,25 @@ describe("startLogin", () => {
 
   it("rejects an invalid id without touching the network or disk", async () => {
     const calls: Call[] = [];
-    for (const bad of ["default", "Bad Id", "", "UPPER", "x".repeat(40)]) {
+    for (const bad of ["default", "Bad Id", "UPPER", "x".repeat(40)]) {
       await expect(startLogin(bad, env(), fakeFetch(calls))).rejects.toThrow(/Invalid account id/i);
     }
     expect(calls).toHaveLength(0);
     expect(fs.existsSync(configDirFor("default"))).toBe(false);
     expect(fs.readdirSync(stateDir)).toEqual([]);
+  });
+
+  it("mints a provisional handshake key when no id is given", async () => {
+    const calls: Call[] = [];
+    const result = await startLogin(undefined, env(), fakeFetch(calls), "My Label");
+
+    expect(result.id).toMatch(/^pending-[0-9a-f]{16}$/);
+    expect(fs.statSync(path.join(stateDir, "accounts", result.id)).isDirectory()).toBe(true);
+    const pending = JSON.parse(
+      fs.readFileSync(path.join(stateDir, "accounts", result.id, ".login-pending.json"), "utf8"),
+    );
+    expect(pending).toMatchObject({ label: "My Label" });
+    expect(calls).toHaveLength(1);
   });
 });
 
@@ -220,7 +234,7 @@ describe("review hardening", () => {
     await startLogin("work", env(), fakeFetch([]));
     fs.writeFileSync(accountsFilePath(env()), "{corrupt");
     await expect(pollLogin("work", env(), fakeFetch([], successStatusHandler))).rejects.toThrow(
-      /accounts add work/,
+      /accounts add user-1/,
     );
     expect(fs.existsSync(path.join(configDirFor("work"), "credentials.json"))).toBe(true);
     expect(fs.existsSync(pendingPath())).toBe(false);
@@ -366,9 +380,10 @@ describe("pollLogin", () => {
     });
     expect(typeof credentials.default.fingerprintId).toBe("string");
 
-    // Account registered in accounts.json via the atomic add function.
+    // Account registered under the API-sourced id (never the handshake key),
+    // keeping the explicit start label.
     const registered = JSON.parse(fs.readFileSync(accountsFilePath(env()), "utf8"));
-    expect(registered).toEqual([{ id: "work", label: "Work", configDir: configDirFor("work") }]);
+    expect(registered).toEqual([{ id: "user-1", label: "Work", configDir: configDirFor("work") }]);
 
     // Pending handshake consumed.
     expect(fs.existsSync(path.join(configDirFor("work"), ".login-pending.json"))).toBe(false);
@@ -403,6 +418,95 @@ describe("pollLogin", () => {
     };
     expect(await pollLogin("work", env(), failing)).toEqual({ status: "pending" });
     expect(fs.existsSync(path.join(configDirFor("work"), ".login-pending.json"))).toBe(true);
+  });
+});
+
+describe("label-only login (derived account id)", () => {
+  async function loginToSuccess(label?: string, user: Record<string, unknown> = SUCCESS_USER) {
+    const calls: Call[] = [];
+    const started =
+      label === undefined
+        ? await startLogin(undefined, env(), fakeFetch(calls))
+        : await startLogin(undefined, env(), fakeFetch(calls), label);
+    const result = await pollLogin(
+      started.id,
+      env(),
+      fakeFetch([], () => json(200, { user })),
+    );
+    return { started, result };
+  }
+
+  it("registers the API user id with the API name when no label is given", async () => {
+    const { started, result } = await loginToSuccess();
+
+    expect(result).toEqual({ status: "success", name: "Test User", email: "user@example.com" });
+    const registered = JSON.parse(fs.readFileSync(accountsFilePath(env()), "utf8"));
+    expect(registered).toEqual([
+      {
+        id: "user-1",
+        label: "Test User",
+        configDir: path.join(stateDir, "accounts", started.id),
+      },
+    ]);
+  });
+
+  it("keeps an explicit start label over the API name", async () => {
+    const { started } = await loginToSuccess("My Label");
+
+    const registered = JSON.parse(fs.readFileSync(accountsFilePath(env()), "utf8"));
+    expect(registered).toEqual([
+      { id: "user-1", label: "My Label", configDir: path.join(stateDir, "accounts", started.id) },
+    ]);
+  });
+
+  it("falls back to the email local-part when the API id is not usable", async () => {
+    const { result } = await loginToSuccess(undefined, {
+      id: "!!!",
+      name: "",
+      email: "bob@example.com",
+      authToken: "secret-token-value",
+    });
+
+    expect(result).toEqual({
+      status: "success",
+      name: "bob@example.com",
+      email: "bob@example.com",
+    });
+    const registered = JSON.parse(fs.readFileSync(accountsFilePath(env()), "utf8"));
+    expect(registered.map((account: { id: string }) => account.id)).toEqual(["bob"]);
+  });
+
+  it("suffixes the id when another account already holds the derived one", async () => {
+    const otherDir = path.join(stateDir, "other");
+    fs.mkdirSync(otherDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(otherDir, "credentials.json"),
+      JSON.stringify({ default: { id: "someone-else", authToken: "t" } }),
+    );
+    fs.writeFileSync(
+      accountsFilePath(env()),
+      JSON.stringify([{ id: "user-1", configDir: otherDir }]),
+    );
+
+    await loginToSuccess();
+
+    const registered = JSON.parse(fs.readFileSync(accountsFilePath(env()), "utf8"));
+    expect(registered.map((account: { id: string }) => account.id)).toEqual(["user-1", "user-1-2"]);
+  });
+
+  it("a re-login by the same API user refreshes credentials in place", async () => {
+    const first = await loginToSuccess();
+    const homeDir = path.join(stateDir, "accounts", first.started.id);
+    expect(fs.existsSync(path.join(homeDir, "credentials.json"))).toBe(true);
+
+    const second = await loginToSuccess();
+    expect(second.started.id).not.toBe(first.started.id);
+
+    // Same registration, credentials refreshed where they were; the second
+    // provisional handshake dir is gone.
+    const registered = JSON.parse(fs.readFileSync(accountsFilePath(env()), "utf8"));
+    expect(registered).toEqual([{ id: "user-1", label: "Test User", configDir: homeDir }]);
+    expect(fs.existsSync(path.join(stateDir, "accounts", second.started.id))).toBe(false);
   });
 });
 

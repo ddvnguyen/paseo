@@ -23,8 +23,7 @@ export function startLogin({
   return runAdapterJson([
     "accounts",
     "login-start",
-    "--id",
-    id,
+    ...(id ? ["--id", id] : []),
     ...(label ? ["--label", label] : []),
   ]);
 }

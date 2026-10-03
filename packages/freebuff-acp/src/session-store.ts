@@ -19,6 +19,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import type { RunStateCheckpoint } from "./rewind.js";
+
 export interface PersistedFreebuffSession {
   sessionId: string;
   cwd: string;
@@ -32,6 +34,8 @@ export interface PersistedFreebuffSession {
   /** Short conversation title derived from the first prompt. */
   title?: string;
   runState: Record<string, unknown> | null;
+  /** Pre-turn conversation snapshots for rewind (absent in files from older builds). */
+  checkpoints?: RunStateCheckpoint[];
   updatedAt: string;
 }
 
@@ -177,11 +181,27 @@ export function loadPersistedSession(
         record.runState && typeof record.runState === "object"
           ? (record.runState as Record<string, unknown>)
           : null,
+      ...(Array.isArray(record.checkpoints)
+        ? { checkpoints: record.checkpoints.filter(isRunStateCheckpoint) }
+        : {}),
       updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : "",
     };
   } catch {
     return null;
   }
+}
+
+function isRunStateCheckpoint(value: unknown): value is RunStateCheckpoint {
+  if (typeof value !== "object" || value === null) return false;
+  const c = value as Partial<RunStateCheckpoint>;
+  return (
+    typeof c.turn === "number" &&
+    Number.isInteger(c.turn) &&
+    c.turn >= 1 &&
+    (c.runState === null || typeof c.runState === "object") &&
+    typeof c.promptText === "string" &&
+    typeof c.createdAt === "string"
+  );
 }
 
 /**

@@ -85,7 +85,7 @@ import { setAssistantMarkdownBlockHeight } from "@/utils/assistant-message-heigh
 import { isRenderProfileEnabled } from "@/utils/render-profiler";
 import { getAgentAttachmentPillContent } from "@/attachments/attachment-pill-content";
 import { PlanCard } from "./plan-card";
-import { useToolCallSheet } from "./tool-call-sheet";
+import { useToolCallSheet, type ToolCallSheetData } from "./tool-call-sheet";
 import { ToolCallDetailsContent } from "./tool-call-details";
 import {
   AssistantInlineCodePathLink,
@@ -3135,7 +3135,8 @@ export const ToolCall = memo(function ToolCall({
   forceInline = false,
   maxDetailHeight = 400,
 }: ToolCallProps) {
-  const { openToolCall } = useToolCallSheet();
+  const { openToolCall, updateToolCall } = useToolCallSheet();
+  const sheetOwnerRef = useRef<object>({});
   const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false);
 
   const isMobile = useIsCompactFormFactor();
@@ -3176,31 +3177,41 @@ export const ToolCall = memo(function ToolCall({
     return () => onOpenFilePath(openFilePath);
   }, [presentation.openFilePath, onOpenFilePath]);
 
+  const sheetData = useMemo<ToolCallSheetData>(
+    () => ({
+      toolName,
+      displayName: presentation.displayName,
+      summary: presentation.summary,
+      detail: effectiveDetail,
+      errorText: presentation.errorText,
+      icon: presentation.icon,
+      showLoadingSkeleton: presentation.isLoadingDetails,
+    }),
+    [
+      toolName,
+      presentation.displayName,
+      presentation.summary,
+      presentation.errorText,
+      presentation.icon,
+      presentation.isLoadingDetails,
+      effectiveDetail,
+    ],
+  );
+
   const handleToggle = useCallback(() => {
     if (!shouldRenderInline) {
-      openToolCall({
-        toolName,
-        displayName: presentation.displayName,
-        summary: presentation.summary,
-        detail: effectiveDetail,
-        errorText: presentation.errorText,
-        icon: presentation.icon,
-        showLoadingSkeleton: presentation.isLoadingDetails,
-      });
+      openToolCall(sheetData, sheetOwnerRef.current);
     } else {
       setIsExpanded((prev) => !prev);
     }
-  }, [
-    shouldRenderInline,
-    openToolCall,
-    toolName,
-    presentation.displayName,
-    presentation.summary,
-    presentation.errorText,
-    presentation.icon,
-    presentation.isLoadingDetails,
-    effectiveDetail,
-  ]);
+  }, [shouldRenderInline, openToolCall, sheetData]);
+
+  // The sheet holds a copy of the data from when it was opened. Keep it current while this row
+  // streams (thinking text, running command output); a no-op unless this row owns the open sheet.
+  useEffect(() => {
+    if (shouldRenderInline) return;
+    updateToolCall(sheetOwnerRef.current, sheetData);
+  }, [shouldRenderInline, updateToolCall, sheetData]);
 
   useEffect(() => {
     if (!onInlineDetailsHoverChange || !shouldRenderInline || isExpanded) {

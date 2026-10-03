@@ -1,10 +1,10 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
-import { SettingsAction, SettingsRow, SettingsSection } from "@getpaseo/plugin/client/ui";
+import { SettingsSection } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
-import { Text, View } from "react-native";
+import { Text } from "react-native";
 
 import {
   freebuffAccountDelete,
@@ -13,18 +13,11 @@ import {
   freebuffAccountSetDefault,
   freebuffSessionEnd,
 } from "../shared/accounts";
-import { AccountCard } from "./account-card";
+import { AccountRow } from "./account-row";
 import { AddAccountSection } from "./add-account";
-import { CliPreferencesSection } from "./cli-preferences";
-import {
-  formatResetTime,
-  type QuotaAccount,
-  quotaRatio,
-  quotaUsedPercent,
-  removeAccountMessage,
-  walletLine,
-} from "./account-format";
+import { removeAccountMessage } from "./account-format";
 import { ConfirmModal } from "./confirm-modal";
+import { ModelsSection } from "./models-section";
 
 const END_SESSION_MESSAGES = {
   ended: "Session ended. The next prompt opens a new session (5 Freebucks).",
@@ -44,55 +37,6 @@ type DeleteKey = keyof typeof DELETE_MESSAGES;
 interface PendingAction {
   kind: "end-session" | "delete";
   accountId: string;
-}
-
-/** One row of the Quota section: usage bar, remaining/limit, reset, wallet. */
-function QuotaRow({
-  account,
-  theme,
-}: {
-  account: QuotaAccount;
-  theme: PluginSurfaceProps["theme"];
-}) {
-  const percent = quotaUsedPercent(account);
-  const reset = formatResetTime(account.status?.resetAt);
-  const styles = useMemo(
-    () => ({
-      stack: { gap: 4 },
-      muted: { color: theme.colors.foregroundMuted },
-      barTrack: {
-        height: 4,
-        borderRadius: 2,
-        backgroundColor: theme.colors.border,
-      },
-      barFill: {
-        height: 4,
-        borderRadius: 2,
-        width: `${percent ?? 0}%`,
-        backgroundColor: theme.colors.accent,
-      },
-    }),
-    [theme, percent],
-  );
-  return (
-    <SettingsRow label={account.label} testID={`freebuff-quota-${account.id}`}>
-      <View style={styles.stack}>
-        {percent != null ? (
-          <View style={styles.barTrack}>
-            <View style={styles.barFill} />
-          </View>
-        ) : null}
-        <Text style={styles.muted}>
-          {percent != null ? `${percent}% used · ` : ""}
-          {`${quotaRatio(account)} Freebucks left today`}
-        </Text>
-        {reset ? <Text style={styles.muted}>{`Resets ${reset}`}</Text> : null}
-        {account.status?.walletBalance != null ? (
-          <Text style={styles.muted}>{walletLine(account).replace(" · ", "")}</Text>
-        ) : null}
-      </View>
-    </SettingsRow>
-  );
 }
 
 /** Freebuff settings screen under Settings → Plugins → Freebuff. */
@@ -198,14 +142,12 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
   });
 
   const accounts = useMemo(() => accountsQuery.data?.accounts ?? [], [accountsQuery.data]);
-  const existingIds = useMemo(() => accounts.map((account) => account.id), [accounts]);
   const styles = useMemo(
     () => ({
       muted: { color: theme.colors.foregroundMuted },
     }),
     [theme],
   );
-  const refresh = useCallback(() => void accountsQuery.refetch(), [accountsQuery]);
   const closeAction = useCallback(() => setPendingAction(null), []);
   const handleConfirm = useCallback(() => {
     if (!pendingAction) return;
@@ -236,10 +178,7 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
 
   return (
     <>
-      <SettingsSection
-        title="Quota"
-        info="Daily Freebucks per account, reset time and wallet balance."
-      >
+      <SettingsSection title="Accounts" info="Freebuff accounts registered on this host.">
         {accountsQuery.isPending ? <Text style={styles.muted}>Loading accounts…</Text> : null}
         {accountsQuery.isError ? (
           <Text accessibilityRole="alert">{accountsQuery.error.message}</Text>
@@ -248,12 +187,7 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
           <Text style={styles.muted}>No accounts registered.</Text>
         ) : null}
         {accounts.map((account) => (
-          <QuotaRow key={account.id} account={account} theme={theme} />
-        ))}
-      </SettingsSection>
-      <SettingsSection title="Accounts" info="Freebuff accounts registered on this host.">
-        {accounts.map((account) => (
-          <AccountCard
+          <AccountRow
             key={account.id}
             account={account}
             theme={theme}
@@ -268,10 +202,9 @@ export function FreebuffSettings({ theme, layout }: PluginSurfaceProps) {
             onRename={handleRename}
           />
         ))}
-        <SettingsAction label="Accounts" actionLabel="Refresh" onPress={refresh} />
       </SettingsSection>
-      <AddAccountSection theme={theme} existingIds={existingIds} />
-      <CliPreferencesSection accounts={accounts} />
+      <AddAccountSection theme={theme} compact={layout.compact} />
+      <ModelsSection theme={theme} />
       <ConfirmModal
         title={pendingIsEndSession ? "End session" : "Remove account"}
         message={

@@ -1,6 +1,9 @@
 import type { ModelInfo, SessionModelState } from "@agentclientprotocol/sdk";
 
+import { credentialsForAccount, findAccount } from "./accounts.js";
 import type { AccountStatus } from "./account.js";
+import { fetchAccountStatus } from "./account.js";
+import { readDisabledModels } from "./disabled-models.js";
 import { DEFAULT_FREEBUFF_MODEL, FREEBUFF_AGENT_ID_BY_MODEL } from "./freebuff-agent.js";
 
 /**
@@ -52,6 +55,62 @@ export const FREEBUFF_MODEL_IDS: ReadonlySet<string> = new Set(
 );
 
 /**
+ * One catalog row for the `models list` surface: display info, the
+ * probe-sourced open-session price (undefined when the probe is unreachable —
+ * prices are never hardcoded), and whether the host may still offer it.
+ */
+export interface ModelRow {
+  id: string;
+  name: string;
+  tagline: string;
+  /** Cost to open a session, from the status probe; undefined when unknown. */
+  priceFreebucks?: number;
+  /** How long a fresh seat lasts (FREEBUFF_SEAT_LIFETIME_MS default in turn.ts). */
+  sessionLengthMs: number;
+  /** Server note on this model's price (peak/off-peak, trials); undefined when none. */
+  priceNotice?: string;
+  enabled: boolean;
+}
+
+/** Fresh-seat lifetime a reported price buys, in milliseconds. */
+export const MODEL_SESSION_LENGTH_MS = 3_600_000;
+
+/** Every catalog model with its price (when known) and enabled flag. */
+export function listModels(
+  env: NodeJS.ProcessEnv = process.env,
+  status: AccountStatus | null = null,
+): ModelRow[] {
+  const disabled = new Set(readDisabledModels(env));
+  return Object.keys(FREEBUFF_AGENT_ID_BY_MODEL).map((modelId) => {
+    const row: ModelRow = {
+      id: modelId,
+      name: MODEL_CATALOG[modelId]?.name ?? modelId,
+      tagline: MODEL_CATALOG[modelId]?.tagline ?? "Freebuff free-tier model",
+      sessionLengthMs: MODEL_SESSION_LENGTH_MS,
+      enabled: !disabled.has(modelId),
+    };
+    const price = status?.prices[modelId];
+    if (price !== undefined) row.priceFreebucks = price;
+    const notice = status?.priceNotices[modelId];
+    if (notice !== undefined) row.priceNotice = notice;
+    return row;
+  });
+}
+
+/**
+ * Catalog rows with prices from the default account's status probe. Rows are
+ * still listed (priceless) when no account can reach the server.
+ */
+export async function listModelsWithPrices(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ModelRow[]> {
+  const account = findAccount(undefined, env);
+  const token = account ? credentialsForAccount(account, env)?.apiKey : undefined;
+  const status = token ? await fetchAccountStatus(token) : null;
+  return listModels(env, status);
+}
+
+/**
  * The model a fresh session starts on: FREEBUFF_MODEL (passed through even
  * when it is newer than the bundled catalog), else the default.
  */
@@ -62,11 +121,26 @@ export function initialModelId(env: NodeJS.ProcessEnv): string {
 export function modelState(
   currentModelId: string,
   status: AccountStatus | null = null,
+  env: NodeJS.ProcessEnv = process.env,
 ): SessionModelState {
+  const disabled = new Set(readDisabledModels(env));
   return {
-    availableModels: status ? catalogModels(status) : FREEBUFF_MODELS,
+    availableModels: catalogModels(status).filter((model) => !disabled.has(model.modelId)),
     currentModelId: FREEBUFF_MODEL_IDS.has(currentModelId)
       ? currentModelId
       : DEFAULT_FREEBUFF_MODEL,
   };
+}
+
+/**
+ * Reject a model for NEW selection: unknown ids and disabled models. Running
+ * sessions keep their model — this only gates newSession/setSessionModel.
+ */
+export function assertModelSelectable(modelId: string, env: NodeJS.ProcessEnv = process.env): void {
+  if (!FREEBUFF_MODEL_IDS.has(modelId)) throw new Error(`Unknown model: ${modelId}`);
+  if (readDisabledModels(env).includes(modelId)) {
+    throw new Error(
+      `Model "${modelId}" is disabled (re-enable it with: models set-enabled --id "${modelId}" --enabled true).`,
+    );
+  }
 }

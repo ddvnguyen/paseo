@@ -745,6 +745,107 @@ describe("runAcpProvider", () => {
     await connection.close();
   });
 
+  it("rewinds the conversation to an earlier user turn via session.revert (owner directive)", async () => {
+    // The adapter (freebuff-acp) owns the actual conversation state; this
+    // harness asserts the bridge contract: capability advertisement, revert
+    // token → user-turn ordinal mapping, and the extMethod round-trip.
+    const harness = connectorHarness({
+      handleMessage(instance, message) {
+        if (!("method" in message) || message.method !== "freebuff/rewindToUserTurn") return false;
+        const request = message as AcpRequestMessage;
+        const params = request.params as { sessionId?: string; turn?: number } | undefined;
+        instance.respond(request, {
+          replays: (params?.turn ?? 0) * 2 - 2,
+          remainingTurns: (params?.turn ?? 1) - 1,
+        });
+        return true;
+      },
+    });
+    const registration = runAcpProvider({
+      id: "rewind-acp",
+      label: "Rewind ACP",
+      connector: harness.connector,
+    });
+    const connection = await registration.connect({
+      versions: [1],
+      capabilities: ["prompt.message", "session.revert.conversation"],
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    await connection.send(openInput());
+    await waitForEvent(events, (event) => event.type === "session.ready");
+    expect(connection.capabilities).toContain("session.revert.conversation");
+
+    // Two real prompts → user turns 1 and 2, each carrying a revert token.
+    for (const clientMessageId of ["first", "second"]) {
+      await connection.send({
+        type: "session.prompt",
+        sessionId: "session-1",
+        prompt: {
+          clientMessageId,
+          delivery: "auto",
+          input: { type: "message", content: [{ type: "text", text: clientMessageId }] },
+        },
+      });
+      await waitForEvent(
+        events,
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === `acp:${clientMessageId}` &&
+          event.state === "completed",
+      );
+    }
+    const userItems = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "user_message" ? [event.item] : [],
+    );
+    expect(userItems).toHaveLength(2);
+    expect(userItems[0]?.revertToken).toEqual({ kind: "freebuff-user-turn", turn: 1 });
+    expect(userItems[1]?.revertToken).toEqual({ kind: "freebuff-user-turn", turn: 2 });
+
+    // Rewind to turn 2: the host sends the token back; the bridge maps it to
+    // ordinal 2 and drives the adapter's extension method.
+    await connection.send({
+      type: "session.revert",
+      requestId: "revert-1",
+      sessionId: "session-1",
+      token: { kind: "freebuff-user-turn", turn: 2 },
+      scope: "conversation",
+    });
+    await waitForEvent(events, (event) => event.type === "request.completed");
+    const rewindRequest = harness.instances[1]!.requests.find(
+      (request) => request.method === "freebuff/rewindToUserTurn",
+    );
+    expect(rewindRequest?.params).toMatchObject({ turn: 2 });
+
+    // Unknown tokens and file scope fail without reaching the adapter.
+    await connection.send({
+      type: "session.revert",
+      requestId: "revert-2",
+      sessionId: "session-1",
+      token: { kind: "freebuff-user-turn", turn: 99 },
+      scope: "conversation",
+    });
+    await waitForEvent(events, (event) => event.type === "request.failed");
+    // Files scope is not advertised: admission rejects before any adapter call.
+    await expect(
+      connection.send({
+        type: "session.revert",
+        requestId: "revert-3",
+        sessionId: "session-1",
+        token: { kind: "freebuff-user-turn", turn: 1 },
+        scope: "files",
+      }),
+    ).rejects.toThrow(/session\.revert\.files/);
+    const failedCount = () => events.filter((event) => event.type === "request.failed").length;
+    await expect.poll(failedCount, { timeout: 3_000 }).toBe(1);
+    expect(
+      harness.instances[1]!.requests.filter(
+        (request) => request.method === "freebuff/rewindToUserTurn",
+      ),
+    ).toHaveLength(1);
+    await connection.close();
+  });
+
   it("does not claim exact permission policy, listing, image, or configuration support", async () => {
     const executable = await fakeAcp(basicAgent);
     const { connection, events } = await connect(executable, [
