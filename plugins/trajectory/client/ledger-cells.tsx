@@ -4,7 +4,7 @@ import type { TextStyle, ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { formatElapsedSeconds } from "../shared/dsh/record.js";
 import type { TrajectoryCellProps } from "../shared/dsh/record.js";
-import { useRowElapsedMs } from "./use-elapsed-ticker.js";
+import { useOpenElapsedMs } from "./use-elapsed-ticker.js";
 
 /**
  * Ledger row primitives, laid out as a virtual table (T3-B).
@@ -23,15 +23,17 @@ import { useRowElapsedMs } from "./use-elapsed-ticker.js";
  * outside its per-kind branch, so a Message row carries its time like a Tool
  * row does). It used to live inside STATS and only for tool rows, which left the
  * most common row in the ledger — a streamed assistant message — with no time at
- * all. A row still running ticks: see `useRowElapsedMs`.
+ * all. A row still running ticks: see `useOpenElapsedMs`.
  */
 
 /**
  * Column widths, shared by `LedgerColumnHeader` and every row.
  *
  * TIME fits `HH:MM:SS` plus a little slack. TYPE fits the widest kind tag.
- * STATS fits `token: In 1,234(56) / out 789`. DUR fits the widest duration tier
- * (`1m23s`, and `999 ms` on the ms tier). CONTEXT takes the remainder.
+ * STATS fits `token: In 1,234(56) / out 789`. DUR fits the widest duration tier,
+ * which is the no-hour one: `600m0s` for a ten-hour call, five characters, and
+ * the reason the column clips rather than wraps (see `DurationText`). CONTEXT
+ * takes the remainder, and the width test pins what is left of a phone.
  */
 export function columnLayout(compact: boolean): {
   rail: number;
@@ -249,11 +251,17 @@ export function formatClockTime(startedAt: number | null | undefined): string {
   return match?.[1] ?? "—";
 }
 
-/** Own-duration text: the `—` when unknown (in-flight), else the shared tiers. */
+/**
+ * Own-duration text: the `—` when unknown (in-flight), else the shared tiers.
+ *
+ * `numberOfLines={1}` because this sits in a FIXED-width column: the tiers have
+ * no hour bucket, so a long call reads "600m0s", and a wrapped duration would
+ * make one row two lines tall while every other cell in the row stays one.
+ */
 export function DurationText(props: { timeSeconds: number | null; theme: PluginTheme }) {
   const { timeSeconds, theme } = props;
   return (
-    <Text style={monoStyles(theme)} testID="duration-text">
+    <Text numberOfLines={1} style={monoStyles(theme)} testID="duration-text">
       {formatElapsedSeconds(timeSeconds)}
     </Text>
   );
@@ -465,14 +473,14 @@ export function TrajectoryCellRow(props: {
   // increases monotonically down the list — which is exactly what a zebra needs.
   // No extra prop, and it stays correct as turns stream in.
   const zebraStep: 0 | 1 = cell.index % 2 === 1 ? 1 : 0;
-  // The row's own running time, in ms. Settled rows read their recorded
-  // duration; an open row has no end yet, so this is the one place the row
-  // consults a clock (and the hook runs no timer at all while nothing is open).
-  const elapsedMs = useRowElapsedMs({
-    open: cell.open === true,
-    startedAt: cell.startedAt,
-    recordedMs: cell.timeSeconds === null ? null : cell.timeSeconds * 1_000,
-  });
+  // An open row has no end yet, so its running time comes from a clock; a
+  // settled row keeps the duration the recorder measured, formatted straight from
+  // its own seconds. Routing the settled value through milliseconds and back
+  // would floor a hair high now and then (2.4 * 1000 is 2400.0000000000005), and
+  // a duration that reads a millisecond more than it took is the one number a
+  // ledger must not overstate.
+  const openMs = useOpenElapsedMs(cell.open === true, cell.startedAt);
+  const elapsedSeconds = openMs === null ? cell.timeSeconds : openMs / 1_000;
   const styles = useMemo(
     () => cellStyles(theme, cell.isError === true, columns, zebraStep, cell.kind),
     [theme, cell.isError, columns, zebraStep, cell.kind],
@@ -510,10 +518,7 @@ export function TrajectoryCellRow(props: {
         <StatsCell cell={cell} theme={theme} />
       </View>
       <View style={styles.dur} testID="col-dur">
-        <DurationText
-          timeSeconds={elapsedMs === null ? cell.timeSeconds : elapsedMs / 1_000}
-          theme={theme}
-        />
+        <DurationText timeSeconds={elapsedSeconds} theme={theme} />
       </View>
     </View>
   );

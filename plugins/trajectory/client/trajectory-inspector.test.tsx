@@ -137,7 +137,7 @@ describe("trajectory inspector", () => {
     // 2.4s floors to "2s" — the panel shares the ledger's formatter.
     expect(text("inspector-duration")).toBe("2s");
     expect(text("inspector-status-value")).toBe("Completed");
-    expect(text("inspector-timing-source")).toBe("Ledger timestamps");
+    expect(text("inspector-timing-source")).toBe("Recorder clock (call → result)");
     // dsh's Payload, at the fidelity the ledger records: the arguments summary.
     expect(text("inspector-args")).toBe("npm test");
     expect(text("inspector-output")).toContain("1,520 chars");
@@ -181,7 +181,7 @@ describe("trajectory inspector", () => {
     try {
       render(OPEN_ROW);
       expect(text("inspector-status-value")).toBe("Pending");
-      expect(text("inspector-timing-source")).toBe("Ledger timestamps (running)");
+      expect(text("inspector-timing-source")).toBe("Recorder clock (running)");
       expect(text("inspector-duration")).toBe("5s");
       act(() => {
         vi.advanceTimersByTime(4_000);

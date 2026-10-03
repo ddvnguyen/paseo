@@ -34,31 +34,31 @@ export function useLiveElapsedMs(live: boolean, intervalMs = 1_000): number | nu
 }
 
 /**
- * A row's own running time in MILLISECONDS, live while the row is open.
+ * How long an OPEN row has been running, in MILLISECONDS, or null when it is not
+ * open.
  *
- * Milliseconds, not seconds: every consumer downstream formats milliseconds (the
- * ledger's duration tiers, dsh's ms formatter), so a seconds return would put a
- * factor of 1000 between two adjacent lines and make "5 ms" out of five seconds.
+ * There is deliberately no "settled duration" input: a settled row's duration is
+ * a recorded measurement and belongs to whoever recorded it. This hook answers
+ * one question — "how long has the thing still running been running" — and it is
+ * the only place in the plugin that reads a clock, so there is exactly one rule
+ * about when that is allowed: never for a row that has already ended.
  *
- * A settled row shows its recorded own duration (null = unknown = the dsh em
- * dash). An OPEN row has no end yet, so the honest number is the time since it
- * started — and it is the only case where the clock is consulted.
+ * Milliseconds, because that is the unit every duration formatter downstream
+ * takes. A seconds return would put a factor of 1000 between this and
+ * `formatDurationMillis`, and "5 ms" out of five seconds is the kind of bug that
+ * survives review because it looks like a rounding.
  *
  * @param open Whether the row is still running.
  * @param startedAt Epoch ms the row started, when known.
- * @param recordedMs The row's own recorded duration, when settled.
- * @returns Milliseconds, or null when neither a live clock nor a duration exists.
+ * @returns Elapsed ms, or null when the row is not open or never started.
  */
-export function useRowElapsedMs(input: {
-  open: boolean;
-  startedAt: number | null | undefined;
-  recordedMs: number | null;
-}): number | null {
-  const { open, startedAt, recordedMs } = input;
+export function useOpenElapsedMs(
+  open: boolean,
+  startedAt: number | null | undefined,
+): number | null {
   const nowMs = useLiveElapsedMs(open && typeof startedAt === "number");
-  if (!open || nowMs === null || typeof startedAt !== "number") return recordedMs;
-  const elapsed = nowMs - startedAt;
-  // A clock that reads behind the row's start (clock skew between the daemon and
-  // this device) must not produce a negative duration in a column of positives.
-  return Math.max(0, elapsed);
+  if (!open || nowMs === null || typeof startedAt !== "number") return null;
+  // A viewer clock behind the daemon's stamp must not produce a negative
+  // duration in a column of positives.
+  return Math.max(0, nowMs - startedAt);
 }

@@ -18,7 +18,7 @@ import {
   toolArgs,
   totalDuration,
 } from "./inspector-fields.js";
-import { useRowElapsedMs } from "./use-elapsed-ticker.js";
+import { useOpenElapsedMs } from "./use-elapsed-ticker.js";
 
 /**
  * Row inspector (T2.3, dsh details-panel parity, observer-only).
@@ -42,6 +42,11 @@ import { useRowElapsedMs } from "./use-elapsed-ticker.js";
  * row's own facts. `inspector-fields.ts` owns every value decision; this file
  * owns the layout.
  *
+ * `turn id`, not `turn`: providers reuse turn ids across sessions (QC r20
+ * measured `opencode-turn-0` on two different turns), and the list numbers turns
+ * positionally, so this is the raw id and the label says so. Anyone matching a
+ * panel to a header wants the header's number, which the ledger owns.
+ *
  * Message text is a DELTA summary by default. One assistant message arrives as
  * many ledger rows, so opening the inspector on any of them must not dump the
  * whole message; the full resolved text sits behind one button.
@@ -62,11 +67,7 @@ export function TrajectoryInspector(props: {
   const { row, compact, theme, resolvedText, onClose, testID } = props;
   // One clock for the panel: an open row's duration is the only value here that
   // moves, and it moves in the row too, so both read the same hook.
-  const elapsedMs = useRowElapsedMs({
-    open: row !== null && row.open === true,
-    startedAt: row?.timeMs ?? null,
-    recordedMs: row?.durationMs ?? null,
-  });
+  const openMs = useOpenElapsedMs(row !== null && row.open === true, row?.timeMs ?? null);
   if (row === null) return null;
   return (
     <View
@@ -95,8 +96,8 @@ export function TrajectoryInspector(props: {
         </Text>
       </Field>
       <StartedAtField epochMs={row.timeMs} theme={theme} />
-      <TimingFields row={row} elapsedMs={elapsedMs} theme={theme} />
-      <Field label="turn" theme={theme} testID="inspector-turn">
+      <TimingFields row={row} openMs={openMs} theme={theme} />
+      <Field label="turn id" theme={theme} testID="inspector-turn">
         <Text style={valueStyles(theme)}>{row.turnId ?? "—"}</Text>
       </Field>
       <Field label="seq" theme={theme} testID="inspector-seq">
@@ -150,10 +151,11 @@ export function TrajectoryInspector(props: {
  */
 function TimingFields(props: {
   row: TrajectoryFoldRow;
-  elapsedMs: number | null;
+  /** Live ms for an open row; null once it has settled. */
+  openMs: number | null;
   theme: PluginTheme;
 }) {
-  const { row, elapsedMs, theme } = props;
+  const { row, openMs, theme } = props;
   if (row.kind === "message") {
     return (
       <>
@@ -176,7 +178,7 @@ function TimingFields(props: {
     <>
       <Field label="duration" theme={theme} testID="inspector-duration">
         <Text style={valueStyles(theme)}>
-          {formatDurationMillis(elapsedMs === null ? row.durationMs : elapsedMs)}
+          {formatDurationMillis(openMs === null ? row.durationMs : openMs)}
         </Text>
       </Field>
       <Field label="timing source" theme={theme} testID="inspector-timing-source">

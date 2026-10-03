@@ -279,8 +279,14 @@ function toolRow(event: TrajectoryEvent, call: OpenToolCall | null): TrajectoryF
     // spans call->result, so pairing it with the result stamp made every tool
     // look like it started when it finished (and put the group's wall span one
     // duration too late). dsh anchors a tool cell at `callTime` for the same
-    // reason (dsh layout.ts:454). An orphan terminal with no observed call has no
-    // call stamp, so its own event time is the only honest anchor.
+    // reason (dsh layout.ts:437 for the cell's absTime, :455 for startedAt).
+    //
+    // A result whose call the recorder never observed does reach here — it
+    // backfills a `tool/call` (flagged `data.backfilled`) immediately before the
+    // result — so this fallback fires on a reconstructed call, and the stamp it
+    // uses is the reconstruction instant rather than a true start. Nothing else
+    // is available at that point, and the alternative (pretending it never
+    // started) would lose the row's position in the list.
     timeMs: call?.timeMs ?? timeOf(event),
     kind: "tool",
     label: toolLabel(name, argSummary),

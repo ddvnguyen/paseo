@@ -416,11 +416,33 @@ describe("ledger cells", () => {
     expect(wide.type).toBeGreaterThan(0);
     expect(wide.stats).toBeGreaterThan(0);
     expect(wide.dur).toBeGreaterThan(0);
-    // Compact must still fit its fixed columns inside a phone width.
-    expect(
-      compactColumns.time + compactColumns.type + compactColumns.stats + compactColumns.dur,
-    ).toBeLessThan(390);
     expect(compactColumns.stats).toBeLessThan(wide.stats);
+    // The whole fixed budget, not just the columns: rail, every gap, and both
+    // paddings are paid before CONTEXT gets anything. PHONE_WIDTH is the narrow
+    // target this layout has to survive.
+    const PHONE_WIDTH = 390;
+    const fixed = (columns: ReturnType<typeof columnLayout>): number =>
+      columns.rail +
+      columns.time +
+      columns.type +
+      columns.stats +
+      columns.dur +
+      // Five gaps: rail->TIME, TIME->TYPE, TYPE->CONTEXT, CONTEXT->STATS, STATS->DUR.
+      columns.gap * 5 +
+      columns.padLeft +
+      8;
+    // CONTEXT is the only flexible column, and a truncated tool argument is the
+    // case that needs it, so pin a floor rather than a remainder.
+    expect(PHONE_WIDTH - fixed(compactColumns)).toBeGreaterThanOrEqual(100);
+  });
+
+  it("keeps a very long duration on one line inside the fixed column", () => {
+    // There is no hour tier, so a ten-hour call reads "600m0s". Wrapping would
+    // make that one row two lines tall while every other cell stays one.
+    render(<DurationText timeSeconds={36_000} theme={THEME} />);
+    const node = document.querySelector('[data-testid="duration-text"]');
+    expect(node?.textContent).toBe("600m0s");
+    expect(node?.getAttribute("data-lines")).toBe("1");
   });
 
   it("renders the row time as HH:MM:SS and the em dash when unknown", () => {

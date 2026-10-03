@@ -10,10 +10,15 @@ import type { TrajectoryFoldRow } from "../shared/dsh/layout.js";
  *
  * Kept as pure functions over our ledger row rather than a cell: the inspector
  * is handed the `TrajectoryFoldRow` the ledger selected, and these are the only
- * places that decide what a row's own numbers SAY. Every value dsh renders as a
- * reason rather than a number ("Not recorded", "First token unavailable") is
- * reproduced verbatim, because that wording is the point: a reader learns the
- * gap instead of seeing an empty field and guessing.
+ * places that decide what a row's own numbers SAY. The reason strings below are
+ * dsh's own, because a field that names its missing input is worth more than one
+ * that quietly shows nothing: "Not recorded", "Not available",
+ * "Step start unavailable", "First token unavailable", "Usage unavailable",
+ * "Output tokens unavailable", "Duration too short". Two of ours are not dsh's
+ * wording and are ours on purpose: `timingSource` names the measuring clock
+ * precisely (dsh has only one clock to name), and the schema line says "not
+ * recorded" where dsh says "Schema unavailable" — our gap is that nothing was
+ * ever captured, which is a stronger statement than nothing being available now.
  */
 
 /** dsh's `RecordState`. */
@@ -131,13 +136,19 @@ export function throughput(row: TrajectoryFoldRow): string {
 /**
  * Where a row's duration came from — dsh's third Timing line.
  *
- * One reader-facing distinction: a duration the recorder measured from its own
- * call→result clock, or no measurement at all. An OPEN row is "still running",
- * which is a third state and not the same as having no measurement.
+ * dsh says "Session timestamps" because every duration it holds is a difference
+ * of two session event stamps. Ours is not always that, and the difference is
+ * worth a reader knowing: a tool call's span is measured by the RECORDER's own
+ * clock (it times the call, then subtracts when the result lands), not read back
+ * out of two ledger rows. Message and reasoning spans ARE two ledger timestamps
+ * (first and last stream event), and a derived row has no duration at all.
+ *
+ * So the three answers are "how the span was measured", not "how old is this".
  */
 export function timingSource(row: TrajectoryFoldRow): string {
-  if (row.open === true) return "Ledger timestamps (running)";
+  if (row.open === true) return "Recorder clock (running)";
   if (row.durationMs === null) return "Not available";
+  if (row.kind === "tool") return "Recorder clock (call → result)";
   return "Ledger timestamps";
 }
 

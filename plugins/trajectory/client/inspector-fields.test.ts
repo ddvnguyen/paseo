@@ -78,9 +78,13 @@ describe("timing panel", () => {
   });
 
   it("states where a row's duration came from", () => {
-    expect(timingSource(row())).toBe("Ledger timestamps");
+    // A tool span is the recorder's own call->result clock, not two ledger
+    // stamps; a message span really is two ledger stamps. Saying "session
+    // timestamps" for both would be dsh's answer, and wrong for ours.
+    expect(timingSource(row())).toBe("Recorder clock (call → result)");
+    expect(timingSource(message())).toBe("Ledger timestamps");
     expect(timingSource(row({ durationMs: null }))).toBe("Not available");
-    expect(timingSource(row({ open: true, durationMs: null }))).toBe("Ledger timestamps (running)");
+    expect(timingSource(row({ open: true, durationMs: null }))).toBe("Recorder clock (running)");
   });
 });
 
