@@ -8,6 +8,14 @@ dist/
 out/
 result
 
+# fleet-backend runtime + fixture-scratch databases (never commit DBs;
+# the parity fixture is the checked-in tests/fixtures/seed.sql)
+packages/fleet-backend/*.db
+packages/fleet-backend/*.db-wal
+packages/fleet-backend/*.db-shm
+packages/fleet-backend/.fixture-tmp/
+packages/fleet-backend/.tmp/
+
 # Environment variables
 .env
 .env.test
