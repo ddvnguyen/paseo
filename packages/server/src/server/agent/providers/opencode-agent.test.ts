@@ -760,44 +760,9 @@ describe("OpenCodeAgentClient adapter smoke tests", () => {
             id: "opencode",
             name: "OpenCode",
             source: "api",
-            models: { "big-pickle": { name: "Big Pickle", limit: { context: 200_000 } } },
-          },
-        ],
-      },
-    };
-    openCodeClient.appAgentsResponse = {
-      data: [{ name: "build", mode: "primary", hidden: false }],
-    };
-    runtime.enqueueClient(openCodeClient);
-    const paseoHome = tmpCwd();
-    const client = new OpenCodeAgentClient(logger, undefined, {
-      serverManager: runtime,
-      createClient: runtime.createClient,
-      resolveHomeDir: () => path.join(paseoHome, "opencode-home"),
-      bridge: fakeBridge(),
-      maxContextTokens: 50_000,
-    });
-
-    await client.fetchCatalog({ scope: "global", force: false });
-    const before = runtime.acquisitions.length;
-    await client.createSession({ provider: "opencode", cwd: paseoHome, providerOptions: {} });
-
-    const kinds = runtime.acquisitions.slice(before).map((entry) => entry.kind);
-    expect(kinds).toContain("new");
-  });
-
-  test("reuses the current generation once it already carries the caps", async () => {
-    const runtime = new TestOpenCodeHarness();
-    const openCodeClient = new TestOpenCodeClient();
-    openCodeClient.providerListResponse = {
-      data: {
-        connected: ["opencode"],
-        all: [
-          {
-            id: "opencode",
-            name: "OpenCode",
-            source: "api",
-            models: { "big-pickle": { name: "Big Pickle", limit: { context: 200_000 } } },
+            models: {
+              "big-pickle": { name: "Big Pickle", limit: { context: 200_000, output: 32_000 } },
+            },
           },
         ],
       },
@@ -817,7 +782,52 @@ describe("OpenCodeAgentClient adapter smoke tests", () => {
     });
 
     await client.fetchCatalog({ scope: "global", force: false });
-    runtime.currentContextCapsKey = "opencode/big-pickle=50000";
+    const before = runtime.acquisitions.length;
+    await client.createSession({ provider: "opencode", cwd: paseoHome, providerOptions: {} });
+
+    // The output ceiling travels with the cap: OpenCode's config schema rejects a
+    // `limit` that carries only `context`, which breaks every spawn at once.
+    expect(bridge.caps).toEqual([
+      { providerId: "opencode", modelId: "big-pickle", contextCap: 50_000, outputLimit: 32_000 },
+    ]);
+    const kinds = runtime.acquisitions.slice(before).map((entry) => entry.kind);
+    expect(kinds).toContain("new");
+  });
+
+  test("reuses the current generation once it already carries the caps", async () => {
+    const runtime = new TestOpenCodeHarness();
+    const openCodeClient = new TestOpenCodeClient();
+    openCodeClient.providerListResponse = {
+      data: {
+        connected: ["opencode"],
+        all: [
+          {
+            id: "opencode",
+            name: "OpenCode",
+            source: "api",
+            models: {
+              "big-pickle": { name: "Big Pickle", limit: { context: 200_000, output: 32_000 } },
+            },
+          },
+        ],
+      },
+    };
+    openCodeClient.appAgentsResponse = {
+      data: [{ name: "build", mode: "primary", hidden: false }],
+    };
+    runtime.enqueueClient(openCodeClient);
+    const paseoHome = tmpCwd();
+    const bridge = fakeBridge();
+    const client = new OpenCodeAgentClient(logger, undefined, {
+      serverManager: runtime,
+      createClient: runtime.createClient,
+      resolveHomeDir: () => path.join(paseoHome, "opencode-home"),
+      bridge,
+      maxContextTokens: 50_000,
+    });
+
+    await client.fetchCatalog({ scope: "global", force: false });
+    runtime.currentContextCapsKey = "opencode/big-pickle=50000/32000";
     const before = runtime.acquisitions.length;
     await client.createSession({ provider: "opencode", cwd: paseoHome, providerOptions: {} });
 
@@ -836,7 +846,9 @@ describe("OpenCodeAgentClient adapter smoke tests", () => {
             id: "opencode",
             name: "OpenCode",
             source: "api",
-            models: { "big-pickle": { name: "Big Pickle", limit: { context: 200_000 } } },
+            models: {
+              "big-pickle": { name: "Big Pickle", limit: { context: 200_000, output: 32_000 } },
+            },
           },
         ],
       },
@@ -1364,24 +1376,25 @@ describe("OpenCode adapter normalization", () => {
   test("includes api-source providers in context window lookup even when absent from connected", () => {
     // Providers with source "api" are managed by the OpenCode console/subscription and are
     // usable even when they don't appear in `connected`.
-    const lookup = __openCodeInternals.buildOpenCodeModelContextWindowLookup({
+    const lookup = __openCodeInternals.buildOpenCodeModelLimitLookup({
       connected: [],
       all: [
         {
           id: "pi",
           source: "api",
           models: {
-            "pi-model-1": { limit: { context: 200_000 } },
+            "pi-model-1": { limit: { context: 200_000, output: 64_000 } },
           },
         },
       ],
     });
 
-    expect(lookup.get("pi/pi-model-1")).toBe(200_000);
+    expect(lookup.contextWindows.get("pi/pi-model-1")).toBe(200_000);
+    expect(lookup.outputLimits.get("pi/pi-model-1")).toBe(64_000);
   });
 
   test("excludes non-api-source providers absent from connected in context window lookup", () => {
-    const lookup = __openCodeInternals.buildOpenCodeModelContextWindowLookup({
+    const lookup = __openCodeInternals.buildOpenCodeModelLimitLookup({
       connected: ["openai"],
       all: [
         {
@@ -1401,8 +1414,8 @@ describe("OpenCode adapter normalization", () => {
       ],
     });
 
-    expect(lookup.get("openai/gpt-5")).toBe(400_000);
-    expect(lookup.get("anthropic/claude-opus")).toBeUndefined();
+    expect(lookup.contextWindows.get("openai/gpt-5")).toBe(400_000);
+    expect(lookup.contextWindows.get("anthropic/claude-opus")).toBeUndefined();
   });
 
   test("normalizes step-finish usage into AgentUsage context window fields", () => {

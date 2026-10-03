@@ -788,6 +788,14 @@ function extractOpenCodeModelContextWindow(model: unknown): number | undefined {
   return readPositiveFiniteNumber(limit?.context);
 }
 
+function extractOpenCodeModelOutputLimit(model: unknown): number | undefined {
+  if (!model || typeof model !== "object") {
+    return undefined;
+  }
+  const limit = (model as { limit?: { output?: unknown } }).limit;
+  return readPositiveFiniteNumber(limit?.output);
+}
+
 function buildOpenCodeModelDefinition(
   provider: {
     id: string;
@@ -861,11 +869,17 @@ function resolveOpenCodeSelectedModelContextWindow(
   if (!modelLookupKey) {
     return undefined;
   }
-  const lookup = buildOpenCodeModelContextWindowLookup(providers);
-  return lookup.get(modelLookupKey);
+  const lookup = buildOpenCodeModelLimitLookup(providers);
+  return lookup.contextWindows.get(modelLookupKey);
 }
 
-function buildOpenCodeModelContextWindowLookup(
+/**
+ * Both limits come from the same catalog entry, so they are collected in one walk.
+ * The output limit is what makes a model cappable at all: OpenCode's config schema
+ * requires `limit: { context, output }` in full, so a model without one cannot be
+ * capped without inventing a number.
+ */
+function buildOpenCodeModelLimitLookup(
   providers:
     | {
         connected?: string[];
@@ -877,10 +891,11 @@ function buildOpenCodeModelContextWindowLookup(
       }
     | null
     | undefined,
-): Map<string, number> {
-  const lookup = new Map<string, number>();
+): { contextWindows: Map<string, number>; outputLimits: Map<string, number> } {
+  const contextWindows = new Map<string, number>();
+  const outputLimits = new Map<string, number>();
   if (!providers) {
-    return lookup;
+    return { contextWindows, outputLimits };
   }
 
   const connectedProviderIds = new Set(providers.connected ?? []);
@@ -891,15 +906,20 @@ function buildOpenCodeModelContextWindowLookup(
       continue;
     }
     for (const [modelId, modelDefinition] of Object.entries(provider.models ?? {})) {
+      const lookupKey = buildOpenCodeModelLookupKey(provider.id, modelId);
       const contextWindow = extractOpenCodeModelContextWindow(modelDefinition);
       if (contextWindow === undefined) {
         continue;
       }
-      lookup.set(buildOpenCodeModelLookupKey(provider.id, modelId), contextWindow);
+      contextWindows.set(lookupKey, contextWindow);
+      const outputLimit = extractOpenCodeModelOutputLimit(modelDefinition);
+      if (outputLimit !== undefined) {
+        outputLimits.set(lookupKey, outputLimit);
+      }
     }
   }
 
-  return lookup;
+  return { contextWindows, outputLimits };
 }
 
 function resolveOpenCodeModelLookupKeyFromAssistantMessage(
@@ -1363,7 +1383,7 @@ function buildOpenCodeReplayTimelineEvents(
 export const __openCodeInternals = {
   buildOpenCodePromptParts,
   buildOpenCodeSessionTimeline,
-  buildOpenCodeModelContextWindowLookup,
+  buildOpenCodeModelLimitLookup,
   buildOpenCodeModelDefinition,
   buildOpenCodeModelLookupKey,
   extractOpenCodeModelContextWindow,
@@ -1411,6 +1431,7 @@ export class OpenCodeAgentClient implements AgentClient {
   private readonly logger: Logger;
   private readonly runtimeSettings?: ProviderRuntimeSettings;
   private readonly modelContextWindows = new Map<string, number>();
+  private readonly modelOutputLimits = new Map<string, number>();
   private readonly bridge?: OpenCodeBridge;
   private readonly maxContextTokens?: number;
 
@@ -1627,6 +1648,7 @@ export class OpenCodeAgentClient implements AgentClient {
         providerId: lookupKey.slice(0, separator),
         modelId: lookupKey.slice(separator + 1),
         contextCap: this.maxContextTokens,
+        outputLimit: this.modelOutputLimits.get(lookupKey),
       });
     }
     if (caps.length === 0) return;
@@ -1898,6 +1920,7 @@ export class OpenCodeAgentClient implements AgentClient {
 
     const models: AgentModelDefinition[] = [];
     const contextWindows = new Map<string, number>();
+    const outputLimits = new Map<string, number>();
     for (const provider of providers.all) {
       if (!isAccessible(provider)) {
         continue;
@@ -1905,12 +1928,14 @@ export class OpenCodeAgentClient implements AgentClient {
 
       for (const [modelId, model] of Object.entries(provider.models)) {
         const definition = buildOpenCodeModelDefinition(provider, modelId, model);
+        const lookupKey = buildOpenCodeModelLookupKey(provider.id, modelId);
         const contextWindowMaxTokens = extractOpenCodeModelContextWindow(model);
         if (contextWindowMaxTokens !== undefined) {
-          contextWindows.set(
-            buildOpenCodeModelLookupKey(provider.id, modelId),
-            contextWindowMaxTokens,
-          );
+          contextWindows.set(lookupKey, contextWindowMaxTokens);
+        }
+        const outputLimit = extractOpenCodeModelOutputLimit(model);
+        if (outputLimit !== undefined) {
+          outputLimits.set(lookupKey, outputLimit);
         }
         models.push(definition);
       }
@@ -1919,6 +1944,8 @@ export class OpenCodeAgentClient implements AgentClient {
     context?.signal.throwIfAborted();
     this.modelContextWindows.clear();
     for (const [key, value] of contextWindows) this.modelContextWindows.set(key, value);
+    this.modelOutputLimits.clear();
+    for (const [key, value] of outputLimits) this.modelOutputLimits.set(key, value);
 
     return models;
   }
@@ -1966,10 +1993,14 @@ export class OpenCodeAgentClient implements AgentClient {
       return;
     }
 
-    const lookup = buildOpenCodeModelContextWindowLookup(response.data);
+    const lookup = buildOpenCodeModelLimitLookup(response.data);
     this.modelContextWindows.clear();
-    for (const [modelLookupKey, contextWindowMaxTokens] of lookup.entries()) {
+    for (const [modelLookupKey, contextWindowMaxTokens] of lookup.contextWindows.entries()) {
       this.modelContextWindows.set(modelLookupKey, contextWindowMaxTokens);
+    }
+    this.modelOutputLimits.clear();
+    for (const [modelLookupKey, outputLimit] of lookup.outputLimits.entries()) {
+      this.modelOutputLimits.set(modelLookupKey, outputLimit);
     }
   }
 }

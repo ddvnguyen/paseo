@@ -234,7 +234,12 @@ describe("opencode bridge context cap injection", () => {
 
     try {
       bridge.setModelContextCaps([
-        { providerId: "anthropic", modelId: "claude-sonnet-4", contextCap: 200_000 },
+        {
+          providerId: "anthropic",
+          modelId: "claude-sonnet-4",
+          contextCap: 200_000,
+          outputLimit: 64_000,
+        },
       ]);
 
       const env = bridge.decorateServerEnv({
@@ -242,12 +247,19 @@ describe("opencode bridge context cap injection", () => {
       });
       const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT as string) as {
         model: string;
-        provider: Record<string, { models: Record<string, { limit: { context: number } }> }>;
+        provider: Record<
+          string,
+          { models: Record<string, { limit: { context: number; output: number } }> }
+        >;
       };
 
       expect(config.model).toBe("anthropic/claude-sonnet-4");
-      expect(config.provider.anthropic.models["claude-sonnet-4"].limit.context).toBe(200_000);
-      expect(bridge.getModelContextCapsKey()).toBe("anthropic/claude-sonnet-4=200000");
+      // Both keys or OpenCode rejects the whole configuration and no spawn works.
+      expect(config.provider.anthropic.models["claude-sonnet-4"].limit).toEqual({
+        context: 200_000,
+        output: 64_000,
+      });
+      expect(bridge.getModelContextCapsKey()).toBe("anthropic/claude-sonnet-4=200000/64000");
     } finally {
       await bridge.close();
     }
@@ -262,8 +274,8 @@ describe("opencode bridge context cap injection", () => {
 
     try {
       bridge.setModelContextCaps([
-        { providerId: "anthropic", modelId: "m1", contextCap: 200_000 },
-        { providerId: "openai", modelId: "m2", contextCap: 100_000 },
+        { providerId: "anthropic", modelId: "m1", contextCap: 200_000, outputLimit: 64_000 },
+        { providerId: "openai", modelId: "m2", contextCap: 100_000, outputLimit: 32_000 },
       ]);
 
       const first = bridge.decorateServerEnv({});
@@ -272,7 +284,10 @@ describe("opencode bridge context cap injection", () => {
 
       const parsed = (env: Record<string, string>) =>
         JSON.parse(env.OPENCODE_CONFIG_CONTENT as string) as {
-          provider: Record<string, { models: Record<string, { limit: { context: number } }> }>;
+          provider: Record<
+            string,
+            { models: Record<string, { limit: { context: number; output: number } }> }
+          >;
           plugin: unknown[];
         };
 
@@ -313,19 +328,26 @@ describe("opencode bridge context cap injection", () => {
     await bridge.start();
 
     try {
-      bridge.setModelContextCaps([{ providerId: "anthropic", modelId: "m1", contextCap: 200_000 }]);
-      bridge.setModelContextCaps([{ providerId: "openai", modelId: "m2", contextCap: 100_000 }]);
+      bridge.setModelContextCaps([
+        { providerId: "anthropic", modelId: "m1", contextCap: 200_000, outputLimit: 64_000 },
+      ]);
+      bridge.setModelContextCaps([
+        { providerId: "openai", modelId: "m2", contextCap: 100_000, outputLimit: 32_000 },
+      ]);
 
       const env = bridge.decorateServerEnv({
         OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { anthropic: { models: {} } } }),
       });
       const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT as string) as {
-        provider: Record<string, { models: Record<string, { limit: { context: number } }> }>;
+        provider: Record<
+          string,
+          { models: Record<string, { limit: { context: number; output: number } }> }
+        >;
       };
 
       expect(config.provider.anthropic.models).toEqual({});
       expect(config.provider.openai.models.m2.limit.context).toBe(100_000);
-      expect(bridge.getModelContextCapsKey()).toBe("openai/m2=100000");
+      expect(bridge.getModelContextCapsKey()).toBe("openai/m2=100000/32000");
     } finally {
       await bridge.close();
     }
