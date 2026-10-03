@@ -171,19 +171,46 @@ describe("ProviderMaxContextField", () => {
     expect(isSaveDisabled(container)).toBe(false);
   });
 
-  it("accepts a bare token count", () => {
+  it("offers 280 K as the example ceiling when nothing is stored", () => {
+    const { container } = mountField(undefined);
+
+    expect(input(container).value).toBe("");
+    expect(input(container).placeholder).toBe("280 K");
+    // A placeholder is a hint, never a value: it must not read back as a cap.
+    expect(lineOf(container, "-hint")).toBe(testI18n.t("settings.providers.maxContext.unlimited"));
+  });
+
+  it("accepts a bare count in K", () => {
     const { container, onSave } = mountField(undefined);
 
-    type(container, "128000");
+    type(container, "280");
     pressSave(container);
 
-    expect(onSave).toHaveBeenCalledWith(128_000);
+    expect(onSave).toHaveBeenCalledWith(280_000);
+  });
+
+  it("previews the same ceiling for a bare count and its K spelling", () => {
+    const bare = mountField(undefined);
+    type(bare.container, "280");
+    const suffixed = mountField(undefined);
+    type(suffixed.container, "280 K");
+
+    expect(lineOf(bare.container, "-hint")).toContain("280,000");
+    expect(lineOf(bare.container, "-hint")).toBe(lineOf(suffixed.container, "-hint"));
   });
 
   it("keeps saving disabled while the text still matches the stored cap", () => {
     const { container } = mountField(128_000);
 
     type(container, "128 K");
+
+    expect(isSaveDisabled(container)).toBe(true);
+  });
+
+  it("keeps saving disabled when a bare count matches the stored cap", () => {
+    const { container } = mountField(280_000);
+
+    type(container, "280");
 
     expect(isSaveDisabled(container)).toBe(true);
   });

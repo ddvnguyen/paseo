@@ -88,6 +88,7 @@ interface FieldProps {
   storedPrefix?: string;
   isSaving?: boolean;
   visible?: boolean;
+  idSuffix?: string;
 }
 
 interface MountedField {
@@ -110,6 +111,7 @@ function mountField(initial: FieldProps): MountedField {
           onSave={onSave}
           isSaving={resolved.isSaving ?? false}
           visible={resolved.visible ?? true}
+          idSuffix={resolved.idSuffix}
         />,
       );
     });
@@ -120,7 +122,12 @@ function mountField(initial: FieldProps): MountedField {
 }
 
 function input(container: HTMLDivElement): HTMLInputElement {
-  const element = within(container).getByTestId("provider-model-prefix-input");
+  return inputFor(container, undefined);
+}
+
+function inputFor(container: HTMLDivElement, idSuffix: string | undefined): HTMLInputElement {
+  const testID = `provider-model-prefix${idSuffix ? `-${idSuffix}` : ""}-input`;
+  const element = within(container).getByTestId(testID);
   if (!(element instanceof HTMLInputElement)) throw new Error("input did not render");
   return element;
 }
@@ -128,8 +135,8 @@ function input(container: HTMLDivElement): HTMLInputElement {
 // React tracks the input's value with its own descriptor, so assigning `.value`
 // directly leaves its change tracker thinking nothing happened. Go through the
 // native setter so the synthetic onChange actually fires.
-function type(container: HTMLDivElement, value: string): void {
-  const field = input(container);
+function type(container: HTMLDivElement, value: string, idSuffix?: string): void {
+  const field = inputFor(container, idSuffix);
   const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   if (!nativeSetter) throw new Error("no native value setter");
   act(() => {
@@ -262,5 +269,35 @@ describe("ProviderModelPrefixField", () => {
     render({ visible: true });
 
     expect(input(container).value).toBe("Go");
+  });
+
+  it("scopes its testIDs by idSuffix so sub-provider fields stay addressable", () => {
+    // A provider with several sub-providers renders several of these at once,
+    // and testIDs are document-wide: identical ones would make every query
+    // resolve to whichever field mounted first.
+    const first = mountField({ storedPrefix: "Ant", idSuffix: "anthropic" });
+    const second = mountField({ storedPrefix: "Oai", idSuffix: "openai" });
+
+    expect(inputFor(first.container, "anthropic").value).toBe("Ant");
+    expect(inputFor(second.container, "openai").value).toBe("Oai");
+    expect(
+      within(first.container).queryByTestId("provider-model-prefix-opencode-input"),
+    ).toBeNull();
+  });
+
+  it("keeps the unsuffixed testIDs when no suffix is given", () => {
+    const { container } = mountField({ storedPrefix: "Go" });
+
+    expect(inputFor(container, undefined).value).toBe("Go");
+  });
+
+  it("keeps one sub-provider field's draft out of another's", () => {
+    const first = mountField({ storedPrefix: "Ant", idSuffix: "anthropic" });
+    const second = mountField({ storedPrefix: "Oai", idSuffix: "openai" });
+
+    type(first.container, "Ant2", "anthropic");
+
+    expect(inputFor(first.container, "anthropic").value).toBe("Ant2");
+    expect(inputFor(second.container, "openai").value).toBe("Oai");
   });
 });

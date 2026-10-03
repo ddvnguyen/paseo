@@ -192,6 +192,60 @@ function omitMarkedProviderFields(
 }
 
 /**
+ * Splits a `modelPrefixes` patch value into the tags to keep and the
+ * sub-provider keys the client asked to delete.
+ *
+ * A map needs its own marker handling because `deepMerge` ASSIGNS a `null`
+ * instead of removing it. A null left inside the map would fail
+ * `ProviderOverrideSchema` on the way to disk and `MutableDaemonConfigSchema`
+ * on the way back to clients, so the whole patch would be rejected rather than
+ * clearing one tag. Dropping the key is what "remove this one tag" means, and
+ * doing it per key keeps the rest of the map intact.
+ */
+function splitModelPrefixMapDeleteMarkers(modelPrefixes: unknown): {
+  kept: Record<string, string>;
+  deleted: ReadonlySet<string>;
+} {
+  const kept: Record<string, string> = {};
+  const deleted = new Set<string>();
+  if (!isRecord(modelPrefixes)) {
+    return { kept, deleted };
+  }
+  for (const [subProviderId, prefix] of Object.entries(modelPrefixes)) {
+    if (prefix === null) {
+      deleted.add(subProviderId);
+    } else if (typeof prefix === "string") {
+      kept[subProviderId] = prefix;
+    }
+  }
+  return { kept, deleted };
+}
+
+/**
+ * Removes the marked sub-provider tags from an override, and drops the map
+ * entirely once it is empty — an empty `modelPrefixes` left in config.json
+ * would claim the provider has per-sub tags configured when it has none.
+ */
+function omitDeletedModelPrefixKeys(
+  providerConfig: Record<string, unknown>,
+  deleted: ReadonlySet<string>,
+): Record<string, unknown> {
+  if (deleted.size === 0 || !isRecord(providerConfig.modelPrefixes)) {
+    return providerConfig;
+  }
+  const remaining = { ...providerConfig.modelPrefixes };
+  for (const subProviderId of deleted) {
+    delete remaining[subProviderId];
+  }
+  if (Object.keys(remaining).length === 0) {
+    const next = { ...providerConfig };
+    delete next.modelPrefixes;
+    return next;
+  }
+  return { ...providerConfig, modelPrefixes: remaining };
+}
+
+/**
  * Applies the deletions to the mutable view the store hands back to clients, so a
  * cleared ceiling reads as absent there too rather than lingering as a value the
  * schema has to tolerate. An entry the markers emptied stays as an empty object:
@@ -209,11 +263,21 @@ function omitDeletedProviderFieldsFromConfig<T extends { providers?: Record<stri
   const nextProviders = { ...config.providers };
   for (const [providerId, mutableProvider] of Object.entries(mutableProviders)) {
     const { marked } = splitProviderDeleteMarkers(mutableProvider);
+    const { deleted } = splitModelPrefixMapDeleteMarkers(
+      isRecord(mutableProvider) ? mutableProvider.modelPrefixes : undefined,
+    );
     const currentOverride = nextProviders[providerId];
-    if (marked.size === 0 || !isRecord(currentOverride)) {
+    if (!isRecord(currentOverride)) {
       continue;
     }
-    nextProviders[providerId] = omitMarkedProviderFields(currentOverride, marked);
+    const next = omitDeletedModelPrefixKeys(
+      omitMarkedProviderFields(currentOverride, marked),
+      deleted,
+    );
+    if (next === currentOverride) {
+      continue;
+    }
+    nextProviders[providerId] = next;
     changed = true;
   }
 
@@ -369,7 +433,15 @@ export function applyMutableProviderConfigToOverrides(
   for (const [providerId, providerConfig] of Object.entries(mutableProviders ?? {})) {
     const previousOverride = nextOverrides[providerId];
     const { config: keptConfig, marked } = splitProviderDeleteMarkers(providerConfig);
-    const parsedOverride = ProviderOverrideSchema.strip().parse(keptConfig);
+    const { kept: keptPrefixes, deleted: deletedPrefixes } = splitModelPrefixMapDeleteMarkers(
+      isRecord(keptConfig) ? keptConfig.modelPrefixes : undefined,
+    );
+    // The nulls come out before the schema sees them, and the survivors merge
+    // key-by-key over whatever the file already held: a patch that touches one
+    // sub-provider must not drop the tags configured for the others.
+    const parsedOverride = ProviderOverrideSchema.strip().parse(
+      deletedPrefixes.size > 0 ? { ...keptConfig, modelPrefixes: keptPrefixes } : keptConfig,
+    );
     const mergedOverride: Record<string, unknown> = {
       ...previousOverride,
       ...parsedOverride,
@@ -381,10 +453,18 @@ export function applyMutableProviderConfigToOverrides(
             },
           }
         : {}),
+      ...(isRecord(previousOverride?.modelPrefixes) || parsedOverride.modelPrefixes
+        ? {
+            modelPrefixes: {
+              ...(isRecord(previousOverride?.modelPrefixes) ? previousOverride.modelPrefixes : {}),
+              ...parsedOverride.modelPrefixes,
+            },
+          }
+        : {}),
     };
-    nextOverrides[providerId] = omitMarkedProviderFields(
-      mergedOverride,
-      marked,
+    nextOverrides[providerId] = omitDeletedModelPrefixKeys(
+      omitMarkedProviderFields(mergedOverride, marked),
+      deletedPrefixes,
     ) as ProviderOverride;
   }
 

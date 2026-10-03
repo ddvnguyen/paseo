@@ -18,7 +18,11 @@ import { buildProviderMaxContextPatch } from "@/components/provider-max-context"
 // @ts-expect-error - provider-model-prefix-field.ts wins extensionless resolution;
 // the component lives in the sibling .tsx and must be imported with its extension.
 import { ProviderModelPrefixField } from "@/components/provider-model-prefix-field.tsx";
-import { buildProviderModelPrefixPatch } from "@/components/provider-model-prefix-field";
+import {
+  buildProviderModelPrefixPatch,
+  buildProviderSubModelPrefixPatch,
+} from "@/components/provider-model-prefix-field";
+import { collectSubProviderIds } from "@/provider-selection/provider-model-prefix";
 import { ScrollableCodeSurface, SurfaceCard } from "@/components/ui/scrollable-code-surface";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
@@ -159,6 +163,57 @@ export function CustomModelRow({
       >
         <Trash2 size={theme.iconSize.sm} color={theme.colors.destructive} />
       </Pressable>
+    </View>
+  );
+}
+
+/**
+ * One tag section per sub-provider the provider serves.
+ *
+ * Its own component rather than an inline block in the map so the save callback
+ * is created once per sub-provider instead of on every render of the sheet,
+ * which would re-render every tag field whenever anything else in the modal
+ * moved.
+ */
+function ProviderSubModelPrefixSection({
+  subProviderId,
+  storedPrefix,
+  onSave,
+  isSaving,
+  visible,
+}: {
+  subProviderId: string;
+  storedPrefix: string | undefined;
+  onSave: (subProviderId: string, prefix: string | undefined) => void;
+  isSaving: boolean;
+  visible: boolean;
+}) {
+  const { t } = useTranslation();
+  const handleSave = useCallback(
+    (prefix: string | undefined) => {
+      onSave(subProviderId, prefix);
+    },
+    [onSave, subProviderId],
+  );
+
+  return (
+    <View style={sheetStyles.section}>
+      <SectionHeader
+        title={t("settings.providers.modelPrefix.subProviderSection", {
+          subProvider: subProviderId,
+        })}
+      />
+      <View style={settingsStyles.card}>
+        <View style={sheetStyles.limitRow}>
+          <ProviderModelPrefixField
+            storedPrefix={storedPrefix}
+            onSave={handleSave}
+            isSaving={isSaving}
+            visible={visible}
+            idSuffix={subProviderId}
+          />
+        </View>
+      </View>
     </View>
   );
 }
@@ -453,10 +508,17 @@ interface ProviderModalBodyProps {
   isSavingMaxContext: boolean;
   modelPrefix: string | undefined;
   isSavingModelPrefix: boolean;
+  /** Sub-provider ids the served models declare, deduplicated and sorted. */
+  subProviderIds: string[];
+  /** Stored per-sub-provider tags, keyed by sub-provider id. */
+  modelPrefixes: Readonly<Record<string, string>>;
+  /** Sub-provider ids with a save in flight. */
+  savingSubModelPrefixIds: ReadonlySet<string>;
   onRefresh: () => void;
   onDeleteCustom: (modelId: string) => void;
   onSaveMaxContext: (tokens: number | undefined) => void;
   onSaveModelPrefix: (prefix: string | undefined) => void;
+  onSaveSubModelPrefix: (subProviderId: string, prefix: string | undefined) => void;
   theme: { iconSize: { md: number }; colors: { foregroundMuted: string } };
 }
 
@@ -549,10 +611,14 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
     isSavingMaxContext,
     modelPrefix,
     isSavingModelPrefix,
+    subProviderIds,
+    modelPrefixes,
+    savingSubModelPrefixIds,
     onRefresh,
     onDeleteCustom,
     onSaveMaxContext,
     onSaveModelPrefix,
+    onSaveSubModelPrefix,
     theme,
   } = props;
 
@@ -619,6 +685,16 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
           </View>
         </View>
       </View>
+      {subProviderIds.map((subProviderId) => (
+        <ProviderSubModelPrefixSection
+          key={subProviderId}
+          subProviderId={subProviderId}
+          storedPrefix={modelPrefixes[subProviderId]}
+          onSave={onSaveSubModelPrefix}
+          isSaving={savingSubModelPrefixIds.has(subProviderId)}
+          visible={visible}
+        />
+      ))}
       {filteredDiscovered.length > 0 ? (
         <View style={sheetStyles.section}>
           <SectionHeader
@@ -680,6 +756,11 @@ export function ProviderDiagnosticSheet({
   const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
   const [savingMaxContext, setSavingMaxContext] = useState(false);
   const [savingModelPrefix, setSavingModelPrefix] = useState(false);
+  // Keyed by sub-provider id rather than one flag: saving one tag must not lock
+  // every other sub-provider's field on a provider that serves many.
+  const [savingSubModelPrefixIds, setSavingSubModelPrefixIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   const providerLabel = resolveProviderLabel(provider, snapshotEntries);
   const providerEntry = useMemo(
@@ -692,6 +773,10 @@ export function ProviderDiagnosticSheet({
   );
   const maxContextTokens = config?.providers?.[provider]?.maxContextTokens;
   const modelPrefix = config?.providers?.[provider]?.modelPrefix;
+  const modelPrefixes = useMemo(
+    () => config?.providers?.[provider]?.modelPrefixes ?? {},
+    [config?.providers, provider],
+  );
   const providerSnapshotRefreshing = providerEntry?.status === "loading";
   const providerErrorMessage =
     providerEntry?.status === "error"
@@ -709,6 +794,13 @@ export function ProviderDiagnosticSheet({
     previousCache: stableDiscoveredRef.current,
   });
   stableDiscoveredRef.current = nextDiscoveredCache;
+
+  // One tag section per sub-provider this provider actually serves. Derived from
+  // the served models rather than a static list, so the sections appear and
+  // disappear with the user's credentials and nothing has to be maintained by
+  // hand. Deliberately NOT derived from `filteredDiscovered`: a search box must
+  // not make a configured tag unreachable.
+  const subProviderIds = useMemo(() => collectSubProviderIds(discoveredModels), [discoveredModels]);
 
   const [clockTick, setClockTick] = useState(0);
   useEffect(() => {
@@ -794,6 +886,31 @@ export function ProviderDiagnosticSheet({
     [patchConfig, provider, refresh, savingModelPrefix, t],
   );
 
+  const handleSaveSubModelPrefix = useCallback(
+    (subProviderId: string, prefix: string | undefined) => {
+      if (savingSubModelPrefixIds.has(subProviderId)) return;
+      setSavingSubModelPrefixIds((current) => new Set(current).add(subProviderId));
+      void patchConfig({
+        providers: buildProviderSubModelPrefixPatch(provider, subProviderId, prefix),
+      })
+        .catch((err: unknown) => {
+          Alert.alert(
+            t("settings.providers.modelPrefix.failedToSaveTitle"),
+            err instanceof Error ? err.message : t("settings.providers.modelPrefix.failedToSave"),
+          );
+        })
+        .finally(() => {
+          void refresh([provider]);
+          setSavingSubModelPrefixIds((current) => {
+            const next = new Set(current);
+            next.delete(subProviderId);
+            return next;
+          });
+        });
+    },
+    [patchConfig, provider, refresh, savingSubModelPrefixIds, t],
+  );
+
   const handleDeleteCustom = useCallback(
     (modelId: string) => {
       setDeletingModelId(modelId);
@@ -860,10 +977,14 @@ export function ProviderDiagnosticSheet({
           isSavingMaxContext={savingMaxContext}
           modelPrefix={modelPrefix}
           isSavingModelPrefix={savingModelPrefix}
+          subProviderIds={subProviderIds}
+          modelPrefixes={modelPrefixes}
+          savingSubModelPrefixIds={savingSubModelPrefixIds}
           onRefresh={handleRefreshModels}
           onDeleteCustom={handleDeleteCustom}
           onSaveMaxContext={handleSaveMaxContext}
           onSaveModelPrefix={handleSaveModelPrefix}
+          onSaveSubModelPrefix={handleSaveSubModelPrefix}
           theme={theme}
         />
       </AdaptiveModalSheet>

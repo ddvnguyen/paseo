@@ -32,9 +32,16 @@ describe("parseMaxContextTokens", () => {
     expect(parseMaxContextTokens("1 M")).toEqual({ status: "valid", tokens: 1_000_000 });
   });
 
-  it("reads a bare integer as a token count", () => {
-    expect(parseMaxContextTokens("128000")).toEqual({ status: "valid", tokens: 128_000 });
-    expect(parseMaxContextTokens("1")).toEqual({ status: "valid", tokens: 1 });
+  it("reads a bare integer as a count in K", () => {
+    expect(parseMaxContextTokens("280")).toEqual({ status: "valid", tokens: 280_000 });
+    expect(parseMaxContextTokens("128")).toEqual({ status: "valid", tokens: 128_000 });
+    expect(parseMaxContextTokens("1")).toEqual({ status: "valid", tokens: 1_000 });
+  });
+
+  it("reads the placeholder's own example the way the placeholder implies", () => {
+    // The field shows "280 K" as its placeholder; typing that number without the
+    // unit must land on the same ceiling, or the example lies.
+    expect(parseMaxContextTokens("280")).toEqual(parseMaxContextTokens("280 K"));
   });
 
   it("treats an empty field as no limit rather than invalid", () => {
@@ -48,9 +55,24 @@ describe("parseMaxContextTokens", () => {
   });
 
   it("rejects text that is not a plain count", () => {
-    for (const text of ["abc", "100 MB", "1.5 M", "-5 M", "1e6", "100 M extra", "1 G"]) {
+    for (const text of ["abc", "100 MB", "-5 M", "1e6", "100 M extra", "1 G"]) {
       expect(parseMaxContextTokens(text), text).toEqual({ status: "invalid" });
     }
+  });
+
+  it("accepts a fraction only when a unit says what it scales", () => {
+    expect(parseMaxContextTokens("1.5 M")).toEqual({ status: "valid", tokens: 1_500_000 });
+    expect(parseMaxContextTokens("131.072 K")).toEqual({ status: "valid", tokens: 131_072 });
+    expect(parseMaxContextTokens("2.5K")).toEqual({ status: "valid", tokens: 2_500 });
+
+    // A bare fraction has no unit to scale and the bare unit is already K, so
+    // accepting one would guess twice over.
+    expect(parseMaxContextTokens("1.5")).toEqual({ status: "invalid" });
+  });
+
+  it("rejects a fraction too fine to be a whole token", () => {
+    expect(parseMaxContextTokens("1.2345 K")).toEqual({ status: "invalid" });
+    expect(parseMaxContextTokens("1.0000001 M")).toEqual({ status: "invalid" });
   });
 
   it("rejects a count too large to be a real context window", () => {
@@ -68,22 +90,45 @@ describe("formatMaxContextTokens", () => {
     expect(formatMaxContextTokens(128_000)).toBe("128 K");
   });
 
-  it("does not produce a fractional suffix, which the parser rejects", () => {
-    expect(formatMaxContextTokens(2_500)).toBe("2500");
+  it("always spells the unit out, because a bare number would read back as K", () => {
+    // "1000" would come back as a million, and "1000000" as a billion.
+    expect(formatMaxContextTokens(1_000)).toBe("1 K");
+    expect(formatMaxContextTokens(280_000)).toBe("280 K");
+    expect(formatMaxContextTokens(1_000_000)).toBe("1 M");
   });
 
-  it("falls back to a bare count when neither suffix is exact", () => {
-    expect(formatMaxContextTokens(131_072)).toBe("131072");
-    expect(formatMaxContextTokens(7)).toBe("7");
+  it("keeps a count that is not a whole number of thousands exact with a fraction", () => {
+    expect(formatMaxContextTokens(2_500)).toBe("2.5 K");
+    expect(formatMaxContextTokens(131_072)).toBe("131.072 K");
+    expect(formatMaxContextTokens(32_768)).toBe("32.768 K");
+    expect(formatMaxContextTokens(7)).toBe("0.007 K");
   });
 
   it("round-trips through the parser for every exact branch", () => {
-    for (const tokens of [1, 7, 1_000, 128_000, 1_000_000, 100_000_000, 131_072]) {
+    for (const tokens of [1, 7, 1_000, 2_500, 128_000, 280_000, 131_072, 1_000_000, 100_000_000]) {
       expect(parseMaxContextTokens(formatMaxContextTokens(tokens))).toEqual({
         status: "valid",
         tokens,
       });
     }
+  });
+
+  it("round-trips every value a context window could plausibly hold", () => {
+    // The formatter may never emit text that re-reads as a different number, so
+    // this sweeps the whole small range rather than trusting the examples above.
+    const sweep: number[] = [];
+    for (let tokens = 1; tokens <= 50_000; tokens += 1) {
+      sweep.push(tokens);
+    }
+    for (let exponent = 0; exponent <= 30; exponent += 1) {
+      sweep.push(2 ** exponent);
+    }
+
+    const mismatches = sweep
+      .map((tokens) => [tokens, parseMaxContextTokens(formatMaxContextTokens(tokens))] as const)
+      .filter(([tokens, parsed]) => parsed.status !== "valid" || parsed.tokens !== tokens);
+
+    expect(mismatches.map(([tokens]) => tokens)).toEqual([]);
   });
 });
 
@@ -97,7 +142,7 @@ describe("resolveMaxContextFieldState", () => {
   });
 
   it("is not dirty when the text still parses to the stored value", () => {
-    expect(resolveMaxContextFieldState("128000", 128_000)).toEqual({
+    expect(resolveMaxContextFieldState("128", 128_000)).toEqual({
       previewTokens: 128_000,
       isValid: true,
       isDirty: false,

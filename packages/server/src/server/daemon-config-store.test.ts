@@ -89,6 +89,69 @@ describe("applyMutableProviderConfigToOverrides", () => {
   });
 });
 
+describe("per-sub-provider model tags", () => {
+  test("merges a new sub-provider tag over the tags already on disk", () => {
+    expect(
+      applyMutableProviderConfigToOverrides(
+        { opencode: { extends: "opencode", modelPrefixes: { anthropic: "Ant" } } },
+        { opencode: { modelPrefixes: { openai: "Oai" } } },
+      ),
+    ).toEqual({
+      opencode: { extends: "opencode", modelPrefixes: { anthropic: "Ant", openai: "Oai" } },
+    });
+  });
+
+  test("removes only the sub-provider whose tag was sent as null", () => {
+    expect(
+      applyMutableProviderConfigToOverrides(
+        {
+          opencode: {
+            extends: "opencode",
+            modelPrefix: "Go",
+            modelPrefixes: { anthropic: "Ant", openai: "Oai" },
+          },
+        },
+        { opencode: { modelPrefixes: { anthropic: null } } },
+      ),
+    ).toEqual({
+      opencode: {
+        extends: "opencode",
+        modelPrefix: "Go",
+        modelPrefixes: { openai: "Oai" },
+      },
+    });
+  });
+
+  test("drops the map entirely once its last tag is cleared", () => {
+    expect(
+      applyMutableProviderConfigToOverrides(
+        { opencode: { extends: "opencode", modelPrefixes: { anthropic: "Ant" } } },
+        { opencode: { modelPrefixes: { anthropic: null } } },
+      ),
+    ).toEqual({ opencode: { extends: "opencode" } });
+  });
+
+  test("does not resurrect a cleared tag from the previous override", () => {
+    // The previous entry is the base the patch merges onto, so a cleared key
+    // must not reappear through it.
+    expect(
+      applyMutableProviderConfigToOverrides(
+        { opencode: { extends: "opencode", modelPrefixes: { anthropic: "Ant" } } },
+        { opencode: { modelPrefixes: { anthropic: null, openai: "Oai" } } },
+      ),
+    ).toEqual({ opencode: { extends: "opencode", modelPrefixes: { openai: "Oai" } } });
+  });
+
+  test("an empty provider object leaves the map exactly as it was", () => {
+    expect(
+      applyMutableProviderConfigToOverrides(
+        { opencode: { extends: "opencode", modelPrefixes: { anthropic: "Ant" } } },
+        { opencode: {} },
+      ),
+    ).toEqual({ opencode: { extends: "opencode", modelPrefixes: { anthropic: "Ant" } } });
+  });
+});
+
 describe("provider field deletion via an explicit null", () => {
   test("removes the key from the overrides it merges onto", () => {
     expect(
@@ -136,7 +199,6 @@ describe("provider field deletion via an explicit null", () => {
       omp: { extends: "omp", label: "Oh My Pi", maxContextTokens: 128_000 },
     });
   });
-
   describe("end to end through patch, disk, and reload", () => {
     const tempDirs: string[] = [];
 
@@ -235,6 +297,90 @@ describe("provider field deletion via an explicit null", () => {
       expect(store.get().providers.omp?.maxContextTokens).toBe(128_000);
       expect(loadPersistedConfig(paseoHome).agents?.providers?.omp).toMatchObject({
         maxContextTokens: 128_000,
+      });
+    });
+
+    test("clearing one sub-provider tag removes only that key, in memory and on disk", () => {
+      const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-clear-sub-prefix-"));
+      tempDirs.push(paseoHome);
+      const store = createStore(paseoHome, { opencode: { extends: "opencode" } });
+
+      store.patch({
+        providers: { opencode: { modelPrefixes: { anthropic: "Ant", openai: "Oai" } } },
+      });
+      expect(store.get().providers.opencode?.modelPrefixes).toEqual({
+        anthropic: "Ant",
+        openai: "Oai",
+      });
+      expect(loadPersistedConfig(paseoHome).agents?.providers?.opencode).toMatchObject({
+        modelPrefixes: { anthropic: "Ant", openai: "Oai" },
+      });
+
+      store.patch({ providers: { opencode: { modelPrefixes: { anthropic: null } } } });
+
+      // The sibling tag is the whole point of a map: clearing one must not take
+      // the others with it.
+      expect(store.get().providers.opencode?.modelPrefixes).toEqual({ openai: "Oai" });
+      expect(loadPersistedConfig(paseoHome).agents?.providers?.opencode).toMatchObject({
+        modelPrefixes: { openai: "Oai" },
+      });
+
+      const afterReload = reloadableConfig(loadPersistedConfig(paseoHome));
+      expect(afterReload.providers.opencode?.modelPrefixes).toEqual({ openai: "Oai" });
+    });
+
+    test("clearing the last sub-provider tag drops the empty map instead of persisting it", () => {
+      const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-clear-last-sub-prefix-"));
+      tempDirs.push(paseoHome);
+      const store = createStore(paseoHome, { opencode: { extends: "opencode" } });
+
+      store.patch({ providers: { opencode: { modelPrefixes: { anthropic: "Ant" } } } });
+      store.patch({ providers: { opencode: { modelPrefixes: { anthropic: null } } } });
+
+      // An empty map would claim the provider has per-sub tags configured.
+      expect(store.get().providers.opencode).not.toHaveProperty("modelPrefixes");
+      expect(loadPersistedConfig(paseoHome).agents?.providers?.opencode).not.toHaveProperty(
+        "modelPrefixes",
+      );
+      expect(
+        reloadableConfig(loadPersistedConfig(paseoHome)).providers.opencode,
+      ).not.toHaveProperty("modelPrefixes");
+    });
+
+    test("setting a sub-provider tag leaves the provider-wide tag and other keys alone", () => {
+      const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-set-sub-prefix-"));
+      tempDirs.push(paseoHome);
+      const store = createStore(paseoHome, { opencode: { extends: "opencode" } });
+
+      store.patch({
+        providers: { opencode: { modelPrefix: "Go", modelPrefixes: { anthropic: "Ant" } } },
+      });
+      store.patch({ providers: { opencode: { modelPrefixes: { openai: "Oai" } } } });
+
+      expect(store.get().providers.opencode?.modelPrefixes).toEqual({
+        anthropic: "Ant",
+        openai: "Oai",
+      });
+      // The provider-wide tag is the fallback for rows with no per-sub entry, so
+      // a map edit must not disturb it.
+      expect(store.get().providers.opencode?.modelPrefix).toBe("Go");
+      expect(loadPersistedConfig(paseoHome).agents?.providers?.opencode).toMatchObject({
+        modelPrefix: "Go",
+        modelPrefixes: { anthropic: "Ant", openai: "Oai" },
+      });
+    });
+
+    test("an empty provider object still leaves sub-provider tags alone", () => {
+      const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-empty-patch-sub-prefix-"));
+      tempDirs.push(paseoHome);
+      const store = createStore(paseoHome, { opencode: { extends: "opencode" } });
+
+      store.patch({ providers: { opencode: { modelPrefixes: { anthropic: "Ant" } } } });
+      store.patch({ providers: { opencode: {} } });
+
+      expect(store.get().providers.opencode?.modelPrefixes).toEqual({ anthropic: "Ant" });
+      expect(loadPersistedConfig(paseoHome).agents?.providers?.opencode).toMatchObject({
+        modelPrefixes: { anthropic: "Ant" },
       });
     });
   });

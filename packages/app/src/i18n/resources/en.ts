@@ -2744,7 +2744,7 @@ export const en = {
         section: "Context limit",
         label: "Max context",
         accessibilityLabel: "Max context",
-        placeholder: "100 M",
+        placeholder: "280 K",
         preview: "= {{tokens}} tokens",
         unlimited: "No limit",
         invalid: "Enter a number, optionally followed by K or M",
@@ -2755,6 +2755,7 @@ export const en = {
       },
       modelPrefix: {
         section: "Model tag",
+        subProviderSection: "Model tag · {{subProvider}}",
         label: "Model prefix",
         accessibilityLabel: "Model prefix",
         placeholder: "Go",

@@ -717,6 +717,7 @@ Every entry under `agents.providers` accepts these fields:
 | `disallowedTools`  | `string[]`                | No                | Tool names to disable for this provider (e.g. `["WebSearch"]`)     |
 | `maxContextTokens` | `number`                  | No                | Context-window ceiling for every model this provider serves        |
 | `modelPrefix`      | `string`                  | No                | Bracketed display tag on model labels, e.g. `"Go"` renders `[Go]`  |
+| `modelPrefixes`    | `Record<string, string>`  | No                | Display tags per upstream sub-provider, keyed by sub-provider id   |
 | `enabled`          | `boolean`                 | No                | Set to `false` to hide the provider (default: `true`)              |
 | `order`            | `number`                  | No                | Sort order in the provider list                                    |
 
@@ -758,6 +759,23 @@ A model whose catalog reports no window at all is published with the ceiling as 
 ```
 
 Brackets are added by the renderer, so `Go` and `[Zen]` both work. The tag renders in model-picker rows, the composer model chip, and the agent controls, all from one decorated label. Omit it — or set it to an empty string — and labels are unchanged. Searching for the tag finds the row. The tag is editable per provider in Settings → Providers (Model tag field); editing `config.json` directly remains an alternative.
+
+`modelPrefixes` tags one upstream provider inside an aggregating provider. OpenCode serves `anthropic`, `openai`, and `github-copilot` catalogs under the single `opencode` id, so one provider-wide tag cannot tell those rows apart:
+
+```json
+{
+  "agents": {
+    "providers": {
+      "opencode": {
+        "modelPrefix": "OC",
+        "modelPrefixes": { "anthropic": "Ant", "openai": "Oai" }
+      }
+    }
+  }
+}
+```
+
+Keys are the sub-provider ids OpenCode reports. The provider sheet renders one field per section for them, and only for the sub-providers the daemon actually serves, so the sections follow your credentials rather than a fixed roster. A row prefers its own sub-provider's tag and falls back to `modelPrefix`, which keeps the provider-wide tag meaningful for every sub-provider you have not given a tag of its own and for providers that declare none. `modelPrefixes` is additive: leave it out and nothing changes.
 
 ### Model definition
 
