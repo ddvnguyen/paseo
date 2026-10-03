@@ -2754,7 +2754,6 @@ export const en = {
         failedToSave: "Failed to save max context",
       },
       modelPrefix: {
-        section: "Model tag",
         subProviderSection: "Model tag · {{subProvider}}",
         label: "Model prefix",
         accessibilityLabel: "Model prefix",

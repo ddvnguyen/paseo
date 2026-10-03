@@ -2672,7 +2672,6 @@ export const ptBR: TranslationResources = {
         failedToSave: "Falha ao salvar o contexto máximo",
       },
       modelPrefix: {
-        section: "Etiqueta do modelo",
         subProviderSection: "Etiqueta do modelo · {{subProvider}}",
         label: "Prefixo do modelo",
         accessibilityLabel: "Prefixo do modelo",

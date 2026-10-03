@@ -33,6 +33,17 @@ export function formatProviderModelPrefix(prefix: string | undefined): string {
  * single string, so the per-sub map is what makes those rows distinguishable.
  * `providerWide` stays because it is the fallback for rows with no per-sub
  * entry AND the only tag every config written before `modelPrefixes` had.
+ *
+ * Read-only since 2026-10-03 (owner directive): the provider sheet dropped its
+ * provider-wide tag field, because that one string cannot tell an aggregating
+ * provider's catalogs apart and the field above the grouped rows mostly
+ * mislabelled them. The key stays in the schema and stays in effect — every row
+ * whose sub-provider carries no tag of its own still renders `providerWide`,
+ * configs written before the field was removed keep working as they were, and
+ * nothing deletes or migrates the value. `config.json` is now the only place to
+ * set it. Note the coverage that costs: a provider that declares no
+ * sub-provider at all (today every provider except `opencode`) has read-only
+ * tags — its rows honour the value, the sheet offers no field for it.
  */
 export interface ProviderModelPrefixTags {
   providerWide: string | undefined;

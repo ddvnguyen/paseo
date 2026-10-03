@@ -24,6 +24,12 @@ const MODEL_PREFIX_MAX_LENGTH = 24;
  * merge-only, so `{ provider: {} }` cannot unset a scalar: it merges to a
  * no-op and the old tag survives the patch, the persisted file, and every
  * reload. The daemon deletes the key when it sees the marker.
+ *
+ * No production caller since 2026-10-03: the provider sheet dropped the
+ * provider-wide field (owner directive, see ProviderModelPrefixTags). Kept
+ * because `modelPrefix` is still a read-side fallback that every picker honours,
+ * so the key stays writable and its delete-marker rule stays pinned by the
+ * tests below. Restore the field and this is the encoder it needs.
  */
 export function buildProviderModelPrefixPatch(
   provider: string,

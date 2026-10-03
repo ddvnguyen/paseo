@@ -2680,7 +2680,6 @@ export const ru: TranslationResources = {
         failedToSave: "Не удалось сохранить максимальный контекст",
       },
       modelPrefix: {
-        section: "Тег модели",
         subProviderSection: "Тег модели · {{subProvider}}",
         label: "Префикс модели",
         accessibilityLabel: "Префикс модели",

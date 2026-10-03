@@ -2645,7 +2645,6 @@ export const ko: TranslationResources = {
         failedToSave: "최대 컨텍스트 저장 실패",
       },
       modelPrefix: {
-        section: "모델 태그",
         subProviderSection: "모델 태그 · {{subProvider}}",
         label: "모델 접두사",
         accessibilityLabel: "모델 접두사",
