@@ -7,6 +7,8 @@ import { createTestLogger } from "../../../test-utils/test-logger.js";
 import type { Event as OpenCodeEvent } from "@opencode-ai/sdk/v2/client";
 import type { OpencodeClient } from "@opencode-ai/sdk/v2/client";
 import type { OpenCodeEventSource } from "./opencode/event-consumer.js";
+import type { OpenCodeBridge } from "./opencode/bridge.js";
+import { openCodeContextCapsKey, type OpenCodeModelContextCap } from "./opencode/context-cap.js";
 import {
   __openCodeInternals,
   OpenCodeAgentClient,
@@ -43,6 +45,32 @@ function tmpCwd(): string {
 
 function countEvents(events: AgentStreamEvent[], type: AgentStreamEvent["type"]): number {
   return events.filter((event) => event.type === type).length;
+}
+
+/**
+ * Minimal stand-in for the bridge: the agent only needs the cap registry and env
+ * decoration, and the test harness replaces the real server manager that would
+ * otherwise call the rest.
+ */
+function fakeBridge(): OpenCodeBridge & { caps: OpenCodeModelContextCap[] } {
+  const caps: OpenCodeModelContextCap[] = [];
+  const bridge = {
+    caps,
+    setModelContextCaps(next: OpenCodeModelContextCap[]) {
+      caps.length = 0;
+      caps.push(...next);
+    },
+    getModelContextCapsKey() {
+      return openCodeContextCapsKey(caps);
+    },
+    decorateServerEnv(env: Record<string, string>) {
+      return env;
+    },
+    bindSession() {
+      return () => undefined;
+    },
+  };
+  return bridge as unknown as OpenCodeBridge & { caps: OpenCodeModelContextCap[] };
 }
 
 function countProviderSubagentUpserts(events: AgentStreamEvent[]): number {
@@ -719,6 +747,119 @@ describe("OpenCodeAgentClient adapter smoke tests", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+
+  test("asks for a fresh server generation when the live one lacks the context caps", async () => {
+    const runtime = new TestOpenCodeHarness();
+    const openCodeClient = new TestOpenCodeClient();
+    openCodeClient.providerListResponse = {
+      data: {
+        connected: ["opencode"],
+        all: [
+          {
+            id: "opencode",
+            name: "OpenCode",
+            source: "api",
+            models: { "big-pickle": { name: "Big Pickle", limit: { context: 200_000 } } },
+          },
+        ],
+      },
+    };
+    openCodeClient.appAgentsResponse = {
+      data: [{ name: "build", mode: "primary", hidden: false }],
+    };
+    runtime.enqueueClient(openCodeClient);
+    const paseoHome = tmpCwd();
+    const client = new OpenCodeAgentClient(logger, undefined, {
+      serverManager: runtime,
+      createClient: runtime.createClient,
+      resolveHomeDir: () => path.join(paseoHome, "opencode-home"),
+      bridge: fakeBridge(),
+      maxContextTokens: 50_000,
+    });
+
+    await client.fetchCatalog({ scope: "global", force: false });
+    const before = runtime.acquisitions.length;
+    await client.createSession({ provider: "opencode", cwd: paseoHome, providerOptions: {} });
+
+    const kinds = runtime.acquisitions.slice(before).map((entry) => entry.kind);
+    expect(kinds).toContain("new");
+  });
+
+  test("reuses the current generation once it already carries the caps", async () => {
+    const runtime = new TestOpenCodeHarness();
+    const openCodeClient = new TestOpenCodeClient();
+    openCodeClient.providerListResponse = {
+      data: {
+        connected: ["opencode"],
+        all: [
+          {
+            id: "opencode",
+            name: "OpenCode",
+            source: "api",
+            models: { "big-pickle": { name: "Big Pickle", limit: { context: 200_000 } } },
+          },
+        ],
+      },
+    };
+    openCodeClient.appAgentsResponse = {
+      data: [{ name: "build", mode: "primary", hidden: false }],
+    };
+    runtime.enqueueClient(openCodeClient);
+    const paseoHome = tmpCwd();
+    const bridge = fakeBridge();
+    const client = new OpenCodeAgentClient(logger, undefined, {
+      serverManager: runtime,
+      createClient: runtime.createClient,
+      resolveHomeDir: () => path.join(paseoHome, "opencode-home"),
+      bridge,
+      maxContextTokens: 50_000,
+    });
+
+    await client.fetchCatalog({ scope: "global", force: false });
+    runtime.currentContextCapsKey = "opencode/big-pickle=50000";
+    const before = runtime.acquisitions.length;
+    await client.createSession({ provider: "opencode", cwd: paseoHome, providerOptions: {} });
+
+    const kinds = runtime.acquisitions.slice(before).map((entry) => entry.kind);
+    expect(kinds).not.toContain("new");
+  });
+
+  test("emits no caps when the provider has no configured ceiling", async () => {
+    const runtime = new TestOpenCodeHarness();
+    const openCodeClient = new TestOpenCodeClient();
+    openCodeClient.providerListResponse = {
+      data: {
+        connected: ["opencode"],
+        all: [
+          {
+            id: "opencode",
+            name: "OpenCode",
+            source: "api",
+            models: { "big-pickle": { name: "Big Pickle", limit: { context: 200_000 } } },
+          },
+        ],
+      },
+    };
+    openCodeClient.appAgentsResponse = {
+      data: [{ name: "build", mode: "primary", hidden: false }],
+    };
+    runtime.enqueueClient(openCodeClient);
+    const paseoHome = tmpCwd();
+    const bridge = fakeBridge();
+    const client = new OpenCodeAgentClient(logger, undefined, {
+      serverManager: runtime,
+      createClient: runtime.createClient,
+      resolveHomeDir: () => path.join(paseoHome, "opencode-home"),
+      bridge,
+    });
+
+    await client.fetchCatalog({ scope: "global", force: false });
+    const before = runtime.acquisitions.length;
+    await client.createSession({ provider: "opencode", cwd: paseoHome, providerOptions: {} });
+
+    expect(bridge.caps).toEqual([]);
+    expect(runtime.acquisitions.slice(before).map((entry) => entry.kind)).not.toContain("new");
   });
 
   test("fetchCatalog returns models with required fields", async () => {

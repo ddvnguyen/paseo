@@ -15,6 +15,8 @@ export interface TestOpenCodeServerAcquisition {
 export class TestOpenCodeServerManager implements OpenCodeServerManagerLike {
   readonly acquisitions: TestOpenCodeServerAcquisition[] = [];
   readonly server = { port: 1234, url: "http://127.0.0.1:1234" };
+  /** Overridable so tests can model a generation that already carries the caps. */
+  currentContextCapsKey = "";
 
   async acquireCurrent(): Promise<OpenCodeServerAcquisition> {
     return this.recordAcquisition({ kind: "current" });
@@ -30,6 +32,10 @@ export class TestOpenCodeServerManager implements OpenCodeServerManagerLike {
 
   acquireExisting(url: string): OpenCodeServerAcquisition | null {
     return url === this.server.url ? this.recordAcquisition({ kind: "existing", url }) : null;
+  }
+
+  getCurrentContextCapsKey(): string {
+    return this.currentContextCapsKey;
   }
 
   private recordAcquisition(input: {

@@ -224,3 +224,110 @@ describe("OpenCodeBridge", () => {
     }
   });
 });
+
+describe("opencode bridge context cap injection", () => {
+  test("injects the configured model ceiling into OPENCODE_CONFIG_CONTENT", async () => {
+    const paseoHome = await mkdtemp(path.join(tmpdir(), "paseo-opencode-cap-"));
+    temporaryDirectories.push(paseoHome);
+    const bridge = new OpenCodeBridge({ paseoHome, logger: createTestLogger() });
+    await bridge.start();
+
+    try {
+      bridge.setModelContextCaps([
+        { providerId: "anthropic", modelId: "claude-sonnet-4", contextCap: 200_000 },
+      ]);
+
+      const env = bridge.decorateServerEnv({
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({ model: "anthropic/claude-sonnet-4" }),
+      });
+      const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT as string) as {
+        model: string;
+        provider: Record<string, { models: Record<string, { limit: { context: number } }> }>;
+      };
+
+      expect(config.model).toBe("anthropic/claude-sonnet-4");
+      expect(config.provider.anthropic.models["claude-sonnet-4"].limit.context).toBe(200_000);
+      expect(bridge.getModelContextCapsKey()).toBe("anthropic/claude-sonnet-4=200000");
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  // decorateServerEnv runs on every spawn, so re-running it must not accumulate state.
+  test("stays idempotent across repeated decoration", async () => {
+    const paseoHome = await mkdtemp(path.join(tmpdir(), "paseo-opencode-cap-idem-"));
+    temporaryDirectories.push(paseoHome);
+    const bridge = new OpenCodeBridge({ paseoHome, logger: createTestLogger() });
+    await bridge.start();
+
+    try {
+      bridge.setModelContextCaps([
+        { providerId: "anthropic", modelId: "m1", contextCap: 200_000 },
+        { providerId: "openai", modelId: "m2", contextCap: 100_000 },
+      ]);
+
+      const first = bridge.decorateServerEnv({});
+      const second = bridge.decorateServerEnv(first);
+      const third = bridge.decorateServerEnv(second);
+
+      const parsed = (env: Record<string, string>) =>
+        JSON.parse(env.OPENCODE_CONFIG_CONTENT as string) as {
+          provider: Record<string, { models: Record<string, { limit: { context: number } }> }>;
+          plugin: unknown[];
+        };
+
+      expect(parsed(second).provider).toEqual(parsed(first).provider);
+      expect(parsed(third).provider).toEqual(parsed(first).provider);
+      expect(parsed(third).provider.anthropic.models.m1.limit.context).toBe(200_000);
+      expect(parsed(third).provider.openai.models.m2.limit.context).toBe(100_000);
+      // One bridge plugin, however many times we decorate.
+      expect(parsed(third).plugin).toHaveLength(1);
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  test("emits no provider config when no caps are registered", async () => {
+    const paseoHome = await mkdtemp(path.join(tmpdir(), "paseo-opencode-cap-none-"));
+    temporaryDirectories.push(paseoHome);
+    const bridge = new OpenCodeBridge({ paseoHome, logger: createTestLogger() });
+    await bridge.start();
+
+    try {
+      const env = bridge.decorateServerEnv({});
+      const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT as string) as {
+        provider?: unknown;
+      };
+
+      expect(config.provider).toBeUndefined();
+      expect(bridge.getModelContextCapsKey()).toBe("");
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  test("replaces the cap set rather than merging with the previous one", async () => {
+    const paseoHome = await mkdtemp(path.join(tmpdir(), "paseo-opencode-cap-replace-"));
+    temporaryDirectories.push(paseoHome);
+    const bridge = new OpenCodeBridge({ paseoHome, logger: createTestLogger() });
+    await bridge.start();
+
+    try {
+      bridge.setModelContextCaps([{ providerId: "anthropic", modelId: "m1", contextCap: 200_000 }]);
+      bridge.setModelContextCaps([{ providerId: "openai", modelId: "m2", contextCap: 100_000 }]);
+
+      const env = bridge.decorateServerEnv({
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { anthropic: { models: {} } } }),
+      });
+      const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT as string) as {
+        provider: Record<string, { models: Record<string, { limit: { context: number } }> }>;
+      };
+
+      expect(config.provider.anthropic.models).toEqual({});
+      expect(config.provider.openai.models.m2.limit.context).toBe(100_000);
+      expect(bridge.getModelContextCapsKey()).toBe("openai/m2=100000");
+    } finally {
+      await bridge.close();
+    }
+  });
+});

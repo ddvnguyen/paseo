@@ -39,6 +39,10 @@ export interface OpenCodeServerManagerLike {
   acquireNew(signal?: AbortSignal): Promise<OpenCodeServerAcquisition>;
   acquireDedicated(env: Record<string, string>): Promise<OpenCodeServerAcquisition>;
   acquireExisting(url: string): OpenCodeServerAcquisition | null;
+  /**
+   * Cap fingerprint carried by the live generation, or "" when none/unknown.
+   */
+  getCurrentContextCapsKey(): string;
   shutdown(): Promise<void>;
 }
 
@@ -52,6 +56,11 @@ export interface OpenCodeServerGeneration {
   events: OpenCodeEventConsumer;
   managedProcessId?: string;
   managedProcessRecord?: Promise<{ id: string } | null>;
+  /**
+   * Fingerprint of the model context caps baked into this generation's config.
+   * Empty when the generation predates cap injection.
+   */
+  contextCapsKey: string;
 }
 
 export type OpenCodePortAllocator = () => Promise<number>;
@@ -74,6 +83,11 @@ export interface OpenCodeServerManagerOptions {
   spawnServerProcess?: OpenCodeServerProcessSpawner;
   createEventSource?: OpenCodeEventConsumerFactory;
   decorateServerEnv?: (env: Record<string, string>) => Record<string, string>;
+  /**
+   * Current desired model-context-cap fingerprint, read at spawn time so a generation
+   * records which caps its config carries.
+   */
+  resolveContextCapsKey?: () => string;
 }
 
 export class OpenCodeServerManager implements OpenCodeServerManagerLike {
@@ -93,6 +107,7 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
   private readonly resolveCommandPrefix: OpenCodeCommandPrefixResolver;
   private readonly resolveHomeDir: () => string;
   private readonly spawnServerProcess: OpenCodeServerProcessSpawner;
+  private readonly resolveContextCapsKey?: () => string;
   private readonly createEventSource: OpenCodeEventConsumerFactory;
   private readonly decorateServerEnv?: (env: Record<string, string>) => Record<string, string>;
 
@@ -109,6 +124,7 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
       (() => resolveProviderCommandPrefix(this.runtimeSettings?.command, resolveOpenCodeBinary));
     this.resolveHomeDir = options.resolveHomeDir ?? resolveOpenCodeHomeDir;
     this.spawnServerProcess = options.spawnServerProcess ?? spawnProcess;
+    this.resolveContextCapsKey = options.resolveContextCapsKey;
     this.createEventSource =
       options.createEventSource ?? ((input) => new OpenCodeEventConsumer(input));
     this.decorateServerEnv = options.decorateServerEnv;
@@ -153,6 +169,10 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
     process.on("exit", cleanup);
     process.on("SIGTERM", cleanup);
     process.on("SIGINT", cleanup);
+  }
+
+  getCurrentContextCapsKey(): string {
+    return this.currentServer?.contextCapsKey ?? "";
   }
 
   async acquireCurrent(signal?: AbortSignal): Promise<OpenCodeServerAcquisition> {
@@ -360,6 +380,7 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
       ready: Promise.resolve(),
       events: this.createEventSource({ serverUrl: url, processExit, logger: this.logger }),
       managedProcessRecord,
+      contextCapsKey: this.resolveContextCapsKey?.() ?? "",
     };
     this.logger.info(
       { ...generationLogContext(server), dedicated: launchEnv !== undefined },

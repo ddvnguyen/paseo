@@ -12,6 +12,12 @@ import {
   serializePaseoToolInputParameters,
 } from "../../tools/paseo-tool-serialization.js";
 import type { PaseoToolCatalog } from "../../tools/types.js";
+import {
+  applyOpenCodeContextCaps,
+  openCodeContextCapKey,
+  openCodeContextCapsKey,
+  type OpenCodeModelContextCap,
+} from "./context-cap.js";
 
 const INTERNAL_PREFIX = "/_internal/opencode";
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -49,6 +55,7 @@ export class OpenCodeBridge {
   private baseUrl: string | null = null;
   private pluginUrl: string | null = null;
   private manifestCatalog: PaseoToolCatalog | null = null;
+  private readonly contextCaps = new Map<string, OpenCodeModelContextCap>();
 
   constructor(options: OpenCodeBridgeOptions) {
     this.paseoHome = options.paseoHome;
@@ -109,10 +116,26 @@ export class OpenCodeBridge {
     return {
       ...env,
       OPENCODE_CONFIG_CONTENT: JSON.stringify({
-        ...config,
+        ...applyOpenCodeContextCaps(config, this.contextCaps.values()),
         plugin: [...withoutBridge, [pluginUrl, options]],
       }),
     };
+  }
+
+  /**
+   * Replaces the set of model ceilings injected into OpenCode's config. Called by
+   * the agent as it learns which models the server actually serves, so no cap is
+   * written for a model OpenCode does not know.
+   */
+  setModelContextCaps(caps: Iterable<OpenCodeModelContextCap>): void {
+    this.contextCaps.clear();
+    for (const cap of caps) {
+      this.contextCaps.set(openCodeContextCapKey(cap.providerId, cap.modelId), cap);
+    }
+  }
+
+  getModelContextCapsKey(): string {
+    return openCodeContextCapsKey(this.contextCaps.values());
   }
 
   async close(): Promise<void> {

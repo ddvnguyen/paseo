@@ -90,6 +90,53 @@ export const ClaudeProviderOptionsSchema = z
 
 export type ClaudeProviderOptions = z.infer<typeof ClaudeProviderOptionsSchema>;
 
+// The SDK forwards every extraArgs key verbatim as `--<key> <value>` on the claude argv, so this
+// key becomes the `--autocompact` flag.
+const CLAUDE_AUTO_COMPACT_ARG = "autocompact";
+// claude 2.1.285 parses --autocompact with these bounds and *throws* on anything outside them,
+// which fails the agent at startup rather than degrading. Verified from the installed binary: the
+// flag parser (yxt) returns undefined for r < 1e5 or r > 1e6, and the argParser turns that into
+// "It must be 'auto', or between 100k and 1M". Translate into the range here instead of passing
+// the configured number through.
+const CLAUDE_AUTO_COMPACT_MIN_TOKENS = 100_000;
+const CLAUDE_AUTO_COMPACT_MAX_TOKENS = 1_000_000;
+
+/**
+ * Lower Claude Code's auto-compact window to a provider-level context cap.
+ *
+ * Claude Code's effective window is `min(modelContextWindow, autoCompactWindow)`, so setting the
+ * auto-compact window is the only channel through which a cap reaches this harness — and it can
+ * only lower the window, never raise it. Enforcement is by summarization, not by refusing turns:
+ * the cap makes the session compact earlier than the model window would.
+ *
+ * `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is deliberately NOT used. Despite the name it only applies to
+ * model IDs Claude Code does not recognize; for real `claude-*` IDs it is inert. The output-token
+ * knobs (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `MAX_THINKING_TOKENS`) bound a single response and are
+ * likewise unrelated to the conversation window.
+ *
+ * A user-supplied `autocompact` in `extraArgs` wins over the derived cap — explicit beats implicit —
+ * and every other user extraArgs key is preserved.
+ */
+export function applyClaudeContextCap(
+  options: ClaudeProviderOptions,
+  maxContextTokens: number | undefined,
+): ClaudeProviderOptions {
+  if (maxContextTokens === undefined) return options;
+  const extraArgs = options.extraArgs;
+  if (extraArgs && CLAUDE_AUTO_COMPACT_ARG in extraArgs) return options;
+  // Above the ceiling the cap cannot lower any window Claude Code can currently run, and the
+  // parser rejects the flag outright. Emitting nothing matches `min(modelWindow, cap)` exactly and
+  // avoids capping a future model whose window exceeds 1M — which the harness cannot express.
+  if (maxContextTokens > CLAUDE_AUTO_COMPACT_MAX_TOKENS) return options;
+  // ACCEPTED LIMITATION: a cap below 100k is raised to 100k. The parser rejects anything smaller,
+  // so a sub-100k user cap cannot be expressed on this harness at all, and the resulting window is
+  // *higher* than the user asked for. The floor belongs to the CLI, not to Paseo — auto-compaction
+  // is the only enforcement mechanism available here, and it has a 100k floor. Sub-100k caps are
+  // meaningful on providers whose harness accepts them, not on Claude.
+  const tokens = Math.max(CLAUDE_AUTO_COMPACT_MIN_TOKENS, maxContextTokens);
+  return { ...options, extraArgs: { ...extraArgs, [CLAUDE_AUTO_COMPACT_ARG]: String(tokens) } };
+}
+
 export function applyClaudeToolPolicy(
   options: ClaudeProviderOptions,
   toolPolicy: ToolPolicy | undefined,

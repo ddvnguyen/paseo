@@ -12,6 +12,20 @@ function readPositiveNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+/**
+ * The single reader of a provider's configured `maxContextTokens` ceiling.
+ *
+ * Both consumers call this rather than reading the raw config field: the registry
+ * mapper that caps the models Paseo advertises, and the per-provider agent clients
+ * that inject the ceiling into the harness. A second, slightly different reader
+ * would let the number the user set and the number the harness enforces drift.
+ */
+export function resolveProviderContextCap(
+  maxContextTokens: number | undefined,
+): number | undefined {
+  return readPositiveNumber(maxContextTokens);
+}
+
 function capWindow(reported: number | undefined, cap: number): number {
   return reported === undefined ? cap : Math.min(reported, cap);
 }
