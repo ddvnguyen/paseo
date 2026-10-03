@@ -1990,6 +1990,7 @@ export const ru: TranslationResources = {
       notifications: "Уведомления",
       permissions: "Разрешения",
       diagnostics: "Диагностика",
+      debug: "Отладка",
       about: "О приложении",
     },
     layout: en.settings.layout,
@@ -2661,6 +2662,9 @@ export const ru: TranslationResources = {
         discovered: "Обнаруженные модели",
         custom: "Пользовательские модели",
         updated: "Обновлено {{time}}",
+        disableModel: "Скрыть {{id}} в средстве выбора модели",
+        enableModel: "Показать {{id}} в средстве выбора модели",
+        lastModelHint: "Хотя бы одна модель остаётся включённой",
       },
       maxContext: {
         section: "Ограничение контекста",

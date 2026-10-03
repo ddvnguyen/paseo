@@ -1977,6 +1977,7 @@ export const ja: TranslationResources = {
       notifications: "通知",
       permissions: "権限",
       diagnostics: "診断",
+      debug: "デバッグ",
       about: "アプリ情報",
     },
     layout: en.settings.layout,
@@ -2638,6 +2639,9 @@ export const ja: TranslationResources = {
         discovered: "検出済み",
         custom: "カスタムモデル",
         updated: "{{time}}に更新",
+        disableModel: "{{id}}をモデルセレクターから非表示にする",
+        enableModel: "{{id}}をモデルセレクターに表示する",
+        lastModelHint: "少なくとも1つのモデルは有効なままです",
       },
       maxContext: {
         section: "コンテキスト上限",

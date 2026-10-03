@@ -1957,6 +1957,7 @@ export const ar: TranslationResources = {
       notifications: "الإشعارات",
       permissions: "الأذونات",
       diagnostics: "التشخيص",
+      debug: "التصحيح",
       about: "عن",
     },
     layout: en.settings.layout,
@@ -2611,6 +2612,9 @@ export const ar: TranslationResources = {
         discovered: "اكتشف",
         custom: "نماذج مخصصة",
         updated: "تم تحديث{{time}}",
+        disableModel: "إخفاء {{id}} من محدد النموذج",
+        enableModel: "إظهار {{id}} في محدد النموذج",
+        lastModelHint: "يظل نموذج واحد على الأقل مفعّلًا",
       },
       maxContext: {
         section: "حد السياق",

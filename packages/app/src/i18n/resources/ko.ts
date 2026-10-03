@@ -1967,6 +1967,7 @@ export const ko: TranslationResources = {
       notifications: "알림",
       permissions: "권한",
       diagnostics: "진단",
+      debug: "디버그",
       about: "정보",
     },
     layout: en.settings.layout,
@@ -2626,6 +2627,9 @@ export const ko: TranslationResources = {
         discovered: "발견됨",
         custom: "사용자 지정 모델",
         updated: "{{time}} 업데이트됨",
+        disableModel: "모델 선택기에서 {{id}}을(를) 숨기기",
+        enableModel: "모델 선택기에서 {{id}}을(를) 표시",
+        lastModelHint: "최소 하나의 모델은 활성화된 상태로 유지됩니다",
       },
       maxContext: {
         section: "컨텍스트 한도",

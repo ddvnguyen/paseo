@@ -1990,6 +1990,7 @@ export const ptBR: TranslationResources = {
       notifications: "Notificações",
       permissions: "Permissões",
       diagnostics: "Diagnósticos",
+      debug: "Depuração",
       about: "Sobre",
     },
     layout: en.settings.layout,
@@ -2653,6 +2654,9 @@ export const ptBR: TranslationResources = {
         discovered: "Descobertos",
         custom: "Modelos personalizados",
         updated: "Atualizado {{time}}",
+        disableModel: "Ocultar {{id}} dos seletores de modelo",
+        enableModel: "Mostrar {{id}} nos seletores de modelo",
+        lastModelHint: "Pelo menos um modelo permanece ativado",
       },
       maxContext: {
         section: "Limite de contexto",

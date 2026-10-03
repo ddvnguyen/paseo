@@ -1936,6 +1936,7 @@ export const zhCN: TranslationResources = {
       notifications: "通知",
       permissions: "权限",
       diagnostics: "诊断",
+      debug: "调试",
       about: "关于",
     },
     layout: en.settings.layout,
@@ -2580,6 +2581,9 @@ export const zhCN: TranslationResources = {
         discovered: "已发现",
         custom: "自定义 Models",
         updated: "已更新 {{time}}",
+        disableModel: "从模型选择器中隐藏 {{id}}",
+        enableModel: "在模型选择器中显示 {{id}}",
+        lastModelHint: "至少保留一个已启用的模型",
       },
       maxContext: {
         section: "上下文上限",

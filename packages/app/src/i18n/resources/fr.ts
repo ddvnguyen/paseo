@@ -2010,6 +2010,7 @@ export const fr: TranslationResources = {
       notifications: "Notifications",
       permissions: "Autorisations",
       diagnostics: "Diagnostic",
+      debug: "Débogage",
       about: "À propos",
     },
     layout: en.settings.layout,
@@ -2677,6 +2678,9 @@ export const fr: TranslationResources = {
         discovered: "Découvert",
         custom: "Modèles personnalisés",
         updated: "{{time}}mis à jour",
+        disableModel: "Masquer {{id}} dans les sélecteurs de modèle",
+        enableModel: "Afficher {{id}} dans les sélecteurs de modèle",
+        lastModelHint: "Au moins un modèle reste activé",
       },
       maxContext: {
         section: "Limite de contexte",

@@ -2005,6 +2005,7 @@ export const es: TranslationResources = {
       notifications: "Notificaciones",
       permissions: "Permisos",
       diagnostics: "Diagnóstico",
+      debug: "Depuración",
       about: "Acerca de",
     },
     layout: en.settings.layout,
@@ -2670,6 +2671,9 @@ export const es: TranslationResources = {
         discovered: "descubierto",
         custom: "Modelos personalizados",
         updated: "{{time}}actualizado",
+        disableModel: "Ocultar {{id}} de los selectores de modelo",
+        enableModel: "Mostrar {{id}} en los selectores de modelo",
+        lastModelHint: "Al menos un modelo permanece habilitado",
       },
       maxContext: {
         section: "Límite de contexto",
