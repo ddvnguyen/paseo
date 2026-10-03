@@ -538,8 +538,6 @@ export function TrajectoryCellRow(props: {
  */
 function StatsCell(props: { cell: TrajectoryCellProps; theme: PluginTheme }) {
   const { cell, theme } = props;
-  // A derived round carries no numbers of its own: its STATS column reports the
-  // facts that justify it — how many tool results it stands between.
   if (cell.kind === "thinking") {
     // One merged reasoning run: the count of stream events it stands for, since
     // the character total is already in CONTEXT.
@@ -551,6 +549,8 @@ function StatsCell(props: { cell: TrajectoryCellProps; theme: PluginTheme }) {
     );
   }
   if (cell.kind === "llm") {
+    // A derived round carries no numbers of its own: its STATS column reports the
+    // facts that justify it — how many tool results it stands between.
     return (
       <Text style={monoStyles(theme)} testID="stats-text" numberOfLines={1}>
         {consumedResults(cell.text)}
