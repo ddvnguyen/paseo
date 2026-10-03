@@ -94,7 +94,33 @@ function text(testID: string): string | null {
 
 const TOOL_ROW = FIXTURE_ROWS[2];
 const ERROR_ROW = FIXTURE_ROWS[3];
-const IN_FLIGHT_ROW = FIXTURE_ROWS[7];
+/**
+ * A call whose result never arrived: the one row the ledger treats as still
+ * running. Built here rather than taken from the shared fixtures so its start is
+ * relative to the test's own clock, which is what a live elapsed reads against.
+ */
+const OPEN_ROW: TrajectoryFoldRow = {
+  seq: 8,
+  timeMs: Date.now() - 5_000,
+  kind: "tool",
+  label: "bash · npm run build",
+  durationMs: null,
+  open: true,
+  callId: "c9",
+  turnId: "t3",
+  step: 1,
+};
+
+const MESSAGE_ROW: TrajectoryFoldRow = {
+  seq: 41,
+  timeMs: Date.parse("2026-10-03T00:00:00Z"),
+  kind: "message",
+  label: "assistant message",
+  durationMs: 700,
+  turnId: "t2",
+  step: 1,
+  usage: { input: 1200, cacheRead: 300, cacheWrite: null, output: 84, think: 12 },
+};
 
 describe("trajectory inspector", () => {
   it("renders nothing when no row is selected (closed by default)", () => {
@@ -103,46 +129,100 @@ describe("trajectory inspector", () => {
     expect(container.textContent).toBe("");
   });
 
-  it("shows tool-row facts: seq, turn, duration, output, status, call", () => {
+  it("shows a tool row's identity, timing, payload and call", () => {
     render(TOOL_ROW);
     expect(text("inspector-label")).toBe("shell · npm test");
     expect(text("inspector-seq")).toBe("#2");
     expect(text("inspector-turn")).toBe("t1");
-    // 2.4s floors to "2s" — the inspector shares the ledger's formatter.
+    // 2.4s floors to "2s" — the panel shares the ledger's formatter.
     expect(text("inspector-duration")).toBe("2s");
+    expect(text("inspector-status-value")).toBe("Completed");
+    expect(text("inspector-timing-source")).toBe("Ledger timestamps");
+    // dsh's Payload, at the fidelity the ledger records: the arguments summary.
+    expect(text("inspector-args")).toBe("npm test");
     expect(text("inspector-output")).toContain("1,520 chars");
-    // Fixture carries no failure flag: status is unknown, not "ok".
-    expect(text("inspector-error")).toBe("—");
     expect(text("inspector-call")).toBe("c1");
+    // dsh gives every tool record a Schema tab; ours states the gap instead of
+    // leaving the reader to guess whether the panel is simply missing it.
+    expect(text("inspector-schema")).toBe("not recorded");
   });
 
-  it("marks failed tool rows as error", () => {
+  it("says when the row started, and offers the unix stamp", () => {
+    render(TOOL_ROW);
+    const started = document.querySelector('[data-testid="inspector-started-value"]');
+    const local = started?.textContent ?? "";
+    expect(local).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$/);
+    act(() =>
+      (
+        document.querySelector('[data-testid="inspector-started-toggle"]') as HTMLButtonElement
+      ).click(),
+    );
+    const unix = document.querySelector('[data-testid="inspector-started-value"]')?.textContent;
+    expect(unix).toBe(((TOOL_ROW.timeMs ?? 0) / 1_000).toFixed(3));
+  });
+
+  it("marks a failed tool row as Failed", () => {
     render(ERROR_ROW);
     expect(text("inspector-label")).toBe("read · src/app.ts");
-    expect(text("inspector-error")).toBe("error");
+    expect(text("inspector-status-value")).toBe("Failed");
   });
 
-  it("renders an em dash for in-flight duration", () => {
-    render(IN_FLIGHT_ROW);
+  it("renders an em dash for a duration that was never measured", () => {
+    // The fixture's third tool row settled with no recorded duration (its call
+    // start was never observed), which is not the same as still running.
+    render(FIXTURE_ROWS[7]);
     expect(text("inspector-duration")).toBe("—");
+    expect(text("inspector-timing-source")).toBe("Not available");
+    expect(text("inspector-status-value")).toBe("Completed");
   });
 
-  it("shows token buckets for message rows with usage", () => {
-    const message: TrajectoryFoldRow = {
-      seq: 41,
-      timeMs: null,
-      kind: "message",
-      label: "assistant message",
-      durationMs: 700,
-      turnId: "t2",
-      step: 1,
-      usage: { input: 1200, cacheRead: 300, cacheWrite: null, output: 84, think: null },
-    };
-    render(message);
+  it("counts an open row up live instead of showing an em dash", () => {
+    vi.useFakeTimers();
+    try {
+      render(OPEN_ROW);
+      expect(text("inspector-status-value")).toBe("Pending");
+      expect(text("inspector-timing-source")).toBe("Ledger timestamps (running)");
+      expect(text("inspector-duration")).toBe("5s");
+      act(() => {
+        vi.advanceTimersByTime(4_000);
+      });
+      expect(text("inspector-duration")).toBe("9s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives a message row the assistant timing block and the token split", () => {
+    render(MESSAGE_ROW);
+    // The assistant panel replaces the plain duration trio on a message row: a
+    // tool call has no first token, so those fields would be noise on it.
+    expect(document.querySelector('[data-testid="inspector-duration"]')).toBeNull();
+    // 700ms of recorded own duration, in dsh's ms formatter.
+    expect(text("inspector-total")).toBe("700 ms");
+    expect(text("inspector-ttft")).toBe("First token unavailable");
+    expect(text("inspector-generation")).toBe("First token unavailable");
+    expect(text("inspector-throughput")).toBe("First token unavailable");
     expect(text("inspector-tokens")).toBe("In 1,200(300) / out 84");
+    expect(text("inspector-output")).toBe("84 tok");
+    expect(text("inspector-reasoning")).toBe("12 tok");
+    expect(text("inspector-content")).toBe("72 tok");
     // No tool-only fields on message rows.
-    expect(document.querySelector('[data-testid="inspector-output"]')).toBeNull();
     expect(document.querySelector('[data-testid="inspector-call"]')).toBeNull();
+    expect(document.querySelector('[data-testid="inspector-args"]')).toBeNull();
+  });
+
+  it("names the missing start before the missing first token, in dsh's order", () => {
+    // dsh checks the step start first, so a row with no absolute stamp says so
+    // rather than blaming the first token it also has no stamp for.
+    render({ ...MESSAGE_ROW, timeMs: null });
+    expect(text("inspector-total")).toBe("700 ms");
+    expect(text("inspector-ttft")).toBe("Step start unavailable");
+  });
+
+  it("says when a derived row was inferred rather than observed", () => {
+    render({ ...TOOL_ROW, kind: "llm", label: "llm round 2 · consumed 3 results", derived: true });
+    expect(text("inspector-origin")).toBe("derived by the recorder");
+    expect(document.querySelector('[data-testid="inspector-args"]')).toBeNull();
   });
 
   it("renders the same fields in compact (overlay) as wide (dock)", () => {
@@ -150,6 +230,7 @@ describe("trajectory inspector", () => {
     expect(text("inspector-label")).toBe("shell · npm test");
     expect(text("inspector-seq")).toBe("#2");
     expect(text("inspector-duration")).toBe("2s");
+    expect(text("inspector-status-value")).toBe("Completed");
     expect(text("inspector-call")).toBe("c1");
   });
 

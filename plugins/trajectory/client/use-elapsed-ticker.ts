@@ -34,7 +34,11 @@ export function useLiveElapsedMs(live: boolean, intervalMs = 1_000): number | nu
 }
 
 /**
- * A row's own running time in seconds, live while the row is open.
+ * A row's own running time in MILLISECONDS, live while the row is open.
+ *
+ * Milliseconds, not seconds: every consumer downstream formats milliseconds (the
+ * ledger's duration tiers, dsh's ms formatter), so a seconds return would put a
+ * factor of 1000 between two adjacent lines and make "5 ms" out of five seconds.
  *
  * A settled row shows its recorded own duration (null = unknown = the dsh em
  * dash). An OPEN row has no end yet, so the honest number is the time since it
@@ -42,18 +46,18 @@ export function useLiveElapsedMs(live: boolean, intervalMs = 1_000): number | nu
  *
  * @param open Whether the row is still running.
  * @param startedAt Epoch ms the row started, when known.
- * @param recordedSeconds The row's own recorded duration, when settled.
- * @returns Seconds, or null when neither a live clock nor a duration exists.
+ * @param recordedMs The row's own recorded duration, when settled.
+ * @returns Milliseconds, or null when neither a live clock nor a duration exists.
  */
-export function useRowElapsedSeconds(input: {
+export function useRowElapsedMs(input: {
   open: boolean;
   startedAt: number | null | undefined;
-  recordedSeconds: number | null;
+  recordedMs: number | null;
 }): number | null {
-  const { open, startedAt, recordedSeconds } = input;
+  const { open, startedAt, recordedMs } = input;
   const nowMs = useLiveElapsedMs(open && typeof startedAt === "number");
-  if (!open || nowMs === null || typeof startedAt !== "number") return recordedSeconds;
-  const elapsed = (nowMs - startedAt) / 1_000;
+  if (!open || nowMs === null || typeof startedAt !== "number") return recordedMs;
+  const elapsed = nowMs - startedAt;
   // A clock that reads behind the row's start (clock skew between the daemon and
   // this device) must not produce a negative duration in a column of positives.
   return Math.max(0, elapsed);

@@ -4,7 +4,7 @@ import type { TextStyle, ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { formatElapsedSeconds } from "../shared/dsh/record.js";
 import type { TrajectoryCellProps } from "../shared/dsh/record.js";
-import { useRowElapsedSeconds } from "./use-elapsed-ticker.js";
+import { useRowElapsedMs } from "./use-elapsed-ticker.js";
 
 /**
  * Ledger row primitives, laid out as a virtual table (T3-B).
@@ -23,7 +23,7 @@ import { useRowElapsedSeconds } from "./use-elapsed-ticker.js";
  * outside its per-kind branch, so a Message row carries its time like a Tool
  * row does). It used to live inside STATS and only for tool rows, which left the
  * most common row in the ledger — a streamed assistant message — with no time at
- * all. A row still running ticks: see `useRowElapsedSeconds`.
+ * all. A row still running ticks: see `useRowElapsedMs`.
  */
 
 /**
@@ -465,13 +465,13 @@ export function TrajectoryCellRow(props: {
   // increases monotonically down the list — which is exactly what a zebra needs.
   // No extra prop, and it stays correct as turns stream in.
   const zebraStep: 0 | 1 = cell.index % 2 === 1 ? 1 : 0;
-  // The row's own running time. Settled rows read their recorded duration; an
-  // open row has no end yet, so this is the one place the row consults a clock
-  // (and the hook runs no timer at all while nothing is open).
-  const elapsedSeconds = useRowElapsedSeconds({
+  // The row's own running time, in ms. Settled rows read their recorded
+  // duration; an open row has no end yet, so this is the one place the row
+  // consults a clock (and the hook runs no timer at all while nothing is open).
+  const elapsedMs = useRowElapsedMs({
     open: cell.open === true,
     startedAt: cell.startedAt,
-    recordedSeconds: cell.timeSeconds,
+    recordedMs: cell.timeSeconds === null ? null : cell.timeSeconds * 1_000,
   });
   const styles = useMemo(
     () => cellStyles(theme, cell.isError === true, columns, zebraStep, cell.kind),
@@ -510,7 +510,10 @@ export function TrajectoryCellRow(props: {
         <StatsCell cell={cell} theme={theme} />
       </View>
       <View style={styles.dur} testID="col-dur">
-        <DurationText timeSeconds={elapsedSeconds} theme={theme} />
+        <DurationText
+          timeSeconds={elapsedMs === null ? cell.timeSeconds : elapsedMs / 1_000}
+          theme={theme}
+        />
       </View>
     </View>
   );

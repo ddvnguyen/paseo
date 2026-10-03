@@ -62,6 +62,29 @@ harness reads at launch. No hook exposes what a provider loaded, and a plugin
 cannot read an agent's workspace files. A row claiming otherwise would be
 fabricated.
 
+## Row timing
+
+A row's own duration is what the recorder measured, not what the fold inferred:
+
+- **Tool rows** carry `tool/result.data.durationMs` — wall time from the call
+  to the result — and are stamped at the **call** time. The stamp is the call
+  because the duration already spans call→result: anchored on the result, every
+  tool reads as a row that started when it finished, and the group wall span
+  (which folds `absTime + ownDuration`) lands a full duration late. dsh anchors
+  its tool cell at `callTime` for the same reason. A result whose call was never
+  observed has no call stamp, so its own event time is the anchor.
+- **Message and thinking rows** carry the span across the run's stream events,
+  so they grow as the response streams and stop growing when it ends.
+- **An unanswered call is the only open row**, and the only row that shows a
+  running time that ticks. A settled row keeps the duration it took: the ledger
+  records one real duration per fact, and a clock that keeps counting after a
+  row finished would report time the row did not take. Same reason no timer runs
+  at all while nothing is open.
+
+TTFT, generation time and decode throughput have no source here — no provider
+event says when the first token of a response arrived. The detail view says which
+field is missing instead of showing a number.
+
 ## Reference bugs fixed by construction (paseo-fleet review, d-03af302129)
 
 1. snake_case columns cast as camelCase -> explicit SQL aliases (`agent_id AS agentId`), tested.
