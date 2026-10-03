@@ -3,6 +3,7 @@ import type { MutableDaemonConfig } from "@getpaseo/protocol/messages";
 
 import {
   buildProviderModelPrefixes,
+  buildSubProviderModelSections,
   collectSubProviderIds,
   formatProviderModelPrefix,
   normalizeProviderModelPrefix,
@@ -197,5 +198,124 @@ describe("collectSubProviderIds", () => {
 
   test("handles an empty catalog", () => {
     expect(collectSubProviderIds([])).toEqual([]);
+  });
+});
+
+describe("buildSubProviderModelSections", () => {
+  const model = (id: string, providerId?: unknown) => ({
+    id,
+    ...(providerId === undefined ? {} : { metadata: { providerId } }),
+  });
+
+  const ANTHROPIC = model("anthropic/claude-sonnet-4", "anthropic");
+  const OPENAI = model("openai/gpt-5.4", "openai");
+  const OPENAI_MINI = model("openai/gpt-5.4-mini", "openai");
+
+  test("puts each sub-provider's rows under its own section", () => {
+    expect(
+      buildSubProviderModelSections(["anthropic", "openai"], [ANTHROPIC, OPENAI, OPENAI_MINI]),
+    ).toEqual([
+      { subProviderId: "anthropic", models: [ANTHROPIC] },
+      { subProviderId: "openai", models: [OPENAI, OPENAI_MINI] },
+    ]);
+  });
+
+  test("keeps the caller's section order rather than re-sorting it", () => {
+    // The order is collectSubProviderIds' to choose; re-sorting here would make
+    // the sheet's field order disagree with the list the sheet derives it from.
+    expect(
+      buildSubProviderModelSections(["openai", "anthropic"], [ANTHROPIC, OPENAI]).map(
+        (section) => section.subProviderId,
+      ),
+    ).toEqual(["openai", "anthropic"]);
+  });
+
+  test("gives a section no rows when every one of them was filtered out", () => {
+    // The tag field must survive a search: it is the only way to edit the tag
+    // for a sub-provider whose rows are not currently visible.
+    expect(buildSubProviderModelSections(["anthropic", "openai"], [OPENAI])).toEqual([
+      { subProviderId: "anthropic", models: [] },
+      { subProviderId: "openai", models: [OPENAI] },
+    ]);
+  });
+
+  test("renders one remainder section last for models that declare no sub-provider", () => {
+    const loose = model("claude-sonnet-4");
+    expect(buildSubProviderModelSections(["anthropic"], [loose, ANTHROPIC])).toEqual([
+      { subProviderId: "anthropic", models: [ANTHROPIC] },
+      { subProviderId: undefined, models: [loose] },
+    ]);
+  });
+
+  test("omits the remainder section when every model declares a sub-provider", () => {
+    // An empty leftover section reads as one that failed to load.
+    expect(
+      buildSubProviderModelSections(["anthropic", "openai"], [ANTHROPIC, OPENAI]),
+    ).toHaveLength(2);
+  });
+
+  test("renders a sub-provider section for rows the section list never mentioned", () => {
+    // Search can leave a sub-provider that collectSubProviderIds did not list —
+    // e.g. the caller passed a stale list. Dropping its rows would strand them in
+    // a bucket with no header, which is the failure mode grouping exists to avoid.
+    const sections = buildSubProviderModelSections(["anthropic"], [OPENAI]);
+
+    expect(sections).toEqual([
+      { subProviderId: "anthropic", models: [] },
+      { subProviderId: "openai", models: [OPENAI] },
+    ]);
+  });
+
+  test("appends an unlisted sub-provider after the listed ones, sorted", () => {
+    const sections = buildSubProviderModelSections(
+      ["openai"],
+      [ANTHROPIC, model("z/1", "z"), OPENAI],
+    );
+
+    expect(sections.map((section) => section.subProviderId)).toEqual(["openai", "anthropic", "z"]);
+  });
+
+  test("leaves a provider with no sub-providers a single remainder section", () => {
+    // The non-aggregating providers must render exactly what they render today:
+    // one list, under the header they already use.
+    const loose = [model("claude-sonnet-4"), model("claude-opus-4")];
+
+    expect(buildSubProviderModelSections([], loose)).toEqual([
+      { subProviderId: undefined, models: loose },
+    ]);
+  });
+
+  test("returns nothing for a search that matched no model", () => {
+    expect(buildSubProviderModelSections(["anthropic", "openai"], [])).toEqual([
+      { subProviderId: "anthropic", models: [] },
+      { subProviderId: "openai", models: [] },
+    ]);
+  });
+
+  test("keys a group by exactly what collectSubProviderIds enumerated", () => {
+    // The two functions feed the same render. If they disagreed about what counts
+    // as a sub-provider, rows would land under a header that does not exist, so
+    // pin them to each other rather than to a hand-written list.
+    const served = [
+      model("a/1", " anthropic "),
+      model("b/1", ""),
+      model("c/1", 7),
+      model("d/1"),
+      model("wafer.ai/1", "wafer.ai"),
+    ];
+
+    const sections = buildSubProviderModelSections(collectSubProviderIds(served), served);
+    const groups = sections.filter((section) => section.subProviderId !== undefined);
+
+    expect(groups.map((section) => section.subProviderId)).toEqual(collectSubProviderIds(served));
+    // Every served model lands in exactly one section — none dropped, none listed
+    // twice. Grouping deliberately reorders rows into section order, so compare
+    // membership rather than the flat sequence.
+    expect(
+      sections
+        .flatMap((section) => section.models)
+        .map((row) => row.id)
+        .sort(),
+    ).toEqual(served.map((row) => row.id).sort());
   });
 });

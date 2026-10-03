@@ -111,6 +111,87 @@ export function collectSubProviderIds(
 }
 
 /**
+ * One rendered block of the provider sheet: a sub-provider's tag field together
+ * with the models that belong under it.
+ */
+export interface SubProviderModelSection<T> {
+  /**
+   * `undefined` marks the remainder section: served models that declare no
+   * sub-provider. They have no tag field to sit under, so the sheet gives them a
+   * plain header of their own.
+   */
+  subProviderId: string | undefined;
+  models: T[];
+}
+
+/** The shape `readModelSubProviderId` needs; named so the section builder reads as one contract. */
+interface ModelWithSubProvider {
+  id: string;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Pairs the tag fields with the rows they sit above.
+ *
+ * Two inputs, deliberately different ones. `subProviderIds` comes from the
+ * UNFILTERED served models, because a search box must not make a configured tag
+ * unreachable — a field that vanishes while you type is a field you cannot edit.
+ * `filteredModels` supplies the rows, so a search narrows what is listed without
+ * narrowing what is configurable.
+ *
+ * The union is what makes this safe to render: a sub-provider that only the
+ * filtered rows mention still gets a section. Grouping the rows without this
+ * would leave them in a bucket with no header above it, which is the one failure
+ * mode a grouping pass can have.
+ */
+export function buildSubProviderModelSections<T extends ModelWithSubProvider>(
+  subProviderIds: readonly string[],
+  filteredModels: readonly T[],
+): SubProviderModelSection<T>[] {
+  const rowsBySubProvider = new Map<string, T[]>();
+  const remainder: T[] = [];
+
+  for (const model of filteredModels) {
+    // The same accessor collectSubProviderIds uses. Any other key derivation can
+    // disagree with the section list, and a disagreement strands rows.
+    const subProviderId = readModelSubProviderId(model);
+    if (subProviderId === undefined) {
+      remainder.push(model);
+      continue;
+    }
+    const bucket = rowsBySubProvider.get(subProviderId);
+    if (bucket) {
+      bucket.push(model);
+    } else {
+      rowsBySubProvider.set(subProviderId, [model]);
+    }
+  }
+
+  const sections: SubProviderModelSection<T>[] = [];
+  for (const subProviderId of subProviderIds) {
+    sections.push({ subProviderId, models: rowsBySubProvider.get(subProviderId) ?? [] });
+  }
+
+  // Sorted like collectSubProviderIds so a sub that only the filtered rows
+  // mention cannot reorder the sections above it.
+  const unplaced = [...rowsBySubProvider.keys()]
+    .filter((subProviderId) => !subProviderIds.includes(subProviderId))
+    .sort((a, b) => a.localeCompare(b));
+  for (const subProviderId of unplaced) {
+    sections.push({ subProviderId, models: rowsBySubProvider.get(subProviderId) ?? [] });
+  }
+
+  // Omitted when empty: a provider whose every served model declares a
+  // sub-provider has no leftover group, and an empty one would read as a section
+  // that failed to load.
+  if (remainder.length > 0) {
+    sections.push({ subProviderId: undefined, models: remainder });
+  }
+
+  return sections;
+}
+
+/**
  * The tag one model row renders: its own sub-provider's tag when it declares
  * one, otherwise the provider-wide tag. A provider with no tags at all resolves
  * to undefined, which leaves the label undecorated.
