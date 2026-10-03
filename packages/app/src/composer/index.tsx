@@ -115,8 +115,10 @@ import { submitAgentInput } from "@/composer/submit";
 import { createMessageSubmissionWriter } from "@/composer/submission/writer";
 import { ComposerKeyboardScopeProvider, useComposerKeyboardScope } from "@/composer/keyboard-scope";
 import { useAppSettings } from "@/hooks/use-settings";
+import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { RenderProfile } from "@/utils/render-profiler";
 import { AfterPaintPublication } from "@/composer/after-paint-publication";
+import { resolveConfiguredContextCap, resolveContextWindowValues } from "@/composer/context-window";
 import { isWeb, isNative } from "@/constants/platform";
 import type { ForgeSearchItem } from "@getpaseo/protocol/messages";
 import type {
@@ -1007,16 +1009,6 @@ interface ComposerProps {
 const EMPTY_ARRAY: readonly QueuedMessage[] = [];
 const StableMessageInput = memo(MessageInput);
 
-function resolveContextWindowValues(
-  rawMax: number | null,
-  rawUsed: number | null,
-): { contextWindowMaxTokens: number | null; contextWindowUsedTokens: number | null } {
-  if (typeof rawMax === "number" && typeof rawUsed === "number") {
-    return { contextWindowMaxTokens: rawMax, contextWindowUsedTokens: rawUsed };
-  }
-  return { contextWindowMaxTokens: null, contextWindowUsedTokens: null };
-}
-
 interface ComposerAutocompleteHandle {
   onKeyPress: (event: ComposerKeyPressEvent) => boolean;
 }
@@ -1300,6 +1292,7 @@ function ComposerContentImpl({
   });
 
   const { settings: appSettings } = useAppSettings();
+  const { config: daemonConfig } = useDaemonConfig(serverId);
 
   const agentState = useSessionStore(useShallow(buildAgentStateSelector(serverId, agentId)));
 
@@ -2073,6 +2066,7 @@ function ComposerContentImpl({
   const { contextWindowMaxTokens, contextWindowUsedTokens } = resolveContextWindowValues(
     agentState.contextWindowMaxTokens,
     agentState.contextWindowUsedTokens,
+    resolveConfiguredContextCap(daemonConfig, agentState.provider),
   );
 
   const contextWindowPending = agentState.status === "initializing" || isAgentRunning;
