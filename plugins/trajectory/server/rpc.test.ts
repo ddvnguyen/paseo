@@ -214,6 +214,49 @@ describe("trajectory read handlers", () => {
     }
   });
 
+  /**
+   * `headSeq` is the forward cursor only for a FORWARD page. On a reverse page
+   * it is the page's own tail — its OLDEST row — so adopting it as the next
+   * `afterSeq` rewinds past rows the caller already holds and re-delivers them.
+   * Pinned because the field is identical either way, so nothing in the types
+   * stops a caller from getting this wrong; the page contract comment is the
+   * only thing warning it.
+   */
+  test("a reverse page reports a headSeq that is NOT a usable forward cursor", async () => {
+    const store = createNodeStore(":memory:");
+    try {
+      for (let i = 0; i < 10; i++) {
+        store.append({
+          time: "2026-09-26T00:00:00.000Z",
+          type: "assistant/message",
+          turn: "t1",
+          step: null,
+          agentId: "agent-1",
+          data: {},
+        });
+      }
+      // A client at the tail holds seq 10; it pages backwards from seq 7.
+      const forwardCursor = 10;
+      const older = await handleList(store)({ agentId: "agent-1", beforeSeq: 7, limit: 4 });
+
+      expect({
+        events: older.events.map((event) => event.seq),
+        // Still the page's own last seq — that part of the contract holds.
+        headSeq: older.headSeq,
+        isPageTail: older.headSeq === older.events[older.events.length - 1].seq,
+        // …and sending it as afterSeq would rewind the cursor.
+        wouldRewind: older.headSeq < forwardCursor,
+      }).toEqual({
+        events: [3, 4, 5, 6],
+        headSeq: 6,
+        isPageTail: true,
+        wouldRewind: true,
+      });
+    } finally {
+      store.close();
+    }
+  });
+
   test("subscribe serves the same paged read as changes (push-reserved name)", async () => {
     const store = createNodeStore(":memory:");
     const base = Date.parse("2026-09-26T00:00:00Z");

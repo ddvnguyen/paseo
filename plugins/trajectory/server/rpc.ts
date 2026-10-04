@@ -49,6 +49,11 @@ function readPage(
   // An empty page reports the cursor the caller sent: no rows means no
   // progress, so the cursor must not move (0 for a fresh read, which is the
   // only way a first page is legitimately empty).
+  //
+  // On a REVERSE page (beforeSeq set) this is the page's OLDEST row, which is
+  // not a forward cursor: a caller paging backwards keeps its own. Stated here
+  // because this function cannot tell such a caller its headSeq is unusable —
+  // it is the same field either way.
   const headSeq = events.length > 0 ? events[events.length - 1].seq : (input.afterSeq ?? 0);
   return { events, headSeq };
 }

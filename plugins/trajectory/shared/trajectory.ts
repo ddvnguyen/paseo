@@ -72,11 +72,17 @@ export const TRAJECTORY_PAGE_LIMIT_DEFAULT = 500;
  * `beforeSeq` is the reverse cursor, exclusive: it is what makes history older
  * than one page reachable. No shipped client sends it yet.
  *
- * `headSeq` is the page's own last `seq`: the cursor to send as `afterSeq` to
- * continue forward. It is deliberately NOT the agent's global `MAX(seq)`,
- * which can name rows that were never sent (anything written between the page
- * query and a separate max query) and would put them out of reach of every
- * later `seq > afterSeq` poll.
+ * `headSeq` is the page's own last `seq`. It is deliberately NOT the agent's
+ * global `MAX(seq)`, which can name rows that were never sent (anything written
+ * between the page query and a separate max query) and would put them out of
+ * reach of every later `seq > afterSeq` poll.
+ *
+ * For a FORWARD page — anything without `beforeSeq`, which is every page a
+ * client reads today — `headSeq` is the cursor to send as `afterSeq` next. It is
+ * NOT that for a reverse page: a reverse page's last seq is its oldest row, and
+ * adopting it as the forward cursor would rewind past rows the caller already
+ * holds and re-deliver them. A caller paging backwards keeps its own forward
+ * cursor.
  */
 
 export const trajectoryList = defineTrajectoryRpc({
@@ -92,7 +98,11 @@ export const trajectoryList = defineTrajectoryRpc({
   }),
   output: z.object({
     events: z.array(TrajectoryEventSchema),
-    /** Seq of the newest row IN THIS PAGE; use as the next afterSeq cursor. */
+    /**
+     * Seq of the newest row IN THIS PAGE. Send it as the next `afterSeq` —
+     * unless this response was a `beforeSeq` (reverse) page, where the caller
+     * keeps its own forward cursor instead. See the page contract above.
+     */
     headSeq: z.number().int().nonnegative(),
   }),
 });
