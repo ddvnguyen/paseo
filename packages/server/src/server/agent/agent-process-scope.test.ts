@@ -5,7 +5,11 @@ import path from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import { readAgentProcessRegistry } from "./agent-process-registry.js";
+import {
+  flushLiveAgentProcesses,
+  isPidAlive,
+  readAgentProcessRegistry,
+} from "./agent-process-registry.js";
 import {
   __setAgentProcessScopeDetectionForTests,
   buildAgentScopeInvocation,
@@ -91,5 +95,34 @@ describe("spawnInAgentScope", () => {
     expect(
       readAgentProcessRegistry({ filePath: path.join(tmpDir, "agent-processes.json") }),
     ).toEqual([]);
+  });
+
+  test("does not wipe a registry entry when a live child emits a spurious exit", async () => {
+    __setAgentProcessScopeDetectionForTests({ available: true, reason: "forced by test" });
+    const registryPath = path.join(tmpDir, "agent-processes.json");
+    const child = spawnInAgentScope(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { stdio: "ignore" },
+      { provider: "scope-test", logger },
+    );
+    expect(child.pid).toBeGreaterThan(0);
+    expect(readAgentProcessRegistry({ filePath: registryPath })).toHaveLength(1);
+    const pid = child.pid as number;
+
+    // A daemon-teardown exit can surface while the scoped child is still
+    // alive; the record must survive so the next daemon can adopt the child.
+    child.emit("exit", 0, null);
+    expect(isPidAlive(pid)).toBe(true);
+    expect(readAgentProcessRegistry({ filePath: registryPath })).toHaveLength(1);
+
+    // The real exit lands next, but the once-listener already fired; the
+    // detach-stop flush is what finally drops the dead pid.
+    const closed = once(child, "close");
+    child.kill("SIGKILL");
+    await closed;
+    const flush = flushLiveAgentProcesses({ filePath: registryPath, logger });
+    expect(flush.removed.map((entry) => entry.pid)).toContain(pid);
+    expect(readAgentProcessRegistry({ filePath: registryPath })).toEqual([]);
   });
 });

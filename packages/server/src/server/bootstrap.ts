@@ -132,9 +132,11 @@ import { createSpeechService } from "./speech/speech-runtime.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { AgentStorage } from "./agent/agent-storage.js";
 import {
+  flushLiveAgentProcesses,
   reapStaleAgentProcesses,
   setAgentProcessRegistryHome,
 } from "./agent/agent-process-registry.js";
+import { beginAgentDetachStop, isDetachAgentsOnStopEnabled } from "./agent/agent-detach.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
 import {
@@ -632,6 +634,12 @@ export async function createPaseoDaemon(
   // reaping agree even when config.paseoHome came from an explicit test harness.
   setAgentProcessRegistryHome(config.paseoHome);
   reapStaleAgentProcesses({ logger });
+  if (isDetachAgentsOnStopEnabled()) {
+    logger.info(
+      { env: "PASEO_DETACH_AGENTS_ON_STOP" },
+      "Detach-on-stop configured: graceful stop will leave scoped agent children running",
+    );
+  }
   let relayRuntime: RelayRuntime | null = null;
 
   const staticDir = config.staticDir;
@@ -1789,6 +1797,11 @@ export async function createPaseoDaemon(
   };
 
   const stop = async () => {
+    // Detach-on-stop is decided once, here: with PASEO_DETACH_AGENTS_ON_STOP
+    // set, scoped provider children survive this stop (no cancel/closeSession/
+    // tree-kill) and their registry entries are flushed for the next daemon.
+    // Without it, every step below behaves exactly as before.
+    const detach = beginAgentDetachStop(logger);
     // Stop tracking plugin provider registrations before anything tears plugins
     // down, so plugin shutdown cannot withdraw a provider from under an agent
     // that is still open. Plugins themselves are stopped once every session
@@ -1801,6 +1814,12 @@ export async function createPaseoDaemon(
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
     await closeAllAgents(logger, agentManager);
+    if (detach) {
+      // Detach-stop flush: entries for surviving scoped children stay on disk
+      // for the next daemon; entries whose pid died during the stop are
+      // dropped here. Never throws into shutdown.
+      flushLiveAgentProcesses({ logger });
+    }
     await agentManager.flushForShutdown().catch(() => undefined);
     detachAgentStoragePersistence();
     await agentStorage.flush().catch(() => undefined);

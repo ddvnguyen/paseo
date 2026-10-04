@@ -136,7 +136,7 @@ export function forgetAgentProcess(
   }
 }
 
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -197,6 +197,43 @@ export function classifyAgentProcessEntry(entry: AgentProcessEntry): AgentProces
   if (!identity) return "dead";
   if (!identity.cmdline) return "dead";
   return matchesProviderMarker(identity, entry.provider) ? "live-matching" : "recycled";
+}
+
+/** Flush outcome: records kept because the pid is alive, records dropped. */
+export interface FlushResult {
+  kept: AgentProcessEntry[];
+  removed: AgentProcessEntry[];
+}
+
+/**
+ * Detach-stop flush: drop entries whose pid is gone, keep every entry whose
+ * pid is still alive (no provider-marker check — a live pid is enough to
+ * guarantee the next daemon can look at it; its startup reap decides
+ * live-vs-recycled). Never throws: a registry failure degrades to "nothing
+ * flushed".
+ */
+export function flushLiveAgentProcesses(options: AgentProcessRegistryOptions = {}): FlushResult {
+  const filePath = options.filePath ?? resolveAgentProcessRegistryPath();
+  const logger = options.logger;
+  try {
+    const entries = readAgentProcessRegistry({ filePath, logger });
+    const kept: AgentProcessEntry[] = [];
+    const removed: AgentProcessEntry[] = [];
+    for (const entry of entries) {
+      (isPidAlive(entry.pid) ? kept : removed).push(entry);
+    }
+    if (removed.length > 0) {
+      writePrivateFileAtomicSync(filePath, `${JSON.stringify(kept, null, 2)}\n`);
+    }
+    logger?.info(
+      { filePath, kept: kept.length, removed: removed.length },
+      "Agent process registry flushed for detach stop",
+    );
+    return { kept, removed };
+  } catch (error) {
+    logger?.warn({ err: error, filePath }, "Agent process registry flush failed; continuing");
+    return { kept: [], removed: [] };
+  }
 }
 
 /**

@@ -8,6 +8,7 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import { resolvePaseoHome } from "../paseo-home.js";
 import {
   classifyAgentProcessEntry,
+  flushLiveAgentProcesses,
   forgetAgentProcess,
   readAgentProcessRegistry,
   recordAgentProcess,
@@ -214,5 +215,70 @@ describe.runIf(process.platform === "linux")("agent process reaper", () => {
     // The reaper only prunes records — it never signals processes.
     expect(() => process.kill(livePid, 0)).not.toThrow();
     expect(() => process.kill(recycledPid, 0)).not.toThrow();
+  });
+});
+
+// The detach-stop flush is liveness-only: it must keep whatever is still
+// running (a child adopted by the next daemon) and drop only dead pids,
+// regardless of the provider marker the reaper checks.
+describe("agent process flush (detach stop)", () => {
+  let tmpDir: string;
+  let filePath: string;
+  const liveChildren: ReturnType<typeof spawn>[] = [];
+
+  function spawnLongRunning(): number {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+    });
+    liveChildren.push(child);
+    if (typeof child.pid !== "number") {
+      throw new Error("failed to spawn flush probe process");
+    }
+    return child.pid;
+  }
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), "agent-process-flush-"));
+    filePath = path.join(tmpDir, "agent-processes.json");
+  });
+
+  afterEach(() => {
+    for (const child of liveChildren.splice(0)) {
+      child.kill("SIGKILL");
+    }
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("keeps live entries, drops dead ones, and writes only when something was removed", () => {
+    const deadPid = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" }).pid as number;
+    const livePid = spawnLongRunning();
+
+    recordAgentProcess(
+      buildEntry({ scopeId: "flush-dead", unit: "flush-dead.scope", pid: deadPid }),
+      { filePath, logger },
+    );
+    recordAgentProcess(
+      buildEntry({ scopeId: "flush-live", unit: "flush-live.scope", pid: livePid }),
+      { filePath, logger },
+    );
+
+    const result = flushLiveAgentProcesses({ filePath, logger });
+    expect(result.kept.map((entry) => entry.scopeId)).toEqual(["flush-live"]);
+    expect(result.removed.map((entry) => entry.scopeId)).toEqual(["flush-dead"]);
+
+    const remaining = readAgentProcessRegistry({ filePath });
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].pid).toBe(livePid);
+
+    // Flushing again with nothing dead leaves the survivors untouched.
+    const again = flushLiveAgentProcesses({ filePath, logger });
+    expect(again.kept.map((entry) => entry.pid)).toEqual([livePid]);
+    expect(again.removed).toEqual([]);
+  });
+
+  test("degrades to an empty result when the registry file is missing", () => {
+    const result = flushLiveAgentProcesses({ filePath, logger });
+    expect(result).toEqual({ kept: [], removed: [] });
+    expect(readAgentProcessRegistry({ filePath })).toEqual([]);
   });
 });

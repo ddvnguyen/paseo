@@ -6,7 +6,7 @@ import type { Logger } from "pino";
 
 import { spawnProcess, type SpawnProcessOptions } from "../../utils/spawn.js";
 import type { AgentProcessEntry } from "./agent-process-registry.js";
-import { forgetAgentProcess, recordAgentProcess } from "./agent-process-registry.js";
+import { forgetAgentProcess, isPidAlive, recordAgentProcess } from "./agent-process-registry.js";
 
 export interface AgentScopeSpawnMeta {
   provider: string;
@@ -149,7 +149,15 @@ export function spawnInAgentScope(
       startedAt: new Date().toISOString(),
     };
     recordAgentProcess(entry, { logger });
+    // The spawner's exit/error event does not always mean the scoped child is
+    // gone: daemon teardown can surface either first. Only drop the record once
+    // the pid is actually dead, so a detach-stop never wipes a survivor the
+    // next daemon needs to discover. Recycled pids are handled by the next
+    // daemon's startup reap.
     const forget = () => {
+      if (isPidAlive(pid)) {
+        return;
+      }
       forgetAgentProcess(pid, { logger });
     };
     child.once("exit", forget);

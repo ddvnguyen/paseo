@@ -49,7 +49,7 @@ $PASEO_HOME/
 ├── daemon-keypair.json                  # E2EE keypair for relay (mode 0600)
 ├── paseo.pid                            # Daemon PID lock file
 ├── daemon.log                           # Default log file (path configurable)
-├── agent-processes.json                 # Provider children spawned in systemd user scopes; stale records reaped on daemon bootstrap
+├── agent-processes.json                 # Provider children spawned in systemd user scopes; stale records reaped on daemon bootstrap, flushed to survivors on detach-stop
 ├── agents/
 │   └── {sanitized-cwd}/
 │       └── {agentId}.json               # One file per agent
@@ -553,13 +553,13 @@ Simple set of Expo push notification tokens. Loaded with permissive parsing (fil
 
 These small files are not validated as full Zod schemas but are persisted under `$PASEO_HOME` for daemon identity and runtime coordination.
 
-| Path                   | Format                                                             | Notes                                                                                          |
-| ---------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `server-id`            | Plain text, e.g. `srv_<base64url>`                                 | Stable per-`$PASEO_HOME` daemon ID. Overridable via `PASEO_SERVER_ID` env.                     |
-| `daemon-keypair.json`  | `{ v: 2, publicKeyB64, secretKeyB64 }` (libsodium box keypair)     | E2EE relay identity. Written with mode `0600`. Regenerated if file is unreadable.              |
-| `paseo.pid`            | JSON `{ pid, startedAt, ... }`                                     | PID lock; prevents two daemons sharing one `$PASEO_HOME`.                                      |
-| `daemon.log`           | Pino log output                                                    | Default location; path/rotation configurable via `log.file` in `config.json`.                  |
-| `agent-processes.json` | Array of `{ scopeId, unit, pid, provider, sessionId?, startedAt }` | Scoped provider child processes; written atomically, stale records reaped on daemon bootstrap. |
+| Path                   | Format                                                             | Notes                                                                                                                                                               |
+| ---------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server-id`            | Plain text, e.g. `srv_<base64url>`                                 | Stable per-`$PASEO_HOME` daemon ID. Overridable via `PASEO_SERVER_ID` env.                                                                                          |
+| `daemon-keypair.json`  | `{ v: 2, publicKeyB64, secretKeyB64 }` (libsodium box keypair)     | E2EE relay identity. Written with mode `0600`. Regenerated if file is unreadable.                                                                                   |
+| `paseo.pid`            | JSON `{ pid, startedAt, ... }`                                     | PID lock; prevents two daemons sharing one `$PASEO_HOME`.                                                                                                           |
+| `daemon.log`           | Pino log output                                                    | Default location; path/rotation configurable via `log.file` in `config.json`.                                                                                       |
+| `agent-processes.json` | Array of `{ scopeId, unit, pid, provider, sessionId?, startedAt }` | Scoped provider child processes; written atomically, stale records reaped on daemon bootstrap, flushed to survivors on detach-stop (`PASEO_DETACH_AGENTS_ON_STOP`). |
 
 ---
 
