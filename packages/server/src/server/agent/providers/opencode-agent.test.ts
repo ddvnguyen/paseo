@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -25,6 +25,7 @@ import type {
   AssistantMessageTimelineItem,
   AgentTimelineItem,
 } from "../agent-sdk-types.js";
+import { __resetAgentDetachForTests, beginAgentDetachStop } from "../agent-detach.js";
 
 // Deliberately an independent literal rather than the production constant these tests
 // guard: deriving the boundary from OPENCODE_SERVER_STARTUP_TIMEOUT_MS would keep the
@@ -6844,5 +6845,83 @@ describe("OpenCode session permission rules", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+});
+
+describe("OpenCode session close under detach-stop", () => {
+  let previousDetachEnv: string | undefined;
+
+  beforeEach(() => {
+    previousDetachEnv = process.env.PASEO_DETACH_AGENTS_ON_STOP;
+    delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
+    __resetAgentDetachForTests();
+  });
+
+  afterEach(() => {
+    __resetAgentDetachForTests();
+    if (previousDetachEnv === undefined) {
+      delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
+    } else {
+      process.env.PASEO_DETACH_AGENTS_ON_STOP = previousDetachEnv;
+    }
+  });
+
+  test("detach-stop on close skips abort and ephemeral delete but still resolves", async () => {
+    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
+    expect(beginAgentDetachStop(createTestLogger())).toBe(true);
+
+    const sessionApi = {
+      abort: vi.fn().mockResolvedValue({ error: null }),
+      update: vi.fn().mockResolvedValue({ error: null }),
+      delete: vi.fn().mockResolvedValue({ error: null }),
+    };
+    const fakeClient = { session: sessionApi } as never;
+
+    const session = new __openCodeInternals.OpenCodeAgentSession(
+      { provider: "opencode", cwd: "/tmp/test", providerOptions: {} },
+      fakeClient,
+      "ses_unit_test",
+      createTestLogger(),
+      new Map(),
+      undefined,
+      undefined,
+      false,
+    );
+
+    await expect(session.close()).resolves.toBeUndefined();
+
+    expect(sessionApi.abort).not.toHaveBeenCalled();
+    expect(sessionApi.delete).not.toHaveBeenCalled();
+  });
+
+  test("default close aborts the session and deletes it when persistence is disabled", async () => {
+    const sessionApi = {
+      abort: vi.fn().mockResolvedValue({ error: null }),
+      update: vi.fn().mockResolvedValue({ error: null }),
+      delete: vi.fn().mockResolvedValue({ error: null }),
+    };
+    const fakeClient = { session: sessionApi } as never;
+
+    const session = new __openCodeInternals.OpenCodeAgentSession(
+      { provider: "opencode", cwd: "/tmp/test", providerOptions: {} },
+      fakeClient,
+      "ses_unit_test",
+      createTestLogger(),
+      new Map(),
+      undefined,
+      undefined,
+      false,
+    );
+
+    await session.close();
+
+    expect(sessionApi.abort).toHaveBeenCalledWith({
+      sessionID: "ses_unit_test",
+      directory: "/tmp/test",
+    });
+    expect(sessionApi.delete).toHaveBeenCalledWith({
+      sessionID: "ses_unit_test",
+      directory: "/tmp/test",
+    });
   });
 });

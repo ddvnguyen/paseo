@@ -26,6 +26,9 @@ Type=simple
 Environment="PASEO_HOME=%h/paseo/PROD"
 Environment="PASEO_PID_FILE=%h/paseo/PROD/paseo.pid"
 Environment="PASEO_PRESTART_PORT=6767"
+# Detach scoped provider children on graceful stop so agent turns survive
+# systemctl --user restart paseo (see docs/development.md).
+Environment="PASEO_DETACH_AGENTS_ON_STOP=1"
 Environment="PASEO_APP_BASE_URL=https://paseo.ddvnguyen.com"
 Environment="PASEO_WEB_UI_ENABLED=false"
 Environment="PASEO_RELAY_ENABLED=true"

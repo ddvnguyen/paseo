@@ -60,6 +60,27 @@ PASEO_DEV_SEED_HOME=/path/to/home npm run dev # seed from a different source hom
 PASEO_DEV_RESET_HOME=1 npm run dev            # clear and reseed the derived worktree home
 ```
 
+### PASEO_DETACH_AGENTS_ON_STOP
+
+`PASEO_DETACH_AGENTS_ON_STOP=1` makes a graceful daemon stop leave provider
+children running instead of tree-killing them, so in-flight agent turns survive
+`systemctl --user restart paseo`. Off by default — every other stop path behaves
+exactly as before.
+
+Rules:
+
+- Only `1` or `true` (trimmed, case-insensitive) enable it. Anything else is a
+  normal stop.
+- Only children recorded in `$PASEO_HOME/agent-processes.json` are spared.
+  Unrecorded children cannot be reattached after the daemon's cgroup dies, so
+  they keep the normal teardown — a host without systemd never inherits orphans.
+- The detach gate engages only while the stop runs. During normal operation,
+  archive/close RPCs still terminate children as usual.
+- On a detach-stop the daemon flushes the registry first, dropping dead pids.
+  The next bootstrap inherits records only for children that are still alive.
+
+`deploy/systemd/paseo.service` sets this knob for the production user unit.
+
 ### Daemon endpoints
 
 - Stable daemon launched by the desktop app: `localhost:6767`.

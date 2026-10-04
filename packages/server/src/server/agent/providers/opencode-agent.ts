@@ -102,6 +102,7 @@ import { renderPromptAttachmentAsText } from "../prompt-attachments.js";
 import { composeSystemPromptParts } from "../system-prompt.js";
 import { normalizeProviderReplayTimestamp } from "../provider-history-timestamps.js";
 import { revertOpenCodeConversationAndFiles } from "./opencode/rewind.js";
+import { isAgentDetachStopActive } from "../agent-detach.js";
 import {
   claimOpenCodeSubagentFallbackTitle,
   foldOpenCodeSubagentPresentation,
@@ -4917,13 +4918,19 @@ class OpenCodeAgentSession implements AgentSession {
       this.unsubscribeEvents = null;
       await this.ingress.catch(() => undefined);
       this.subscribers.clear();
-      await abortOpenCodeSession({
-        client: this.client,
-        sessionId: this.sessionId,
-        directory: this.config.cwd,
-        logger: this.logger,
-      });
-      await this.deleteProviderSessionIfEphemeral();
+      // Detach-stop: the server child may be surviving in its scope, so do not
+      // abort its in-flight turn or delete its session. Daemon-side disposal
+      // above (aborts, unsubscribes, subscriber clear) still runs; whether the
+      // server process itself lives is decided by killServer()'s scope check.
+      if (!isAgentDetachStopActive()) {
+        await abortOpenCodeSession({
+          client: this.client,
+          sessionId: this.sessionId,
+          directory: this.config.cwd,
+          logger: this.logger,
+        });
+        await this.deleteProviderSessionIfEphemeral();
+      }
       this.turnState = { status: "idle" };
     } finally {
       this.releaseBridge?.();
