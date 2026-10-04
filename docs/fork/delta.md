@@ -224,6 +224,98 @@ resolved workspace deps from the registry and failed on
 it on would change module resolution in a way nothing here has validated. That is
 a separate decision, and `.npmrc` now says so at the top of the file.
 
+## Manifest and lockfile reconciliation
+
+A sibling agent reported the lockfile as inconsistent with the merged manifests:
+27 specifier mismatches, root `tsx` blocking `pnpm install --frozen-lockfile`, and
+a half-reverted `6d1afce38`. Most of that did not reproduce. What follows is what
+was measured, because the difference matters for anyone who reads the report
+instead of the tree.
+
+**Root `tsx` — RE-APPLIED (`b0d0259ca`), and it was real.** Fork commit
+`4098ff877` added `"tsx": "^4.21.0"` to the root `devDependencies`, because the
+source daemon and the supervisor fixtures spawn as `node --import tsx` from the
+repository root and pnpm's isolated `node_modules` does not hoist a workspace
+package's dependency to the root. The merge resolved `package.json` to upstream
+and the declaration went with it. Measured at the root before the fix:
+
+```
+node --import tsx -e "0"
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'tsx' imported from .../a2-area-ledger/
+```
+
+After the fix it resolves. Restored at `^4.21.0`, the version the fork had and
+the version the lockfile resolves.
+
+Same shape as the `@opencode-ai/sdk` pin: the fork's change survived in one place
+and was lost in another. Two instances of that pattern is a pattern, not
+coincidence — see [What is broken right now](#what-is-broken-right-now) cause A
+for the third.
+
+**`6d1afce38` — SUPERSEDED, not half-reverted.** The commit did convert
+`@getpaseo/*` from pinned versions (`0.7.2`) to `workspace:*` across
+`packages/{cli,client,plugin,server}/package.json`, the lockfile,
+`pnpm-workspace.yaml` and `scripts/sync-workspace-versions.mjs`. But it did not
+survive half-reverted. Both halves went to upstream together:
+
+- no manifest under `packages/` uses `workspace:*` today, and
+- the lockfile does not either — `grep -c 'workspace:'` over the whole importers
+  block returns **2**, both in `plugin-examples`, and both consistent.
+
+So the manifests and the lockfile agree. The fork's `workspace:*` convention was
+lost, but nothing is inconsistent and nothing is blocked. Its intent — making
+frozen-lockfile installs resolve internal deps locally — is now served by a
+different mechanism: `linkWorkspacePackages: true` in `pnpm-workspace.yaml`.
+Restoring `workspace:*` would be a convention change, not a repair, and it would
+rewrite the lockfile again. Left alone deliberately; see
+[Open decisions](#open-decisions).
+
+**Third-party specifiers — no change needed.** Four manifest/lockfile pairs
+differ, all of them pnpm override semantics rather than defects. When an
+`overrides:` entry rewrites a dependency, the lockfile records the
+override-applied specifier, so it legitimately differs from the manifest's
+requested range:
+
+| Package | manifest | lockfile | why |
+| --- | --- | --- | --- |
+| `packages/website` `react` | `^19.1.4` | `19.1.0` | override pins `19.1.0` |
+| `packages/website` `react-dom` | `^19.1.4` | `19.1.0` | same |
+| `packages/app` `react-native-reanimated` | `~4.3.1` | `4.3.1` | override pins `4.3.1` |
+| `packages/app` `react-native-worklets` | `~0.8.3` | `0.8.3` | override pins `0.8.3` |
+
+The `react` pair is upstream's own arrangement, not a fork delta: `packages/
+website` asks `^19.1.4` on the fork base, on upstream and at HEAD alike, while
+upstream's **root** `package.json` pins `react` at exactly `19.1.0`. Our
+override reproduces that root pin in pnpm's idiom. Nothing to reconcile.
+
+**`lucide-react-native` — SUPERSEDED, and the report had it backwards.** Upstream
+moved it from `0.x` to `1.x` in `d3c76be9c` ("Unify Explorer tabs and refine
+launch controls", #5942). The fork base had `^0.546.0`; HEAD has `^1.50.0`,
+which is what upstream carries and what the lockfile records. Taking upstream was
+correct. The `^0.546.0` figure is what this fork *used* to declare, not what the
+lockfile says.
+
+**Two categories that are not mismatches at all**, recorded so the next person
+does not re-investigate them:
+
+- Eight `@getpaseo/*` entries compare as `*` against `'*'`. Identical values,
+  differing only in YAML quoting. An artifact of a naive diff, not a defect.
+- Three `packages/expo-two-way-audio` entries (`expo`, `react`,
+  `react-native`) appear in the lockfile importer but not the manifest. Those are
+  pnpm auto-installed peers — the lockfile sets `autoInstallPeers: true` — and
+  they are how pnpm represents them.
+
+### Open decisions
+
+Not decided here, because neither is a repair:
+
+- **Restore `workspace:*` for `@getpaseo/*`?** It is stricter than `*` and would
+  make the fork's original intent explicit rather than delegated to
+  `linkWorkspacePackages`. It also rewrites the lockfile. A convention choice for
+  the owner.
+- **`nix-update-hash.yml`** still diffs and commits `package-lock.json`, which no
+  longer exists. Do-not-touch list, so flagged rather than fixed.
+
 ## Re-derive this
 
 The helper that produced this baseline is not checked in — it lives outside the
