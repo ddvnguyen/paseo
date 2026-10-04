@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";

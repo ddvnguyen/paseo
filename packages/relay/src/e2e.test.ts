@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { WebSocket } from "ws";
 import net from "node:net";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import { dirname, resolve as resolvePath } from "node:path";

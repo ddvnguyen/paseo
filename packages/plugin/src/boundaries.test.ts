@@ -83,8 +83,8 @@ describe("plugin SDK import boundaries", () => {
 
 describe("plugin example import boundaries", () => {
   const examples = path.resolve(sourceDirectory, "../../../plugin-examples");
-  const files = readdirSync(examples, { recursive: true }).filter((file) =>
-    /(?<!\.test)\.tsx?$/.test(file),
+  const files = readdirSync(examples, { recursive: true }).filter(
+    (file) => /(?<!\.test)\.tsx?$/.test(file) && !file.startsWith("node_modules"),
   );
   const owner = (file: string) => {
     const [, directory] = path.relative(examples, file).split(path.sep);
