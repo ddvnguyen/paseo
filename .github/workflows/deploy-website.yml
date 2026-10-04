@@ -8,7 +8,7 @@ on:
       - "public-docs/**"
       - "packages/website/**"
       - "package.json"
-      - "package-lock.json"
+      - "pnpm-lock.yaml"
       - "patches/**"
       - ".github/workflows/deploy-website.yml"
   release:
