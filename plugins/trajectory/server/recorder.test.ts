@@ -18,7 +18,7 @@ function allEvents(store: TrajectoryStore): TrajectoryEvent[] {
   // A single catch-all agent is not available; read per known agent ids.
   const agents = ["agent-1", "agent-2"];
   return agents
-    .flatMap((agentId) => store.listByAgent(agentId, { limit: 1000 }))
+    .flatMap((agentId) => store.listByAgent(agentId, { limit: 1000, direction: "newest" }))
     .sort((a, b) => a.seq - b.seq);
 }
 

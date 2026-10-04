@@ -79,7 +79,7 @@ describe("wiring", () => {
     // Let the directory promise resolve and attach.
     await new Promise((resolve) => setTimeout(resolve, 0));
     fake.emit("agent-A", { type: "timeline", item: assistantItem, turnId: "t1" });
-    const events = store.listByAgent("agent-A", { limit: 10 });
+    const events = store.listByAgent("agent-A", { limit: 10, direction: "newest" });
     expect(events.length).toBeGreaterThanOrEqual(3); // step/start, message, step/end
     const message = events.find((event) => event.type === "assistant/message")!;
     expect(message.agentId).toBe("agent-A");
@@ -91,7 +91,7 @@ describe("wiring", () => {
     const store = createNodeStore(":memory:");
     const wiring = createWiring({ store });
     wiring.recorder.turnStarted({ agentId: "agent-B", turnId: "t9", provider: "claude" });
-    const events = store.listByAgent("agent-B", { limit: 10 });
+    const events = store.listByAgent("agent-B", { limit: 10, direction: "newest" });
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe("turn/start");
     expect(events[0].turn).toBe("t9");
