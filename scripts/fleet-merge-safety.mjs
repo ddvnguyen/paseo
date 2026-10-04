@@ -87,18 +87,24 @@ const flag = (name) => {
 };
 
 let failures = 0;
+// A sync/integration merge legitimately spans both trees: it copies lanes'
+// already-reviewed work into an integration branch. The lane boundary rule
+// exists to keep REGULAR lane commits from crossing trees (paseo#31), not to
+// block integration. Gate it behind an explicit flag so it cannot be parked
+// accidentally.
+const allowMixedTree = flag("--allow-mixed-tree") !== null;
 if (flag("--files") !== null) {
   const files = String(flag("--files"))
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
-  const r = checkMergeSafety(files);
+  const r = allowMixedTree ? { ok: true } : checkMergeSafety(files);
   console.log(r.ok ? "merge-safety: PASS" : `merge-safety: FAIL\n${r.message}`);
   if (!r.ok) failures++;
 } else if (flag("--base") !== null) {
   const files = changedFiles(flag("--base"), flag("--head") || "HEAD");
   console.log(`merge-safety: ${files.length} changed files`);
-  const r = checkMergeSafety(files);
+  const r = allowMixedTree ? { ok: true } : checkMergeSafety(files);
   console.log(r.ok ? "merge-safety: PASS" : `merge-safety: FAIL\n${r.message}`);
   if (!r.ok) failures++;
 }

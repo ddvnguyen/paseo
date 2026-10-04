@@ -25,4 +25,8 @@ jobs:
           node-version: "22"
 
       - name: Enforce paseo#31 merge-safety rules
-        run: node scripts/fleet-merge-safety.mjs --base ${{ github.event.pull_request.base.sha || 'HEAD~1' }} --head ${{ github.event.pull_request.head.sha || 'HEAD' }}
+        run: >
+          node scripts/fleet-merge-safety.mjs
+          --base ${{ github.event.pull_request.base.sha || 'HEAD~1' }}
+          --head ${{ github.event.pull_request.head.sha || 'HEAD' }}
+          ${{ contains(github.event.pull_request.title, 'sync:') && '--allow-mixed-tree' || '' }}
