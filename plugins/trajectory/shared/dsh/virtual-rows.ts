@@ -9,7 +9,26 @@
 import type { TrajectoryCellProps } from "./record.ts";
 import { trajectoryRecordId } from "./record.ts";
 
-const CONTENT_ROW_HEIGHT = 30;
+/**
+ * CONTENT_ROW_HEIGHT is measured: 31 CSS px, not the 30 that was ported from
+ * dsh. The cell is `minHeight: 30` with a 1px border, and it was measured on
+ * the item WRAPPER VirtualizedList positions — not the inner elements, which
+ * can be a pixel or two shorter than the box the list lays out — in Chromium
+ * 149 against the real react-native-web tree, at 1280px and 390px, compact and
+ * not, with short and 190-character labels. Identical in all six, because the
+ * cell text is single-line clamped.
+ *
+ * jsdom cannot do this measurement: react-native-web's VirtualizedList returns
+ * early while visibleLength/contentLength are 0 and jsdom never sets them, so
+ * a window or an offset measured there is fiction.
+ *
+ * The other two are UNREACHABLE in this plugin and therefore unmeasured: no
+ * producer anywhere sets `collapsedSummaryKind` or `requestOnly`, so
+ * `trajectory.list` never yields one of those rows and getItemLayout is never
+ * asked for them. They are left at the ported dsh values rather than replaced
+ * with a guess; if a producer ever sets those fields, measure them first.
+ */
+const CONTENT_ROW_HEIGHT = 31;
 const COLLAPSED_SUMMARY_HEIGHT = 20;
 const TERMINAL_BOUNDARY_HEIGHT = 9;
 

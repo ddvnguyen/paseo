@@ -214,6 +214,17 @@ function render(
   });
 }
 
+/**
+ * Arbitrary rows, with turn numbering left to the fold. The fixture helpers pass
+ * an explicit `turnNumbers`, which pins numbering and would hide the renumbering
+ * a prepend causes — so a test that is ABOUT renumbering must not use them.
+ */
+function renderRows(rows: readonly TrajectoryFoldRow[]): void {
+  act(() => {
+    root.render(<LedgerScreen rows={rows} compact={false} theme={THEME} />);
+  });
+}
+
 describe("ledger screen", () => {
   it("renders one header per turn plus the heavier inter-turn rule", () => {
     render();
@@ -631,5 +642,157 @@ describe("ledger screen tail-follow", () => {
     const beforeTicks = listProbe.renders;
     for (let i = 0; i < 5; i++) driveScroll(AT_BOTTOM);
     expect({ reRenders: listProbe.renders - beforeTicks }).toEqual({ reRenders: 0 });
+  });
+});
+
+/**
+ * Each chrome row's key, paired with the turn-header it renders. Pairing is the
+ * whole point: a set of chrome keys survives a prepend under EITHER keying (a
+ * positional key set is just re-bound to different turns), so only the
+ * key-to-turn pairing distinguishes them.
+ */
+function headerKeys(): { header: string; key: string }[] {
+  return [...container.querySelectorAll("[data-row]")]
+    .map((row) => ({
+      key: row.getAttribute("data-row") ?? "",
+      header: row.querySelector('[data-testid^="turn-header-"]')?.getAttribute("data-testid") ?? "",
+    }))
+    .filter((pair) => pair.header !== "");
+}
+
+/** One older turn, prepended exactly as a load-older read would deliver it. */
+const PREPENDED_OLDER_TURN: readonly TrajectoryFoldRow[] = [
+  {
+    seq: -60,
+    timeMs: Date.parse("2026-09-25T23:59:00Z"),
+    kind: "user",
+    label: "an older prompt",
+    durationMs: null,
+    turnId: "t0",
+    step: null,
+  },
+  {
+    seq: -59,
+    timeMs: Date.parse("2026-09-25T23:59:01Z"),
+    kind: "message",
+    label: "an older answer",
+    durationMs: 400,
+    turnId: "t0",
+    step: 1,
+  },
+];
+
+/**
+ * Windowing geometry. `getItemLayout` is only safe on the numbers the rows
+ * actually occupy — a wrong height does not read as a config mistake, it reads
+ * as a scroll bug — so both the per-class heights and the prefix sum are pinned.
+ */
+describe("ledger screen row geometry", () => {
+  interface Geometry {
+    getItemLayout?: (
+      data: ArrayLike<unknown> | null | undefined,
+      index: number,
+    ) => { length: number; offset: number; index: number };
+    data?: ReadonlyArray<{ kind: string; height: number; record?: { __kind?: string } }>;
+  }
+
+  function geometry(): Required<Pick<Geometry, "getItemLayout" | "data">> {
+    const props = listProbe.props as Geometry | null;
+    if (props?.getItemLayout === undefined || props.data === undefined) {
+      throw new Error("FlatList never rendered with getItemLayout");
+    }
+    return { getItemLayout: props.getItemLayout, data: props.data };
+  }
+
+  it("reports the measured height for every row class", () => {
+    renderRows(FIXTURE_ROWS);
+    const { data, getItemLayout } = geometry();
+
+    const heightsByClass = data.reduce<Record<string, Set<number>>>((classes, row, index) => {
+      const name = row.kind === "chrome" ? (row.record?.__kind ?? "chrome") : row.kind;
+      const bucket = classes[name] ?? new Set<number>();
+      bucket.add(getItemLayout(data, index).length);
+      classes[name] = bucket;
+      return classes;
+    }, {});
+
+    expect(
+      Object.fromEntries(Object.entries(heightsByClass).map(([name, set]) => [name, [...set]])),
+    ).toEqual({
+      // Measured in a real browser on the item wrappers, not the ported guesses
+      // of 28 and 30 — see TURN_HEADER_HEIGHT / CONTENT_ROW_HEIGHT.
+      "turn-header": [22],
+      "turn-rule": [10],
+      cellrow: [31],
+    });
+  });
+
+  it("prefix-sums offsets, so the last row's end is the total content height", () => {
+    renderRows(FIXTURE_ROWS);
+    const { data, getItemLayout } = geometry();
+
+    let running = 0;
+    const offsets = data.map((row, index) => {
+      const geometryRow = getItemLayout(data, index);
+      expect(geometryRow).toEqual({ length: row.height, offset: running, index });
+      running += row.height;
+      return geometryRow.offset;
+    });
+
+    expect({
+      firstOffset: offsets[0],
+      strictlyIncreasing: offsets.every(
+        (offset, index) => index === 0 || offsets[index - 1] < offset,
+      ),
+      totalContentHeight:
+        getItemLayout(data, data.length - 1).offset + data[data.length - 1].height,
+      sumOfHeights: data.reduce((total, row) => total + row.height, 0),
+    }).toEqual({
+      firstOffset: 0,
+      strictlyIncreasing: true,
+      totalContentHeight: data.reduce((total, row) => total + row.height, 0),
+      sumOfHeights: data.reduce((total, row) => total + row.height, 0),
+    });
+  });
+});
+
+/**
+ * Chrome rows key on turn IDENTITY, not position. The `beforeSeq` reverse cursor
+ * makes prepending history possible, and a prepend renumbers every turn, so a
+ * positional key hands React a different turn's row under the same key and
+ * remounts every chrome row in the window.
+ */
+describe("ledger screen chrome row identity", () => {
+  /** The key carried by the turn rendered as `Turn N` (header testID suffix). */
+  function keyOfTurnN(n: number): string | undefined {
+    return headerKeys().find((pair) => pair.header === `turn-header-${n}`)?.key;
+  }
+
+  it("keeps a turn's chrome key when a prepend shifts its position", () => {
+    renderRows(FIXTURE_ROWS);
+    // t1 (the fixture's first turn) is Turn 1 here, and t2 is Turn 2.
+    const t1Before = keyOfTurnN(1);
+    const t2Before = keyOfTurnN(2);
+    expect({ t1: t1Before, t2: t2Before }).toEqual({
+      t1: expect.any(String),
+      t2: expect.any(String),
+    });
+
+    // One older turn is prepended, exactly as a load-older read would deliver
+    // it. The fold numbers turns by order of appearance, so t1 and t2 slide
+    // from Turn 1/2 to Turn 2/3.
+    renderRows([...PREPENDED_OLDER_TURN, ...FIXTURE_ROWS]);
+    expect({
+      headers: headerKeys().map((pair) => pair.header),
+      t1: keyOfTurnN(2),
+      t2: keyOfTurnN(3),
+    }).toEqual({
+      // The renumbering is real: three headers now, the extra one first.
+      headers: ["turn-header-1", "turn-header-2", "turn-header-3"],
+      // …and each turn kept the key it already had. Under positional keys these
+      // would be turn-2 and turn-3, i.e. t1 would inherit t2's old key.
+      t1: t1Before,
+      t2: t2Before,
+    });
   });
 });

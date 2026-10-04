@@ -35,6 +35,37 @@ interface FoldState {
   closedTurns: ReadonlySet<number>;
 }
 
+/**
+ * A turn carrying the stable identity chrome row keys are derived from.
+ * Computed once, from the UNFILTERED fold: deriving it later would let a search
+ * that empties a turn's first group silently change that turn's identity.
+ */
+interface KeyedTurn extends TrajectoryTurnModel {
+  key: string;
+}
+
+/**
+ * A turn's stable identity: the first cell's recordId, which is the same
+ * content-derived identity cell rows already key on, and unique per cell, so two
+ * turns can never share one.
+ *
+ * Not the positional turn number: the fold buckets turns by that number, and it
+ * renumbers whenever older history is prepended — which the `beforeSeq` reverse
+ * cursor makes possible. A turn's first cell is stable under both ledger
+ * mutations, because appends extend a turn at its tail and prepends add whole
+ * older turns.
+ */
+function turnKeyOf(turn: TrajectoryTurnModel): string {
+  for (const group of turn.groups) {
+    const first = group.cells[0];
+    if (first !== undefined) return `c:${trajectoryRecordId(first)}`;
+  }
+  // A turn with no cells at all has no content to key on. There is exactly one
+  // unnumbered ("Setup") bucket in the fold, and numbered buckets carry their
+  // own number, so this cannot collide with a keyed turn.
+  return `c:empty-${turn.turn}`;
+}
+
 /** Nothing collapsed: every turn expanded, including ones not yet recorded. */
 const ALL_OPEN: FoldState = { closedTurns: new Set() };
 
@@ -47,6 +78,28 @@ const ALL_OPEN: FoldState = { closedTurns: new Set() };
  * the windowing work, once there is a virtualizer to anchor against.
  */
 const BOTTOM_FOLLOW_THRESHOLD_PX = 24;
+
+/**
+ * Measured row heights, in CSS px, for the chrome rows this screen renders.
+ *
+ * These were guesses until they were measured. getItemLayout is only safe on
+ * numbers the rows actually occupy: a wrong constant does not read as a config
+ * mistake, it reads as a scroll bug, which is worse than having no
+ * getItemLayout at all.
+ *
+ * Measured in Chromium 149 against the real react-native-web tree, on the item
+ * wrappers VirtualizedList positions (not the inner elements), at 1280px and
+ * 390px, compact and not, with short and 190-character labels. Identical in all
+ * six configurations: the rows are fixed-height or single-line clamped, so
+ * width and compact do not move them.
+ *
+ * Only two chrome classes exist on this branch — turn header and turn rule.
+ * PR #30 also measured a step-header row at 17px, which the merged trajectory
+ * fold never renders here (steps are not grouped in the UI, so there is no
+ * step-header chrome); there is nothing to calibrate until one exists.
+ */
+const TURN_HEADER_HEIGHT = 22;
+const TURN_RULE_HEIGHT = 10;
 
 export function LedgerScreen(props: {
   rows: readonly TrajectoryFoldRow[];
@@ -107,6 +160,12 @@ export function LedgerScreen(props: {
     [rows, turnNumbers, openCallIds],
   );
 
+  // Identity is stamped on once, here, while the fold is still unfiltered.
+  const keyedTurns = useMemo<KeyedTurn[]>(
+    () => turns.map((turn) => ({ ...turn, key: turnKeyOf(turn) })),
+    [turns],
+  );
+
   // Everything open, as a fold state. Shared by the "unfold all" action and by an
   // active search, which must not leave a match stranded behind a collapsed header.
   const allOpen = useMemo<FoldState>(() => ALL_OPEN, []);
@@ -127,8 +186,9 @@ export function LedgerScreen(props: {
   // forces the fold open rather than hiding results behind a header.
   const effectiveFold = matches === null ? fold : allOpen;
   const visibleTurns = useMemo(
-    () => (matches === null ? turns : filterTurnsByMatch(turns, matches)),
-    [turns, matches],
+    // filterTurnsByMatch spreads each turn, so the stamped key survives filtering.
+    () => (matches === null ? keyedTurns : filterTurnsByMatch(keyedTurns, matches)),
+    [keyedTurns, matches],
   );
   const records = useMemo(
     () => expandTurns(visibleTurns, effectiveFold, matches !== null),
@@ -160,7 +220,7 @@ export function LedgerScreen(props: {
     for (const record of records) {
       if (record.__kind !== "cell") {
         const key = chromeKey(record);
-        const height = record.__kind === "turn-header" ? 28 : 10;
+        const height = record.__kind === "turn-header" ? TURN_HEADER_HEIGHT : TURN_RULE_HEIGHT;
         out.push({ kind: "chrome", key, height, record });
         continue;
       }
@@ -233,6 +293,39 @@ export function LedgerScreen(props: {
 
   const keyExtractor = useCallback((item: ListRow) => item.key, []);
 
+  /**
+   * Prefix sums of the row heights, so getItemLayout is O(1) instead of
+   * re-walking the list for every item in the window. `offsets[n]` is the total
+   * content height, which is what a windowed list needs to size its scrollbar
+   * without laying every row out.
+   */
+  const rowOffsets = useMemo(() => {
+    const offsets: number[] = [];
+    let total = 0;
+    for (const [index, row] of virtualRows.entries()) {
+      offsets[index] = total;
+      total += row.height;
+    }
+    offsets[virtualRows.length] = total;
+    return offsets;
+  }, [virtualRows]);
+
+  /**
+   * Row geometry, on measured heights (see TURN_HEADER_HEIGHT). Without it a
+   * windowed list has to measure rows as it scrolls; with it, a wrong constant
+   * shows up immediately as a misaligned scroll, which is why the numbers above
+   * are the measured ones and the fallback is only reached if the index is out
+   * of range.
+   */
+  const getItemLayout = useCallback(
+    (_data: ArrayLike<ListRow> | null | undefined, index: number) => ({
+      length: virtualRows[index]?.height ?? TURN_RULE_HEIGHT,
+      offset: rowOffsets[index] ?? 0,
+      index,
+    }),
+    [rowOffsets, virtualRows],
+  );
+
   const onContentSizeChange = useCallback(() => {
     if (followRef.current && listRef.current !== null) {
       listRef.current.scrollToEnd({ animated: false });
@@ -292,6 +385,7 @@ export function LedgerScreen(props: {
         ref={listRef}
         data={virtualRows}
         keyExtractor={keyExtractor}
+        getItemLayout={getItemLayout}
         renderItem={renderItem}
         onScroll={onScroll}
         onContentSizeChange={onContentSizeChange}
@@ -578,11 +672,13 @@ type LeadRecord =
   | {
       __kind: "turn-header";
       turn: number;
+      /** Stable, content-derived turn identity; the key. `turn` is the label. */
+      turnKey: string;
       title: string;
       usage?: TrajectoryTurnModel["usage"];
       open: boolean;
     }
-  | { __kind: "turn-rule"; turn: number }
+  | { __kind: "turn-rule"; turn: number; turnKey: string }
   | { __kind: "cell"; cell: TrajectoryCellProps };
 
 /**
@@ -591,9 +687,9 @@ type LeadRecord =
  * every turn after it and the ledger would disagree with the recorder.
  */
 function filterTurnsByMatch(
-  turns: readonly TrajectoryTurnModel[],
+  turns: readonly KeyedTurn[],
   matches: ReadonlySet<string>,
-): TrajectoryTurnModel[] {
+): KeyedTurn[] {
   return turns.map((turn) => ({
     ...turn,
     groups: turn.groups
@@ -606,7 +702,7 @@ function filterTurnsByMatch(
 }
 
 function expandTurns(
-  turns: readonly TrajectoryTurnModel[],
+  turns: readonly KeyedTurn[],
   fold: FoldState,
   hideEmptyTurns = false,
 ): LeadRecord[] {
@@ -623,10 +719,12 @@ function expandTurns(
     // Under an active search a turn with no match is noise; drop its header and
     // rule so results read as one list, while positional numbering is untouched.
     if (hideEmptyTurns && turn.groups.length === 0) return;
-    if (records.length > 0) records.push({ __kind: "turn-rule", turn: turnNumber });
+    if (records.length > 0)
+      records.push({ __kind: "turn-rule", turn: turnNumber, turnKey: turn.key });
     records.push({
       __kind: "turn-header",
       turn: turnNumber,
+      turnKey: turn.key,
       title: isNumbered ? `Turn ${turnNumber}` : "Setup",
       ...(turn.usage === undefined ? {} : { usage: turn.usage }),
       open,
@@ -645,10 +743,17 @@ function cellRecord(cell: TrajectoryCellProps): LeadRecord {
   return { __kind: "cell", cell };
 }
 
-/** Flat, readable row keys (RN keys must be strings without NUL). */
+/**
+ * Row keys, derived from turn IDENTITY rather than position: a windowed list
+ * keys on identity, and prepending older history — which the `beforeSeq` reverse
+ * cursor now makes possible — renumbers every turn. A positional key would
+ * hand React a different turn's row under the same key and remount every chrome
+ * row. Cell rows already use recordId, which is content-derived. RN keys must be
+ * strings without NUL.
+ */
 function chromeKey(record: LeadRecord): string {
-  if (record.__kind === "turn-header") return `turn-${record.turn}`;
-  if (record.__kind === "turn-rule") return `rule-${record.turn}`;
+  if (record.__kind === "turn-header") return `turn-${record.turnKey}`;
+  if (record.__kind === "turn-rule") return `rule-${record.turnKey}`;
   // Cell records never reach here — they are filtered before chrome keys are
   // built — but the function stays total rather than reading `.turn` off a
   // variant that has none.
