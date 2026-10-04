@@ -8,24 +8,49 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+/**
+ * What the FlatList stand-in saw on its last render, plus how many times it
+ * rendered and how often follow asked it to scroll. `vi.hoisted` because the
+ * mock factory below runs before ordinary module-level declarations.
+ */
+const listProbe = vi.hoisted(() => ({
+  props: null as Record<string, unknown> | null,
+  renders: 0,
+  scrollToEndCalls: 0,
+}));
+
 vi.mock("react-native", () => ({
   StyleSheet: {
     create: (styles: unknown) => styles,
     hairlineWidth: 1,
     flatten: (style: unknown) => style,
   },
-  FlatList: ({
-    data,
-    renderItem,
-    keyExtractor,
-    testID,
-  }: {
-    data: ReadonlyArray<{ key: string }>;
-    renderItem: (input: { item: unknown }) => React.ReactNode;
-    keyExtractor: (item: { key: string }) => string;
-    testID?: string;
-  }) =>
-    React.createElement(
+  /**
+   * RN's FlatList is a class component, so `ref.current` is an instance that
+   * exposes `scrollToEnd`. Tail-follow is only observable if the stand-in
+   * reproduces that: as a plain function component React never attaches the
+   * ref, `listRef.current` stayed null, and the `onContentSizeChange` guard on
+   * it made every follow path a silent no-op. forwardRef plus
+   * useImperativeHandle restores the real contract.
+   *
+   * It still renders every row through `data.map`, so it says nothing about
+   * mounted rows or a real window.
+   */
+  FlatList: React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+    const { data, renderItem, keyExtractor, testID } = props as {
+      data: ReadonlyArray<{ key: string }>;
+      renderItem: (input: { item: unknown }) => React.ReactNode;
+      keyExtractor: (item: { key: string }) => string;
+      testID?: string;
+    };
+    listProbe.renders += 1;
+    listProbe.props = props;
+    React.useImperativeHandle(ref, () => ({
+      scrollToEnd: () => {
+        listProbe.scrollToEndCalls += 1;
+      },
+    }));
+    return React.createElement(
       "div",
       { "data-testid": testID },
       data.map((item) =>
@@ -35,7 +60,8 @@ vi.mock("react-native", () => ({
           renderItem({ item }),
         ),
       ),
-    ),
+    );
+  }),
   View: ({
     children,
     testID,
@@ -133,6 +159,9 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  listProbe.props = null;
+  listProbe.renders = 0;
+  listProbe.scrollToEndCalls = 0;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -532,5 +561,75 @@ describe("ledger screen", () => {
     expect(container.querySelectorAll('[data-testid="col-context"]').length).toBeGreaterThanOrEqual(
       2,
     );
+  });
+});
+
+/** A scroll event the way the list would deliver one. */
+function driveScroll(input: { y: number; viewport: number; contentHeight?: number }): void {
+  const props = listProbe.props as { onScroll?: (event: unknown) => void } | null;
+  if (props?.onScroll === undefined) throw new Error("FlatList never rendered");
+  act(() => {
+    props.onScroll?.({
+      nativeEvent: {
+        contentOffset: { y: input.y },
+        // Omitted entirely when not supplied: an event that carries no content
+        // measurement, which the list is free to deliver.
+        ...(input.contentHeight === undefined
+          ? {}
+          : { contentSize: { height: input.contentHeight } }),
+        layoutMeasurement: { height: input.viewport },
+      },
+    });
+  });
+}
+
+/** An append: the list's content grows, and follow may answer with a scroll. */
+function appendRows(): number {
+  const props = listProbe.props as { onContentSizeChange?: (w: number, h: number) => void } | null;
+  const before = listProbe.scrollToEndCalls;
+  act(() => props?.onContentSizeChange?.(320, 5000));
+  return listProbe.scrollToEndCalls - before;
+}
+
+const AT_BOTTOM = { y: 4000, contentHeight: 5000, viewport: 1000 };
+const SCROLLED_UP = { y: 0, contentHeight: 5000, viewport: 1000 };
+
+describe("ledger screen tail-follow", () => {
+  it("engages at the bottom, stops on scroll-up, and re-arms back at the bottom", () => {
+    render();
+    // Opening a live ledger starts at the tail.
+    expect(appendRows()).toBe(1);
+
+    driveScroll(SCROLLED_UP);
+    expect(appendRows()).toBe(0);
+
+    driveScroll(AT_BOTTOM);
+    expect(appendRows()).toBe(1);
+  });
+
+  it("a scroll event carrying no content measurement does not re-arm follow", () => {
+    render();
+    driveScroll(SCROLLED_UP);
+    expect(appendRows()).toBe(0);
+
+    // No contentSize: the event cannot say where the list is. Deciding "at the
+    // bottom" from an unmeasurable event re-arms follow, and the next append
+    // then yanks a scrolled-up view back to the tail.
+    driveScroll({ y: 0, viewport: 1000 });
+    expect(appendRows()).toBe(0);
+  });
+
+  it("flipping follow mid-scroll does not re-render the list", () => {
+    render();
+    driveScroll(SCROLLED_UP);
+
+    const before = listProbe.renders;
+    driveScroll(AT_BOTTOM);
+    expect({ reRenders: listProbe.renders - before }).toEqual({ reRenders: 0 });
+
+    // And a run of ticks that changes nothing re-renders nothing either.
+    const beforeTicks = listProbe.renders;
+    for (let i = 0; i < 5; i++) driveScroll(AT_BOTTOM);
+    expect({ reRenders: listProbe.renders - beforeTicks }).toEqual({ reRenders: 0 });
   });
 });

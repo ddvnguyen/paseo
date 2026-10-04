@@ -38,6 +38,16 @@ interface FoldState {
 /** Nothing collapsed: every turn expanded, including ones not yet recorded. */
 const ALL_OPEN: FoldState = { closedTurns: new Set() };
 
+/**
+ * How close to the end counts as "at the bottom" when deciding follow.
+ *
+ * dsh uses 2px. This is deliberately more forgiving: at 2px a one-pixel
+ * overscroll disengages follow, and on a live ledger that means the view
+ * silently stops advancing while new events pile up unseen. Revisit alongside
+ * the windowing work, once there is a virtualizer to anchor against.
+ */
+const BOTTOM_FOLLOW_THRESHOLD_PX = 24;
+
 export function LedgerScreen(props: {
   rows: readonly TrajectoryFoldRow[];
   turnNumbers?: ReadonlyMap<string, number>;
@@ -88,7 +98,7 @@ export function LedgerScreen(props: {
     testID,
   } = props;
   const [fold, setFold] = useState<FoldState>(ALL_OPEN);
-  const [follow, setFollow] = useState(true);
+  const followRef = useRef(true);
   const [query, setQuery] = useState("");
   const listRef = useRef<FlatList<ListRow> | null>(null);
 
@@ -224,25 +234,33 @@ export function LedgerScreen(props: {
   const keyExtractor = useCallback((item: ListRow) => item.key, []);
 
   const onContentSizeChange = useCallback(() => {
-    if (follow && listRef.current !== null) {
+    if (followRef.current && listRef.current !== null) {
       listRef.current.scrollToEnd({ animated: false });
     }
-  }, [follow]);
+  }, []);
 
   const onScroll = useCallback(
     (event: {
       nativeEvent: {
         contentOffset: { y: number };
-        contentSize: { height: number };
+        contentSize?: { height: number };
         layoutMeasurement: { height: number };
       };
     }) => {
-      const { y, height: contentHeight } = event.nativeEvent.contentSize
-        ? { y: event.nativeEvent.contentOffset.y, height: event.nativeEvent.contentSize.height }
-        : { y: 0, height: 0 };
+      const { y } = event.nativeEvent.contentOffset;
+      const contentHeight = event.nativeEvent.contentSize?.height;
+      // An event with no content measurement cannot say where the list is.
+      // Reading it as "at the bottom" re-arms follow on any partial event, and
+      // the next append then yanks a scrolled-up view back to the tail. An
+      // unmeasurable event is not evidence either way, so it leaves follow
+      // alone.
+      if (contentHeight === undefined) return;
       const viewport = event.nativeEvent.layoutMeasurement.height;
-      const atBottom = y + viewport >= contentHeight - 24;
-      setFollow(atBottom);
+      const atBottom = y + viewport >= contentHeight - BOTTOM_FOLLOW_THRESHOLD_PX;
+      // Ref, not state: follow is read in exactly one place and never rendered,
+      // so a state flip here would re-render the whole screen mid-scroll for a
+      // value nothing on screen depends on.
+      followRef.current = atBottom;
     },
     [],
   );
