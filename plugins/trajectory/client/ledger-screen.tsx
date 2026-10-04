@@ -77,12 +77,17 @@ const ALL_OPEN: FoldState = { closedTurns: new Set() };
 /**
  * How close to the end counts as "at the bottom" when deciding follow.
  *
- * dsh uses 2px. This is deliberately more forgiving: at 2px a one-pixel
- * overscroll disengages follow, and on a live ledger that means the view
- * silently stops advancing while new events pile up unseen.
+ * dsh uses 2px. This is deliberately more forgiving, because on a live ledger
+ * stopping a few pixels short of the end is a common resting place — momentum,
+ * a trackpad, a rubber-band — and at 2px any of those disengages follow, so the
+ * view silently stops advancing while new events pile up unseen. (Overscroll
+ * PAST the end is not the risk: it grows `y + viewport`, which reads as
+ * at-bottom at any threshold.)
  *
- * Pinned by a behaviour test, so dropping it to dsh's 2px is a red test rather
- * than a quiet change in when the view stops following.
+ * A behaviour test drives a scroll 20px short of the end and expects follow to
+ * stay engaged, so dropping this to dsh's 2px is a red test rather than a quiet
+ * change in when the view stops following. That test pins the floor at 20px, not
+ * the exact value.
  */
 const BOTTOM_FOLLOW_THRESHOLD_PX = 24;
 

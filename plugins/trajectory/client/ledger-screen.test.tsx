@@ -919,4 +919,31 @@ describe("ledger screen search index cadence", () => {
 
     expect({ hitsAfterAppend: searchHits("b answer") }).toEqual({ hitsAfterAppend: 1 });
   });
+
+  /**
+   * The throttle's safety argument, as behaviour: a deferred commit that the
+   * effect cleanup CANCELS leaves the index behind, but a query can never be
+   * WRONG for it — only late, and late is invisible while the list is
+   * unfiltered. Correctness comes from the active-query path updating the index
+   * itself before searching, not from the throttle having kept up.
+   *
+   * So: append repeatedly with nothing typed and no timer flush (every commit
+   * deferred, then cancelled), then type a query naming the newest turn. If the
+   * throttle were load-bearing for correctness rather than for cost, this would
+   * find nothing.
+   */
+  it("a query is correct after any number of unfiltered appends, throttle or not", () => {
+    let rows = turn("a", 100);
+    renderRows(rows);
+
+    const hitsPerRound = [1, 2, 3, 4, 5, 6].map((n) => {
+      rows = [...rows, ...turn(`t${n}`, 200 + n * 10)];
+      renderRows(rows);
+      const hits = searchHits(`t${n} answer`);
+      searchHits(""); // clear, so the next round starts unfiltered
+      return hits;
+    });
+
+    expect(hitsPerRound).toEqual([1, 1, 1, 1, 1, 1]);
+  });
 });
