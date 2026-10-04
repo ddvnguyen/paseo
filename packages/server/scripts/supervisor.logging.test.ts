@@ -3,12 +3,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { describe, expect, test } from "vitest";
 import { isPlatform } from "../src/test-utils/platform.js";
 import { resolveSupervisorLogFile } from "./supervisor-log-config.js";
 
 const repoRoot = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const supervisorPath = fileURLToPath(new URL("./supervisor.ts", import.meta.url));
+// The fixture spawns from the repo root, where pnpm does not hoist tsx. Resolve
+// the loader from this workspace instead of relying on hoisting.
+const tsxLoader = createRequire(import.meta.url).resolve("tsx");
 
 function isProcessRunning(pid: number): boolean {
   try {
@@ -62,7 +66,7 @@ async function runSupervisorFixture(options: {
   );
 
   const startedAt = Date.now();
-  const child = spawn(process.execPath, ["--import", "tsx", runnerPath], {
+  const child = spawn(process.execPath, ["--import", tsxLoader, runnerPath], {
     cwd: repoRoot,
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
@@ -245,7 +249,7 @@ describe("supervisor durable logging", () => {
     expect(descendantSurvived).toBe(false);
   });
 
-  test("does not restart a worker based on heartbeat absence", async () => {
+  test("does not restart a responsive worker that outlives the hang window", async () => {
     const result = await runSupervisorFixture({
       timeoutMs: 20_000,
       workerSource: `
@@ -253,6 +257,10 @@ describe("supervisor durable logging", () => {
 
         process.on("message", (message) => {
           if (message?.type === "paseo:graceful-shutdown") process.exit(0);
+          // The daemon worker answers every supervisor heartbeat. A worker that
+          // keeps answering must survive past the hang window.
+          if (message?.type === "paseo:supervisor-heartbeat")
+            process.send?.({ type: "paseo:worker-heartbeat" });
         });
         const marker = process.argv[1] + ".started";
         if (!existsSync(marker)) {
