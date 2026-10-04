@@ -53,7 +53,7 @@ function loadFilters(path) {
   let currentFilter;
 
   for (const line of readFileSync(path, "utf8").split("\n")) {
-    const filterMatch = /^([a-z_]+):\s*$/.exec(line);
+    const filterMatch = /^([a-z_-]+):\s*$/.exec(line);
     if (filterMatch) {
       currentFilter = filterMatch[1];
       filters[currentFilter] = [];
@@ -202,6 +202,11 @@ test("PR routing declares stable behavior ownership", () => {
     ],
     relay: ["packages/relay/**"],
     cli: ["packages/cli/**"],
+    "fleet-backend": [
+      "packages/fleet-backend/**",
+      "scripts/fleet-merge-safety.mjs",
+      ".github/workflows/fleet-merge-safety.yml",
+    ],
   });
 });
 

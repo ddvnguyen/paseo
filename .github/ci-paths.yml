@@ -84,3 +84,8 @@ relay:
 
 cli:
   - "packages/cli/**"
+
+fleet-backend:
+  - "packages/fleet-backend/**"
+  - "scripts/fleet-merge-safety.mjs"
+  - ".github/workflows/fleet-merge-safety.yml"
