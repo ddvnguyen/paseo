@@ -96,18 +96,41 @@ say "Repo: $REPO_ROOT"
 say "Log:  $LOG_FILE"
 
 # ---------------------------------------------------------------------------
-# [0/6] Version stamp: transient, idempotent, reverted at the end
+# [0/6] Version stamp: transient, idempotent, always reverted
 # ---------------------------------------------------------------------------
 # The stamped version is metadata the daemon reads at runtime; it is NOT a
-# source change. Stamping writes it, deploy runs, then [7/7] writes the
-# committed version back so the working tree is never left dirty and suffixes
-# never accumulate across deploys.
+# source change. Snapshot every file the stamp touches before writing, and
+# restore that snapshot on ANY exit — a failed build must not leave the tree
+# dirty, and a re-run must not stack another suffix.
 say ""
 say "[0/6] Stamping version with commit hash..."
 cd "$REPO_ROOT"
 SHORT_HASH=$(git rev-parse --short HEAD)
 COMMITTED_VERSION=$(git show HEAD:package.json | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version")
 CURRENT_VERSION=$(node -p "require('./package.json').version")
+STAMPED_VERSION="$CURRENT_VERSION"
+
+# The workspace list is the same one sync-workspace-versions.mjs walks, so the
+# snapshot covers every file that step can rewrite.
+STAMP_BACKUP_DIR=$(mktemp -d)
+mapfile -t STAMP_TARGETS < <(
+  node -e "const p=require('./package.json');console.log(['package.json',...(p.workspaces||[]).map((w)=>w+'/package.json')].join('\n'))"
+)
+for f in "${STAMP_TARGETS[@]}"; do
+  [ -f "$f" ] || continue
+  mkdir -p "$STAMP_BACKUP_DIR/$(dirname "$f")"
+  cp "$f" "$STAMP_BACKUP_DIR/$f"
+done
+
+restore_stamp() {
+  local status=$?
+  for f in "${STAMP_TARGETS[@]}"; do
+    [ -f "$STAMP_BACKUP_DIR/$f" ] && cp "$STAMP_BACKUP_DIR/$f" "$f"
+  done
+  rm -rf "$STAMP_BACKUP_DIR"
+  return $status
+}
+trap restore_stamp EXIT
 
 if [[ "$CURRENT_VERSION" == *"-$SHORT_HASH" ]]; then
   say "  Version already stamped ($CURRENT_VERSION) — skipping"
@@ -135,12 +158,12 @@ pnpm install --frozen-lockfile
 # ---------------------------------------------------------------------------
 say ""
 say "[2/6] Building server and web app..."
-pnpm run build --workspace=@getpaseo/highlight
-pnpm run build --workspace=@getpaseo/relay
-pnpm run build --workspace=@getpaseo/protocol
-pnpm run build --workspace=@getpaseo/client
-pnpm run build --workspace=@getpaseo/server
-pnpm run build --workspace=@getpaseo/cli
+pnpm --filter @getpaseo/highlight run build
+pnpm --filter @getpaseo/relay run build
+pnpm --filter @getpaseo/protocol run build
+pnpm --filter @getpaseo/client run build
+pnpm --filter @getpaseo/server run build
+pnpm --filter @getpaseo/cli run build
 
 # ---------------------------------------------------------------------------
 # [3/6] Build the web app (expo export)
@@ -148,7 +171,7 @@ pnpm run build --workspace=@getpaseo/cli
 say ""
 say "[3/6] Building web app..."
 cd "$REPO_ROOT/packages/app"
-pnpm run build:web
+pnpm --filter @getpaseo/app run build:web
 cd "$REPO_ROOT"
 
 # ---------------------------------------------------------------------------
@@ -215,11 +238,10 @@ say "Web UI HTTP: $HTTP_CODE"
 # Revert the transient version stamp so the deployment never leaves the tracked
 # package.json dirty (review finding #8 on PR #38) and re-running never doubles
 # the suffix ("0.9.2-<hash1>-<hash2>-...").
+# The EXIT trap restores the pre-stamp snapshot of every touched file, so the
+# tree ends clean on success and on failure alike.
 say ""
-say "Reverting version stamp to committed values..."
-git show HEAD:package.json > "$REPO_ROOT/package.json"
-for f in packages/*/package.json; do git show "HEAD:$f" > "$REPO_ROOT/$f"; done
-say "Version: $COMMITTED_VERSION (restored)"
+say "Version stamp will be reverted on exit (trap)."
 
 if [ "$HTTP_CODE" = "200" ]; then
   say "Status: OK"
