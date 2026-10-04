@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsgo --noEmit",
     "deploy": "npm run build && wrangler deploy",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test --project=chromium"
   },
   "dependencies": {
     "@cloudflare/vite-plugin": "^1.29.1",
@@ -38,6 +38,7 @@
     "@types/react-dom": "^19.1.5",
     "@types/unist": "^3.0.0",
     "@vitejs/plugin-react": "^4.5.1",
+    "tailwindcss": "^4.2.1",
     "typescript": "^5.9.3",
     "unified": "^11.0.5",
     "vite": "^7.3.3",
