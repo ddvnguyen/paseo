@@ -261,7 +261,7 @@ jobs:
 
       - name: Verify Windows daemon process control
         if: ${{ runner.os == 'Windows' }}
-        run: npx vitest run packages/cli/src/commands/daemon/lifecycle.e2e.test.ts --bail=1 --maxWorkers=1 -t "Windows unbound|managed two-home"
+        run: pnpm --filter @getpaseo/cli exec vitest run src/commands/daemon/lifecycle.e2e.test.ts --bail=1 --maxWorkers=1 -t "Windows unbound|managed two-home"
 
       - name: Run desktop lifecycle E2E (Linux)
         if: ${{ runner.os == 'Linux' }}
