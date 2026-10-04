@@ -496,15 +496,30 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@getpaseo/plugin':
+        specifier: workspace:*
+        version: link:../plugin
+      '@tanstack/react-query':
+        specifier: ^5.90.11
+        version: 5.90.21(react@19.1.0)
       '@types/mime-types':
         specifier: ^3.0.1
         version: 3.0.1
       '@types/node':
         specifier: ^20.9.0
         version: 20.19.37
+      '@types/react':
+        specifier: ~19.2.0
+        version: 19.2.14
       '@types/ws':
         specifier: ^8.5.8
         version: 8.18.1
+      react:
+        specifier: 19.1.0
+        version: 19.1.0
+      react-native:
+        specifier: 0.81.5
+        version: 0.81.5(@babel/core@7.29.0)(@react-native/metro-config@0.85.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.1.0)
       tsx:
         specifier: ^4.6.0
         version: 4.21.0
