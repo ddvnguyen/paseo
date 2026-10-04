@@ -8,7 +8,7 @@
 # values shipped in the npm @codebuff/sdk dist. Requires bun + npm.
 set -euo pipefail
 FORK="${1:?path to freebuff fork checkout}"
-VERSION="${2:?version, e.g. 0.10.7-paseo.1}"
+VERSION="${2:?version, e.g. 0.10.7-paseo.3}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="$HERE/../vendor"
 STAGE="$(mktemp -d)"

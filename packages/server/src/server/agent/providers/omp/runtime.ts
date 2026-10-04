@@ -14,6 +14,9 @@ import type {
 } from "./rpc-types.js";
 import type { ProviderRuntimeSettings } from "../../provider-launch-config.js";
 
+const SLIM_TOOL_MODEL = "baseline-64k/local";
+const SLIM_TOOL_SET = "read,bash,edit,write,grep,glob,todo,task";
+
 export interface OmpRuntimeLaunch {
   cwd: string;
   argv: string[];
@@ -125,11 +128,19 @@ function appendOmpLaunchArgs(
   protocolMode: "rpc" | "rpc-ui",
   systemPrompt: string | undefined,
 ): void {
-  if (!hasModeFlag(argv)) {
+  if (!hasArgFlag(argv, "--mode")) {
     argv.push("--mode", protocolMode);
   }
   if (session.extraArgs?.length) {
     argv.push(...session.extraArgs);
+  }
+  if (session.model === SLIM_TOOL_MODEL) {
+    if (!hasArgFlag(argv, "--tools") && !hasArgFlag(argv, "--no-tools")) {
+      argv.push("--tools", SLIM_TOOL_SET);
+    }
+    if (!hasArgFlag(argv, "--no-extensions")) {
+      argv.push("--no-extensions");
+    }
   }
   if (session.model) {
     argv.push("--model", session.model);
@@ -147,12 +158,12 @@ function appendOmpLaunchArgs(
   }
 }
 
-function hasModeFlag(argv: string[]): boolean {
+function hasArgFlag(argv: string[], flag: string): boolean {
   for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i] === "--mode") {
+    if (argv[i] === flag) {
       return true;
     }
-    if (argv[i]?.startsWith("--mode=")) {
+    if (argv[i]?.startsWith(`${flag}=`)) {
       return true;
     }
   }

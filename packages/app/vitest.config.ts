@@ -128,8 +128,8 @@ export default defineConfig({
       {
         find: /^react-native-gesture-handler$/,
         replacement: path.resolve(
-          rootNodeModules,
-          "react-native-gesture-handler/lib/module/index.js",
+          resolvePackageEntry("react-native-gesture-handler"),
+          "lib/module/index.js",
         ),
       },
       // Must precede the `react-native` alias: a string `find` matches by prefix, so this subpath
@@ -144,7 +144,7 @@ export default defineConfig({
       // Vite alias resolution).
       {
         find: "react-native",
-        replacement: path.resolve(rootNodeModules, "react-native-web/dist/index.js"),
+        replacement: path.resolve(resolvePackageEntry("react-native-web"), "dist/index.js"),
       },
       { find: "react", replacement: resolvePackageEntry("react") },
       {

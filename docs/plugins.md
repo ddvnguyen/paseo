@@ -502,9 +502,13 @@ drops the optional presentation fields.
 ## Contribute settings
 
 Register ordinary components with `client.addSettingsScreen` and open them with `openSettings`.
-The host settings shell owns navigation and layout; plugin content must not add another page
+The host settings shell owns navigation and layout; each running screen also gets its own entry in
+the Settings side menu below Plugins. Plugin content must not add another page
 scroll view or header. See the [author contract](../public-docs/plugins/reference.md#settings-screens)
 and `plugin-examples/settings` for the named UI components and persistence API.
+For per-row actions (rename one entry, remove one entry), put `SettingsIconButton`
+controls in a `SettingsIconRow` trailing slot instead of stacking a full-width
+`SettingsAction` row per operation.
 
 Settings storage is scoped to the runtime installation ID, never the source path or manifest ID.
 Its writer lives with the plugin subprocess, while its directory lives outside managed sources,

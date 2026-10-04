@@ -197,7 +197,7 @@ import {
   WorkspaceHeaderMenuDesktop,
   WorkspaceHeaderMenuMobile,
 } from "@/screens/workspace/workspace-header-menu";
-import { PluginHeaderButtons } from "@/plugins";
+import { PluginHeaderButtons, PluginPanelDialogHost } from "@/plugins";
 import {
   createWorkspaceFileTabTarget,
   normalizeWorkspaceFileLocation,
@@ -4124,6 +4124,7 @@ function WorkspaceScreenContent({
           onSubmit={handleRenameModalSubmit}
           onClose={handleRenameModalClose}
         />
+        <PluginPanelDialogHost />
       </View>
     </RenderProfile>
   );

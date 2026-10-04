@@ -1977,6 +1977,7 @@ export const ja: TranslationResources = {
       notifications: "通知",
       permissions: "権限",
       diagnostics: "診断",
+      debug: "デバッグ",
       about: "アプリ情報",
     },
     layout: en.settings.layout,
@@ -2637,6 +2638,10 @@ export const ja: TranslationResources = {
         noneDetected: "モデルが検出されませんでした",
         discovered: "検出済み",
         custom: "カスタムモデル",
+        disableModel: "モデルピッカーで {{id}} を非表示",
+        enableModel: "モデルピッカーで {{id}} を表示",
+        lastModelHint: "少なくとも 1 つのモデルは有効のままです",
+
         updated: "{{time}}に更新",
       },
       diagnostic: {

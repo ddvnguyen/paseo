@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, Paseo-hub]
   pull_request:
-    branches: [main]
+    branches: [main, Paseo-hub]
   merge_group:
   workflow_dispatch:
 
@@ -62,13 +62,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: pnpm install --frozen-lockfile
 
       - name: Check formatting
         run: npm run format:check
@@ -81,16 +84,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
-
-      - name: Lint lockfile
-        run: npx --yes lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-integrity
+        run: pnpm install --frozen-lockfile
 
       - name: Verify dependency signatures
         run: npm audit signatures
@@ -106,13 +109,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: pnpm install --frozen-lockfile
 
       - name: Build server stack
         run: npm run build:server
@@ -142,17 +148,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Fetch origin/main (worktree tests)
         if: ${{ needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' }}
         run: git fetch --no-tags origin main:refs/remotes/origin/main
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: pnpm install --frozen-lockfile
 
       - name: Install agent CLIs for provider tests
         if: ${{ needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' }}
@@ -187,18 +196,23 @@ jobs:
   server-tests-macos:
     name: server-tests (macos-14, file observation)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false') }}
+    # Fork CI scope is server, web and Android; desktop/macOS/iOS run only when
+    # the repo variable PASEO_CI_ALL_PLATFORMS is 'true' (owner 2026-10-04).
+    if: ${{ vars.PASEO_CI_ALL_PLATFORMS == 'true' && !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false') }}
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: pnpm install --frozen-lockfile
 
       - name: Build server dependencies
         run: npm run build:server-deps
@@ -214,7 +228,9 @@ jobs:
   desktop-tests-ubuntu:
     name: desktop-tests (ubuntu-latest)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') }}
+    # Fork CI scope is server, web and Android; desktop/macOS/iOS run only when
+    # the repo variable PASEO_CI_ALL_PLATFORMS is 'true' (owner 2026-10-04).
+    if: ${{ vars.PASEO_CI_ALL_PLATFORMS == 'true' && !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -222,13 +238,16 @@ jobs:
     steps: &desktop_test_steps
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies with retry
-        run: node scripts/npm-retry.mjs ci
+        run: pnpm install --frozen-lockfile
 
       - name: Build server stack
         run: npm run build:server
@@ -246,7 +265,7 @@ jobs:
 
       - name: Verify Windows daemon process control
         if: ${{ runner.os == 'Windows' }}
-        run: npx vitest run packages/cli/src/commands/daemon/lifecycle.e2e.test.ts --bail=1 --maxWorkers=1 -t "Windows unbound|managed two-home"
+        run: pnpm --filter @getpaseo/cli exec vitest run src/commands/daemon/lifecycle.e2e.test.ts --bail=1 --maxWorkers=1 -t "Windows unbound|managed two-home"
 
       - name: Run desktop lifecycle E2E (Linux)
         if: ${{ runner.os == 'Linux' }}
@@ -289,7 +308,9 @@ jobs:
   desktop-tests-windows:
     name: desktop-tests (windows-latest)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') }}
+    # Fork CI scope is server, web and Android; desktop/macOS/iOS run only when
+    # the repo variable PASEO_CI_ALL_PLATFORMS is 'true' (owner 2026-10-04).
+    if: ${{ vars.PASEO_CI_ALL_PLATFORMS == 'true' && !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') }}
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -304,13 +325,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies with retry
-        run: node scripts/npm-retry.mjs ci
+        run: pnpm install --frozen-lockfile
 
       - name: Install Playwright browsers
         timeout-minutes: 10
@@ -330,13 +354,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: pnpm install --frozen-lockfile
 
       - name: Build client dependencies
         run: npm run build:relay && npm run build:client
@@ -359,6 +386,33 @@ jobs:
       - name: Typecheck client examples
         run: npm run typecheck:examples --workspace=@getpaseo/client
 
+  fleet-backend:
+    name: fleet-backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      # No workspace deps (MCP SDK + Turso only), so no cross-package build
+      # step is needed here. Covers tests/unit, tests/concurrency and
+      # tests/gates. tests/parity stays out on purpose -- it is ~5 min and
+      # boots two servers over stdio, gated behind `pnpm parity`
+      # (see packages/fleet-backend/tests/parity/HARNESS.md).
+      - name: Run fleet-backend tests
+        run: npm run test --workspace=@getpaseo/fleet-backend
+
+      - name: Typecheck fleet-backend
+        run: npm run typecheck --workspace=@getpaseo/fleet-backend
+
   playwright-1:
     name: playwright (shard 1/4)
     needs: changes
@@ -370,13 +424,16 @@ jobs:
     steps: &playwright_test_steps
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies with retry
-        run: node scripts/npm-retry.mjs ci
+        run: pnpm install --frozen-lockfile
 
       - name: Install Playwright browsers
         timeout-minutes: 10
@@ -447,13 +504,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: pnpm install --frozen-lockfile
 
       - name: Build relay
         run: npm run build:relay
@@ -475,13 +535,16 @@ jobs:
     steps: &cli_test_steps
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: pnpm install --frozen-lockfile
 
       - name: Install agent CLIs for provider tests
         run: node scripts/npm-retry.mjs install -g @anthropic-ai/claude-code @openai/codex@0.105.0 opencode-ai

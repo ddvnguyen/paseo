@@ -100,19 +100,50 @@ const flag = (name) => {
 };
 
 let failures = 0;
-if (flag("--files") !== null) {
+// A sync/integration merge legitimately spans both trees: it copies lanes'
+// already-reviewed work into an integration branch. The lane boundary rule
+// exists to keep REGULAR lane commits from crossing trees (paseo#31), not to
+// block integration.
+//
+// The override is opt-in and always announced. Do NOT wire this to anything an
+// author can set incidentally -- it used to key off `contains(title, 'sync:')`,
+// which made the whole gate a no-op for any PR whose title happened to start
+// with "sync:" (including the PR that introduced the gate). Requiring a repo
+// label means only someone with write access can waive the rule, and the
+// waiver is visible in the log instead of reading as a clean PASS.
+const allowMixedTree = flag("--allow-mixed-tree") !== null;
+if (allowMixedTree) {
+  console.log(
+    "merge-safety: OVERRIDDEN via --allow-mixed-tree — rule 1 was NOT evaluated.\n" +
+      "  Set this only for an integration merge that intentionally spans both trees,\n" +
+      "  and say so in the PR body.",
+  );
+}
+const hasFiles = flag("--files") !== null;
+const hasBase = flag("--base") !== null;
+if (!hasFiles && !hasBase) {
+  console.error(
+    "merge-safety: no changeset to check — pass --base/--head or --files.\n" +
+      "  Running with neither silently passes rule 1; that is a hole, not a pass.",
+  );
+  failures++;
+} else if (hasFiles) {
   const files = String(flag("--files"))
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
-  const r = checkMergeSafety(files);
-  console.log(r.ok ? "merge-safety: PASS" : `merge-safety: FAIL\n${r.message}`);
+  const r = allowMixedTree ? { ok: true } : checkMergeSafety(files);
+  if (!allowMixedTree) {
+    console.log(r.ok ? "merge-safety: PASS" : `merge-safety: FAIL\n${r.message}`);
+  }
   if (!r.ok) failures++;
-} else if (flag("--base") !== null) {
+} else {
   const files = changedFiles(flag("--base"), flag("--head") || "HEAD");
   console.log(`merge-safety: ${files.length} changed files`);
-  const r = checkMergeSafety(files);
-  console.log(r.ok ? "merge-safety: PASS" : `merge-safety: FAIL\n${r.message}`);
+  const r = allowMixedTree ? { ok: true } : checkMergeSafety(files);
+  if (!allowMixedTree) {
+    console.log(r.ok ? "merge-safety: PASS" : `merge-safety: FAIL\n${r.message}`);
+  }
   if (!r.ok) failures++;
 }
 if (flag("--files") === null) {

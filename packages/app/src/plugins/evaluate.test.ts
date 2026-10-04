@@ -273,6 +273,64 @@ describe("evaluatePluginClientBundle", () => {
     ).toEqual([{ id: "open-review", title: "Open review", icon: "Scan", context: "agent" }]);
   });
 
+  it("normalizes and validates the fullScreen dialog flag", () => {
+    const optIn = evaluatePluginClientBundle(
+      "ledger",
+      bundle(`
+        function LedgerPanel() { return null; }
+        plugin.addWorkspacePanel({
+          id: "ledger",
+          title: "Ledger",
+          icon: "Scan",
+          context: "agent",
+          locations: ["dialog"],
+          fullScreen: true,
+          Component: LedgerPanel,
+        });
+      `),
+    );
+    expect(optIn.workspacePanels[0]?.fullScreen).toBe(true);
+
+    // A panel that omits it keeps the content-sized dialog it always had, so
+    // existing plugins are unaffected.
+    const legacy = evaluatePluginClientBundle(
+      "review",
+      bundle(`
+        function ReviewPanel() { return null; }
+        plugin.addWorkspacePanel({
+          id: "review",
+          title: "Review",
+          icon: "Scan",
+          context: "agent",
+          locations: ["dialog"],
+          Component: ReviewPanel,
+        });
+      `),
+    );
+    expect(legacy.workspacePanels[0]?.fullScreen).toBe(false);
+
+    // An invalid flag is a plugin bug, and the host reports it the same way it
+    // reports every other malformed contribution: by throwing out of the
+    // bundle runner, not by returning a half-built plugin.
+    expect(() =>
+      evaluatePluginClientBundle(
+        "bad",
+        bundle(`
+        function BadPanel() { return null; }
+        plugin.addWorkspacePanel({
+          id: "bad",
+          title: "Bad",
+          icon: "Scan",
+          context: "agent",
+          locations: ["dialog"],
+          fullScreen: "yes",
+          Component: BadPanel,
+        });
+      `),
+      ),
+    ).toThrow(/invalid fullScreen/);
+  });
+
   it("normalizes and validates workspace panel locations", () => {
     const plugin = evaluatePluginClientBundle(
       "review",
@@ -289,6 +347,24 @@ describe("evaluatePluginClientBundle", () => {
       `),
     );
     expect(plugin.workspacePanels[0]?.locations).toEqual(["workspace", "explorer"]);
+
+    // Dialog-only panels (agent-context entries opened via Command Center)
+    // are valid: the dialog host renders them as a modal overlay.
+    const dialogPlugin = evaluatePluginClientBundle(
+      "review",
+      bundle(`
+        function ReviewPanel() { return null; }
+        plugin.addWorkspacePanel({
+          id: "review",
+          title: "Review",
+          icon: "Scan",
+          context: "agent",
+          locations: ["dialog"],
+          Component: ReviewPanel,
+        });
+      `),
+    );
+    expect(dialogPlugin.workspacePanels[0]?.locations).toEqual(["dialog"]);
 
     for (const [locations, message] of [
       ["[]", "must support at least one location"],

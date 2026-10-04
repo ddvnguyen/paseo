@@ -25,4 +25,23 @@ jobs:
           node-version: "22"
 
       - name: Enforce paseo#31 merge-safety rules
-        run: node scripts/fleet-merge-safety.mjs --base ${{ github.event.pull_request.base.sha || 'HEAD~1' }} --head ${{ github.event.pull_request.head.sha || 'HEAD' }}
+        env:
+          # On merge_group there is no pull_request payload. The checkout is the
+          # merge commit, so its FIRST parent (HEAD^1) is the base branch tip --
+          # that is well defined, unlike the `HEAD~1` this replaced. Everywhere
+          # else use the real PR refs, so the diff is merge-base based.
+          BASE: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          # Waiving rule 1 requires a repo label (write access to set), not a
+          # title substring anyone can type. See scripts/fleet-merge-safety.mjs.
+          OVERRIDE: ${{ contains(github.event.pull_request.labels.*.name, 'merge-safety-allow-mixed-tree') }}
+        run: |
+          set -euo pipefail
+          ARGS=(--head "${HEAD_SHA:-HEAD}")
+          if [ -n "$BASE" ]; then
+            ARGS+=(--base "$BASE")
+          else
+            ARGS+=(--base 'HEAD^1')
+          fi
+          if [ "$OVERRIDE" = "true" ]; then ARGS+=(--allow-mixed-tree); fi
+          node scripts/fleet-merge-safety.mjs "${ARGS[@]}"

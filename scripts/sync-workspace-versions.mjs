@@ -23,7 +23,7 @@ function getHydraTimestamp() {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, "0");
   const yy = String(now.getFullYear()).slice(-2);
-  return `${yy}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}`;
+  return `${yy}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
 }
 
 // Fork identifier lives here, not in package.json's "version" field: that
@@ -115,13 +115,10 @@ for (const workspacePath of workspacePaths) {
       if (name === pkg.name) {
         continue;
       }
-      if (deps[name] !== internalDepRange) {
-        if (!gitHash && isAlreadyStamped(deps[name])) {
-          // Keep already-stamped dep version when git not available
-        } else {
-          deps[name] = internalDepRange;
-          changed = true;
-        }
+      const keepStamped = !gitHash && isAlreadyStamped(deps[name]);
+      if (deps[name] !== internalDepRange && !keepStamped) {
+        deps[name] = internalDepRange;
+        changed = true;
       }
     }
   }

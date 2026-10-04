@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +15,17 @@ import { createE2ETestContext } from "../helpers/test-daemon.ts";
 
 const nodeMajor = Number((process.versions.node ?? "0").split(".")[0] ?? "0");
 const shouldRunRelayE2e = process.env.FORCE_RELAY_E2E === "1" || nodeMajor < 25;
-const wranglerCliPath = createRequire(import.meta.url).resolve("wrangler/bin/wrangler.js");
+
+// wrangler's exports map blocks the deep "wrangler/bin/wrangler.js" import; read
+// the resolved package's "bin" entry instead — stable across wrangler versions.
+function resolveWranglerBin(): string {
+  const pkgPath = createRequire(import.meta.url).resolve("wrangler/package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  const bin = typeof pkg.bin === "string" ? pkg.bin : (pkg.bin?.wrangler as string);
+  return path.resolve(path.dirname(pkgPath), bin);
+}
+
+const wranglerCliPath = resolveWranglerBin();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const relayDir = path.resolve(__dirname, "../../../relay");
 const STARTUP_HOOK_TIMEOUT_MS = 120_000;

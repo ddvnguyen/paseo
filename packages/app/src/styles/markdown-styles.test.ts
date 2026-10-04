@@ -131,12 +131,15 @@ describe("createMarkdownStyles", () => {
       backgroundColor: darkTheme.colors.surface1,
       color: `${darkTheme.colors.foreground}cc`,
       borderLeftColor: darkTheme.colors.surface2,
-      paddingTop: darkTheme.spacing[3],
+      // Content spacing is scaled by the theme factor, not the raw token.
+      paddingTop: Math.round(darkTheme.spacing[3] * (darkTheme.contentSpacingScale ?? 0.75)),
       paddingBottom: 0,
       borderTopLeftRadius: 0,
       borderBottomLeftRadius: 0,
     });
-    expect(styles.paragraph.marginBottom).toBe(darkTheme.spacing[3]);
+    expect(styles.paragraph.marginBottom).toBe(
+      Math.round(darkTheme.spacing[3] * (darkTheme.contentSpacingScale ?? 0.75)),
+    );
     expect(styles.text).not.toHaveProperty("color");
   });
 });

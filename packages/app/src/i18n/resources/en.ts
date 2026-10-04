@@ -2736,6 +2736,9 @@ export const en = {
         discovered: "Discovered",
         custom: "Custom models",
         updated: "Updated {{time}}",
+        disableModel: "Hide {{id}} from model pickers",
+        enableModel: "Show {{id}} in model pickers",
+        lastModelHint: "At least one model stays enabled",
       },
       diagnostic: {
         title: "Diagnostic",

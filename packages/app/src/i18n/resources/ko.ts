@@ -1967,6 +1967,7 @@ export const ko: TranslationResources = {
       notifications: "알림",
       permissions: "권한",
       diagnostics: "진단",
+      debug: "디버그",
       about: "정보",
     },
     layout: en.settings.layout,
@@ -2625,6 +2626,10 @@ export const ko: TranslationResources = {
         noneDetected: "감지된 모델이 없습니다",
         discovered: "발견됨",
         custom: "사용자 지정 모델",
+        disableModel: "모델 선택기에서 {{id}} 숨기기",
+        enableModel: "모델 선택기에 {{id}} 표시",
+        lastModelHint: "최소 한 개의 모델은 사용 가능합니다",
+
         updated: "{{time}} 업데이트됨",
       },
       diagnostic: {

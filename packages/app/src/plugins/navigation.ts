@@ -4,6 +4,7 @@ import type { PluginPanelLocation } from "@getpaseo/plugin/client";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildPluginSurfaceRoute } from "./routes";
+import { openPluginPanelDialog } from "./dialog-store";
 import type { PluginNavigation } from "./actions";
 
 export function createPluginNavigation(input: {
@@ -11,13 +12,29 @@ export function createPluginNavigation(input: {
   workspaceId: string | null;
 }): PluginNavigation {
   const { serverId, workspaceId } = input;
-  function placement(location: PluginPanelLocation) {
+  function placement(location: Exclude<PluginPanelLocation, "dialog">) {
     if (location !== "explorer") return undefined;
     if (!workspaceId) throw new Error("No active workspace");
     const workspaceKey = `${serverId}:${workspaceId}`;
     const paneId = useWorkspaceLayoutStore.getState().showExplorerSidebar(workspaceKey);
     if (!paneId) throw new Error("Explorer is unavailable");
     return { mode: "pane" as const, paneId };
+  }
+  function openPanelDialog(request: {
+    pluginId: string;
+    panelId: string;
+    context: "workspace" | "agent";
+    agentId?: string;
+  }) {
+    if (!workspaceId) throw new Error("No active workspace");
+    openPluginPanelDialog({
+      serverId,
+      workspaceId,
+      pluginId: request.pluginId,
+      panelId: request.panelId,
+      context: request.context,
+      ...(request.agentId === undefined ? {} : { agentId: request.agentId }),
+    });
   }
   return {
     openSettings(pluginId, screenId) {
@@ -27,6 +44,10 @@ export function createPluginNavigation(input: {
       router.push(buildPluginSurfaceRoute(serverId, pluginId, { kind: "surface", id: surfaceId }));
     },
     openWorkspacePanel(pluginId, panelId, location) {
+      if (location === "dialog") {
+        openPanelDialog({ pluginId, panelId, context: "workspace" });
+        return;
+      }
       if (!workspaceId) throw new Error("No active workspace");
       navigateToWorkspace({
         serverId,
@@ -36,6 +57,10 @@ export function createPluginNavigation(input: {
       });
     },
     openAgentPanel(pluginId, panelId, agentId, location) {
+      if (location === "dialog") {
+        openPanelDialog({ pluginId, panelId, context: "agent", agentId });
+        return;
+      }
       if (!workspaceId) throw new Error("No active workspace");
       navigateToWorkspace({
         serverId,

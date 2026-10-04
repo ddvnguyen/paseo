@@ -9,6 +9,11 @@ import { resolveSupervisorLogFile } from "./supervisor-log-config.js";
 
 const repoRoot = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const supervisorPath = fileURLToPath(new URL("./supervisor.ts", import.meta.url));
+// The fixture spawns from the repo root, so `--import tsx` has to resolve from
+// there. The root package declares tsx for exactly that reason. Passing a
+// resolved absolute loader path instead works on Linux but breaks on Windows,
+// where the runner never starts and the fixture then reads a daemon.log that
+// was never created.
 
 function isProcessRunning(pid: number): boolean {
   try {
@@ -98,7 +103,18 @@ async function runSupervisorFixture(options: {
     });
   });
 
-  const log = await readFile(logPath, "utf8");
+  // A runner that never starts leaves no log file, and "ENOENT daemon.log"
+  // says nothing about why. Report the child's own output instead.
+  let log: string;
+  try {
+    log = await readFile(logPath, "utf8");
+  } catch (error) {
+    throw new Error(
+      `supervisor fixture wrote no log (exit ${code}/${signal})\n` +
+        `stdout: ${stdout}\nstderr: ${stderr}`,
+      { cause: error },
+    );
+  }
   return { code, signal, elapsedMs: Date.now() - startedAt, log, stdout, stderr };
 }
 
@@ -245,7 +261,7 @@ describe("supervisor durable logging", () => {
     expect(descendantSurvived).toBe(false);
   });
 
-  test("does not restart a worker based on heartbeat absence", async () => {
+  test("does not restart a responsive worker that outlives the hang window", async () => {
     const result = await runSupervisorFixture({
       timeoutMs: 20_000,
       workerSource: `
@@ -253,6 +269,10 @@ describe("supervisor durable logging", () => {
 
         process.on("message", (message) => {
           if (message?.type === "paseo:graceful-shutdown") process.exit(0);
+          // The daemon worker answers every supervisor heartbeat. A worker that
+          // keeps answering must survive past the hang window.
+          if (message?.type === "paseo:supervisor-heartbeat")
+            process.send?.({ type: "paseo:worker-heartbeat" });
         });
         const marker = process.argv[1] + ".started";
         if (!existsSync(marker)) {
@@ -348,4 +368,81 @@ describe("supervisor durable logging", () => {
       expect(result.log).toContain("Supervisor exiting");
     },
   );
+
+  test("force-restarts a worker that stops replying to heartbeats", async () => {
+    const markerFile = path.join(tmpdir(), `paseo-supervisor-hang-${process.pid}.marker`);
+    const originalTimeout = process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS;
+    try {
+      // Shorten the hang timeout so the test does not wait the 10s default.
+      process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS = "1500";
+
+      const result = await runSupervisorFixture({
+        restartOnCrash: true,
+        workerSource: `
+        import { existsSync, writeFileSync } from "node:fs";
+
+        // First run wedges the event loop so heartbeats are never answered.
+        // After the watchdog force-restarts us, exit cleanly so the
+        // supervisor can shut down and the fixture can finish.
+        const marker = ${JSON.stringify(markerFile)};
+        if (existsSync(marker)) {
+          process.exit(0);
+        }
+        writeFileSync(marker, "1");
+        process.on("message", () => {
+          while (true) {}
+        });
+      `,
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.signal).toBeNull();
+      expect(result.log).toContain('"msg":"Worker considered hung; force-restarting"');
+      expect(result.log).toContain('"signal":"SIGKILL"');
+      expect(result.log).toContain("Worker crashed");
+      expect(result.log).toContain("Restarting worker");
+    } finally {
+      if (originalTimeout === undefined) {
+        delete process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS;
+      } else {
+        process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS = originalTimeout;
+      }
+    }
+  });
+
+  test("responsive worker survives past the hang window", async () => {
+    const originalTimeout = process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS;
+    try {
+      process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS = "1500";
+
+      const result = await runSupervisorFixture({
+        restartOnCrash: true,
+        timeoutMs: 15_000,
+        workerSource: `
+        process.on("message", (message) => {
+          if (message?.type === "paseo:supervisor-heartbeat") {
+            process.send?.({ type: "paseo:worker-heartbeat" });
+          }
+          if (message?.type === "paseo:graceful-shutdown") {
+            process.exit(0);
+          }
+        });
+        setTimeout(() => {
+          process.send?.({ type: "paseo:shutdown", reason: "responsive_worker_test_complete" });
+        }, 4_000);
+      `,
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.signal).toBeNull();
+      expect(result.log).toContain('"reason":"responsive_worker_test_complete"');
+      expect(result.log).not.toContain('"msg":"Worker considered hung; force-restarting"');
+    } finally {
+      if (originalTimeout === undefined) {
+        delete process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS;
+      } else {
+        process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS = originalTimeout;
+      }
+    }
+  }, 20_000);
 });

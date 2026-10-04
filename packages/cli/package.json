@@ -40,9 +40,15 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@getpaseo/plugin": "workspace:*",
+    "@getpaseo/protocol": "workspace:*",
+    "@tanstack/react-query": "^5.90.11",
     "@types/mime-types": "^3.0.1",
     "@types/node": "^20.9.0",
+    "@types/react": "~19.2.0",
     "@types/ws": "^8.5.8",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
     "tsx": "^4.6.0",
     "typescript": "^5.2.2",
     "vitest": "^4.1.6",

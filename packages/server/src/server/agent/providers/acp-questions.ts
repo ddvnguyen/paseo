@@ -22,9 +22,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Whether the request must be approved by a person, never auto-accepted. */
+/**
+ * Whether the request must be approved by a person, never auto-accepted.
+ * Fails closed: the flag guards spending, so any value other than an explicit
+ * opt-out (absent, null, false) counts as "require approval".
+ */
 export function requiresExplicitApproval(meta: unknown): boolean {
-  return isRecord(meta) && meta[ACP_REQUIRE_APPROVAL_META_KEY] === true;
+  if (!isRecord(meta)) return false;
+  const flag = meta[ACP_REQUIRE_APPROVAL_META_KEY];
+  return flag !== undefined && flag !== null && flag !== false;
 }
 
 /** Questions from a permission request's `_meta`, or null when absent/malformed. */

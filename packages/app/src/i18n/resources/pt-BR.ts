@@ -1990,6 +1990,7 @@ export const ptBR: TranslationResources = {
       notifications: "Notificações",
       permissions: "Permissões",
       diagnostics: "Diagnósticos",
+      debug: "Depuração",
       about: "Sobre",
     },
     layout: en.settings.layout,
@@ -2652,6 +2653,10 @@ export const ptBR: TranslationResources = {
         noneDetected: "Nenhum modelo detectado",
         discovered: "Descobertos",
         custom: "Modelos personalizados",
+        disableModel: "Ocultar {{id}} dos seletores de modelo",
+        enableModel: "Mostrar {{id}} nos seletores de modelo",
+        lastModelHint: "Pelo menos um modelo permanece ativado",
+
         updated: "Atualizado {{time}}",
       },
       diagnostic: {

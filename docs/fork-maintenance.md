@@ -278,6 +278,18 @@ consistent `PROD`/`TEST` naming:
 | TEST | `~/paseo/TEST` | `~/paseo/TEST/paseo-bun` | 6868 | `paseo-test.service` |
 | app  | —              | `~/paseo/app/web-ui`     | 6969 | `paseo-app.service`  |
 
+**This fork is a pnpm repo.** `packageManager` pins pnpm and the only lockfile is
+`pnpm-lock.yaml`; there is no `package-lock.json`. Two consequences bite:
+
+- Never reach for `npm ci` or `npm run build --workspace=X`. `npm ci` fails
+  outright, and pnpm treats `--workspace` on `run` as a flag to forward to the
+  **root** script rather than as a filter. Use `pnpm install --frozen-lockfile`
+  and `pnpm --filter <pkg> run <script>`.
+- Nothing is hoisted. Code, tests and scripts must resolve a package by name
+  from the workspace that declares it — a dependency reached from another
+  workspace, or a root-level directory assumed to be a workspace, breaks until
+  it is declared.
+
 Runtime node_modules are installed by the pipeline into `PROD_HOME`/`TEST_HOME`
 (see the workflow `env:` block). All pnpm installs on the host share one
 content-addressable store, `~/.pnpm-store`.
@@ -508,13 +520,13 @@ Or use the GitHub Actions UI — tick whichever stages you need.
 
 ### Stages
 
-| Stage            | Input               | What it does                                                                                     |
-| ---------------- | ------------------- | ------------------------------------------------------------------------------------------------ |
-| 1. Build hydra   | `run_build_hydra`   | Checkout, `npm ci`, build server + web UI, persist to `builds/hydra/<sha>/`                      |
-| 2. Android APK   | `run_build_android` | Expo prebuild + `gradlew assembleRelease` (JDK 17, local SDK), output `builds/android/<sha>.apk` |
-| 3. Deploy web UI | `run_deploy_web`    | Build web UI from SHA, rsync to `~/paseo/app/web-ui/`, reload Caddy on `:6969`                   |
-| 4. Deploy TEST   | `run_deploy_test`   | Rsync server dist to `~/paseo/TEST/`, restart `paseo-test.service` (`:6868`)                     |
-| 5. Deploy PROD   | `run_deploy_prod`   | Rsync server dist to `~/paseo/PROD/`, restart `paseo.service` (`:6767`) ⚠️                       |
+| Stage            | Input               | What it does                                                                                        |
+| ---------------- | ------------------- | --------------------------------------------------------------------------------------------------- |
+| 1. Build hydra   | `run_build_hydra`   | Checkout, `pnpm install --frozen-lockfile`, build server + web UI, persist to `builds/hydra/<sha>/` |
+| 2. Android APK   | `run_build_android` | Expo prebuild + `gradlew assembleRelease` (JDK 17, local SDK), output `builds/android/<sha>.apk`    |
+| 3. Deploy web UI | `run_deploy_web`    | Build web UI from SHA, rsync to `~/paseo/app/web-ui/`, reload Caddy on `:6969`                      |
+| 4. Deploy TEST   | `run_deploy_test`   | Rsync server dist to `~/paseo/TEST/`, restart `paseo-test.service` (`:6868`)                        |
+| 5. Deploy PROD   | `run_deploy_prod`   | Rsync server dist to `~/paseo/PROD/`, restart `paseo.service` (`:6767`) ⚠️                          |
 
 Stage 1 must run first (or a valid `*_build_ref` SHA must be supplied) for
 stages 2–5. When both selected in one run, stages 2–5 wait for stage 1 via

@@ -1957,6 +1957,7 @@ export const ar: TranslationResources = {
       notifications: "الإشعارات",
       permissions: "الأذونات",
       diagnostics: "التشخيص",
+      debug: "تصحيح",
       about: "عن",
     },
     layout: en.settings.layout,
@@ -2610,6 +2611,10 @@ export const ar: TranslationResources = {
         noneDetected: "لم يتم اكتشاف أي نماذج",
         discovered: "اكتشف",
         custom: "نماذج مخصصة",
+        disableModel: "إخفاء {{id}} من قوائم اختيار النماذج",
+        enableModel: "إظهار {{id}} في قوائم اختيار النماذج",
+        lastModelHint: "يبقى نموذج واحد مفعّلاً على الأقل",
+
         updated: "تم تحديث{{time}}",
       },
       diagnostic: {
