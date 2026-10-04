@@ -1,16 +1,19 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Logger } from "pino";
 import { z } from "zod";
-import type {
-  ProviderUsage,
-  ProviderUsageDetail,
-  ProviderUsageWindow,
-} from "../../../server/messages.js";
-import { resolvePaseoHome } from "../../../server/paseo-home.js";
-import type { ProviderUsageFetcher } from "../provider.js";
-import { toneFromUsedPct, unavailableUsage, windowFromUsedPct } from "../usage.js";
+import {
+  toneFromUsedPct,
+  unavailable,
+  type UsageAccount,
+  type UsageDetail,
+  type UsageReport,
+  type UsageScope,
+  type UsageWindow,
+  windowFromUsedPct,
+} from "@getpaseo/plugin/server/usage";
+import { inputSchema, type UsageInput } from "../shared/input.js";
 
 const CLI_TIMEOUT_MS = 30_000;
 
@@ -39,6 +42,7 @@ const StatusReportSchema = z.object({
 });
 
 type StatusReport = z.infer<typeof StatusReportSchema>;
+
 export type RunAdapterCli = (cliPath: string, args: string[]) => Promise<string>;
 
 function runAdapterCli(cliPath: string, args: string[]): Promise<string> {
@@ -58,22 +62,27 @@ function runAdapterCli(cliPath: string, args: string[]): Promise<string> {
   });
 }
 
-interface FreebuffQuotaProviderOptions {
-  logger: Logger;
-  /** Override for tests. */
-  runCli?: RunAdapterCli;
-  cliPath?: string;
-}
-
 /** Where the deployed adapter's CLI lives (see the pipeline's Stage 6). */
 export function defaultFreebuffCliPath(env: NodeJS.ProcessEnv = process.env): string {
   return (
     env["FREEBUFF_ACP_CLI"]?.trim() ||
-    join(resolvePaseoHome(env), "freebuff-acp", "current", "plugins", "freebuff", "dist", "cli.js")
+    join(
+      env["PASEO_HOME"]?.trim() || join(homedir(), ".paseo"),
+      "freebuff-acp",
+      "current",
+      "plugins",
+      "freebuff",
+      "dist",
+      "cli.js",
+    )
   );
 }
 
-function accountWindow(account: StatusReport["accounts"][number]): ProviderUsageWindow | null {
+function cliAvailable(cliPath: string): boolean {
+  return existsSync(cliPath);
+}
+
+function accountWindow(account: StatusReport["accounts"][number]): UsageWindow | null {
   const status = account.status;
   if (!status || status.dailyLimit == null || status.dailyRemaining == null) return null;
   const usedPct =
@@ -92,8 +101,8 @@ function accountWindow(account: StatusReport["accounts"][number]): ProviderUsage
   });
 }
 
-function reportDetails(report: StatusReport): ProviderUsageDetail[] {
-  const details: ProviderUsageDetail[] = [];
+function reportDetails(report: StatusReport): UsageDetail[] {
+  const details: UsageDetail[] = [];
   for (const account of report.accounts) {
     if (!account.authenticated) {
       details.push({
@@ -140,52 +149,43 @@ function reportDetails(report: StatusReport): ProviderUsageDetail[] {
  * through the deployed adapter's CLI so credentials and account logic stay in
  * one place (the adapter). Unavailable when the adapter is not deployed.
  */
-export class FreebuffQuotaProvider implements ProviderUsageFetcher {
-  readonly providerId = "freebuff";
-  readonly displayName = "Freebuff";
-
-  private readonly logger: Logger;
-  private readonly runCli: RunAdapterCli;
-  private readonly cliPath: string;
-
-  constructor(options: FreebuffQuotaProviderOptions) {
-    this.logger = options.logger;
-    this.runCli = options.runCli ?? runAdapterCli;
-    this.cliPath = options.cliPath ?? defaultFreebuffCliPath();
+export async function fetchUsage(
+  input: UsageInput,
+  runCli: RunAdapterCli = runAdapterCli,
+): Promise<UsageReport> {
+  if (!cliAvailable(input.cliPath)) {
+    return unavailable({ kind: "no_quota", detail: "The Freebuff adapter is not deployed" });
   }
 
-  /** Injected runners (tests) skip the filesystem check. */
-  private cliAvailable(): boolean {
-    return this.runCli !== runAdapterCli || existsSync(this.cliPath);
+  let report: StatusReport;
+  try {
+    report = StatusReportSchema.parse(JSON.parse(await runCli(input.cliPath, ["status"])));
+  } catch {
+    // Never forward the raw error: execFile failures embed the child's stderr and
+    // parse errors embed fragments of its output. The registry turns this throw into
+    // { status: "error", error: message }, so the message must stay generic.
+    throw new Error("Freebuff status unavailable");
   }
 
-  async fetchUsage(): Promise<ProviderUsage> {
-    if (!this.cliAvailable()) return unavailableUsage(this);
-
-    let report: StatusReport;
-    try {
-      report = StatusReportSchema.parse(JSON.parse(await this.runCli(this.cliPath, ["status"])));
-    } catch (error) {
-      this.logger.debug({ err: error }, "Freebuff status fetch failed");
-      return unavailableUsage({
-        ...this,
-        // Never forward the raw error: execFile failures embed the child's
-        // stderr and parse errors embed fragments of its output. Details stay
-        // in the debug log above.
-        error: "Freebuff status unavailable",
-      });
-    }
-
-    const windows = report.accounts.flatMap((account) => accountWindow(account) ?? []);
-    return {
-      providerId: this.providerId,
-      displayName: this.displayName,
-      status: windows.length > 0 ? "available" : "unavailable",
-      planLabel: report.accounts.length > 1 ? `${report.accounts.length} accounts` : null,
-      windows,
-      balances: [],
-      details: reportDetails(report),
-      error: null,
-    };
+  const windows = report.accounts.flatMap((account) => accountWindow(account) ?? []);
+  if (windows.length === 0) {
+    return unavailable({ kind: "no_quota", detail: "No Freebuff account reports a quota" });
   }
+  return {
+    status: "available",
+    ...(report.accounts.length > 1 ? { planLabel: `${report.accounts.length} accounts` } : {}),
+    windows,
+    details: reportDetails(report),
+  };
+}
+
+/**
+ * One account covers the whole adapter: `status` already reports every account the
+ * adapter holds. A scope that is not `global` yields nothing, matching kimi.
+ */
+export async function discover(scope: UsageScope): Promise<UsageAccount[]> {
+  if (scope.kind !== "global") return [];
+  const cliPath = defaultFreebuffCliPath();
+  if (!cliAvailable(cliPath)) return [];
+  return [{ key: "default", input: inputSchema.parse({ cliPath }) }];
 }
