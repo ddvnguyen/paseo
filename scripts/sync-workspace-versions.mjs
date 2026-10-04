@@ -115,13 +115,10 @@ for (const workspacePath of workspacePaths) {
       if (name === pkg.name) {
         continue;
       }
-      if (deps[name] !== internalDepRange) {
-        if (!gitHash && isAlreadyStamped(deps[name])) {
-          // Keep already-stamped dep version when git not available
-        } else {
-          deps[name] = internalDepRange;
-          changed = true;
-        }
+      const keepStamped = !gitHash && isAlreadyStamped(deps[name]);
+      if (deps[name] !== internalDepRange && !keepStamped) {
+        deps[name] = internalDepRange;
+        changed = true;
       }
     }
   }

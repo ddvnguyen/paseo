@@ -55,6 +55,27 @@ export interface PushServiceOptions {
  */
 export class PushService {
   private readonly logger: pino.Logger;
+  private handleReceipt(
+    id: string,
+    receipt: ExpoPushReceipt | undefined,
+    token: string | undefined,
+  ): void {
+    // Missing receipt = not yet available (or cleared after 24h).
+    if (!receipt) {
+      this.logger.debug({ receiptId: id }, "Push receipt not yet available");
+      return;
+    }
+    if (receipt.status !== "error") return;
+
+    this.logger.error(
+      { token, receiptId: id, message: receipt.message, details: receipt.details },
+      "Push delivery failed",
+    );
+    if (receipt.details?.error === "DeviceNotRegistered" && token) {
+      this.revokeToken(token);
+    }
+  }
+
   private readonly revokeToken: (token: string) => void;
   private readonly fetchImpl: typeof fetch;
   private readonly schedule: (callback: () => void, delayMs: number) => void;
@@ -190,22 +211,7 @@ export class PushService {
         };
         const receipts = result.data ?? {};
         for (const id of chunk) {
-          const receipt = receipts[id];
-          // Missing receipt = not yet available (or cleared after 24h).
-          if (!receipt) {
-            this.logger.debug({ receiptId: id }, "Push receipt not yet available");
-            continue;
-          }
-          if (receipt.status === "error") {
-            const token = idToToken.get(id);
-            this.logger.error(
-              { token, receiptId: id, message: receipt.message, details: receipt.details },
-              "Push delivery failed",
-            );
-            if (receipt.details?.error === "DeviceNotRegistered" && token) {
-              this.revokeToken(token);
-            }
-          }
+          this.handleReceipt(id, receipts[id], idToToken.get(id));
         }
       } catch (error) {
         this.logger.error({ err: error }, "Failed to check push receipts");

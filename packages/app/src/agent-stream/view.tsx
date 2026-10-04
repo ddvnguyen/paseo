@@ -22,7 +22,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import { StyleSheet, UnistylesRuntime, withUnistyles } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { useMutation } from "@tanstack/react-query";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
@@ -174,16 +174,8 @@ function renderStreamItemWithTurnFooter(input: {
       onForkAssistantTurn={input.onForkAssistantTurn}
     />
   ) : null;
-  const isToolBlock =
-    input.layoutItem.item.kind === "tool_call" ||
-    input.layoutItem.item.kind === "thought" ||
-    input.layoutItem.item.kind === "todo_list";
   const content = (
-    <StreamItemWrapper
-      itemId={input.layoutItem.item.id}
-      gapBelow={input.layoutItem.gapBelow}
-      isToolBlock={isToolBlock}
-    >
+    <StreamItemWrapper itemId={input.layoutItem.item.id} gapBelow={input.layoutItem.gapBelow}>
       {input.content}
     </StreamItemWrapper>
   );
@@ -1840,13 +1832,14 @@ const permissionStyles = StyleSheet.create((theme) => ({
 interface StreamItemWrapperProps {
   itemId: string;
   gapBelow: number;
-  isToolBlock?: boolean;
   children: ReactNode;
 }
 
-function StreamItemWrapper({ gapBelow, isToolBlock, children }: StreamItemWrapperProps) {
+const SPACING_FACTORS: Record<string, number> = { compact: 0.5, spacious: 1.5 };
+
+function StreamItemWrapper({ gapBelow, children }: StreamItemWrapperProps) {
   const debugSpacing = useSettings((settings) => settings.debugConversationSpacing);
-  const spacingFactor = debugSpacing === "compact" ? 0.5 : debugSpacing === "spacious" ? 1.5 : 1;
+  const spacingFactor = SPACING_FACTORS[debugSpacing] ?? 1;
   const scaledGap = gapBelow * spacingFactor;
   const wrapperStyle = useMemo(
     () => [stylesheet.streamItemWrapper, { marginBottom: scaledGap }],

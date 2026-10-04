@@ -253,6 +253,10 @@ const DEFAULT_STORED_APP_SETTINGS = {
   needsWrite: false,
 } satisfies StoredAppSettingsFallback;
 
+function legacyChecksDisplay(rowItems: unknown): typeof DEFAULT_SIDEBAR_CHECKS_DISPLAY {
+  return isChecksHiddenByLegacyRowItem(rowItems) ? "none" : DEFAULT_SIDEBAR_CHECKS_DISPLAY;
+}
+
 const StoredAppSettingsSchema = z
   .looseObject({
     theme: ThemePreferenceSchema.catch(DEFAULT_THEME_PREFERENCE),
@@ -340,19 +344,18 @@ const StoredAppSettingsSchema = z
   })
   .transform((stored) => {
     const { legacyPullRequestsInSidePane, ...openInSidePane } = stored.openInSidePane;
-    const needsWrite =
-      (stored.uiBaseFontSize === undefined && stored.uiFontSize !== undefined) ||
-      stored.contentFontSize === undefined;
+    // Both fallbacks are one-way migrations from an older stored shape; keep the
+    // predicates named so the transform's branch count stays readable.
+    const adoptsLegacyFontSize =
+      stored.uiBaseFontSize === undefined && stored.uiFontSize !== undefined;
+    const needsWrite = adoptsLegacyFontSize || stored.contentFontSize === undefined;
     const uiBaseFontSize =
       stored.uiBaseFontSize ??
       (stored.uiFontSize === undefined
         ? DEFAULT_UI_BASE_FONT_SIZE
         : Math.round((FONT_SIZE.base * stored.uiFontSize) / 16));
     const sidebarChecksDisplay =
-      stored.sidebarChecksDisplay ??
-      (isChecksHiddenByLegacyRowItem(stored.sidebarRowItems)
-        ? "none"
-        : DEFAULT_SIDEBAR_CHECKS_DISPLAY);
+      stored.sidebarChecksDisplay ?? legacyChecksDisplay(stored.sidebarRowItems);
     const toolCallDetailLevel =
       stored.toolCallDetailLevel ?? (stored.compactToolCalls ? "overview" : "detailed");
     return {

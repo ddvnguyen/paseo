@@ -75,8 +75,10 @@ describe("PushService receipts", () => {
     expect(scheduled).toBeDefined();
     scheduled?.();
 
-    await flushUntil(() => calls.some((call) => call.url.endsWith("/push/getReceipts")));
-    await flushUntil(() => errors.some((entry) => entry.msg === "Push delivery failed"));
+    const sawReceiptsCall = () => calls.some((call) => call.url.endsWith("/push/getReceipts"));
+    const sawDeliveryError = () => errors.some((entry) => entry.msg === "Push delivery failed");
+    await flushUntil(sawReceiptsCall);
+    await flushUntil(sawDeliveryError);
 
     const delivery = errors.find((entry) => entry.msg === "Push delivery failed");
     expect(delivery?.obj).toMatchObject({

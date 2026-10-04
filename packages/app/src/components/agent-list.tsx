@@ -26,6 +26,14 @@ import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-bad
 import { PullToRefresh } from "@/components/pull-to-refresh";
 import { isWeb } from "@/constants/platform";
 import { findHighlightRanges } from "@/components/ui/highlighted-text-segments";
+import type { MatchRange } from "@getpaseo/protocol/search/text-match";
+
+interface SessionRanges {
+  workspace: MatchRange[];
+  title: MatchRange[];
+  branch: MatchRange[];
+  project: MatchRange[];
+}
 
 interface AgentListProps {
   agents: AggregatedAgent[];
@@ -167,6 +175,74 @@ function computeDuration(createdAt: Date | undefined, lastActivityAt: Date): str
   return formatDuration(lastActivityAt.getTime() - createdAt.getTime());
 }
 
+const AgentTitleCell = ({ agent, ranges }: { agent: AggregatedAgent; ranges: SessionRanges }) => {
+  const { theme } = useUnistyles();
+  const { t } = useTranslation();
+  const ProviderIcon = getProviderIcon(agent.provider, agent.serverId);
+  return (
+    <View style={styles.agentTitleRow}>
+      <View style={styles.providerIconWrap}>
+        <ProviderIcon size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
+      </View>
+      <HighlightedText
+        text={agent.title || t("agentList.fallbackTitle")}
+        ranges={ranges.title}
+        style={styles.sessionTitle}
+        numberOfLines={1}
+        testID={`agent-row-title-${agent.serverId}-${agent.id}`}
+      />
+    </View>
+  );
+};
+
+const SessionMetaRow = ({
+  agent,
+  ranges,
+  projectName,
+  branch,
+  timeLabel,
+  showHostColumn,
+  onToggleDuration,
+}: {
+  agent: AggregatedAgent;
+  ranges: SessionRanges;
+  projectName: string;
+  branch: string;
+  timeLabel: string;
+  showHostColumn: boolean;
+  onToggleDuration: () => void;
+}) => (
+  <View style={styles.rowMetaRow}>
+    <HighlightedText
+      text={projectName}
+      ranges={ranges.project}
+      style={styles.sessionMetaText}
+      numberOfLines={1}
+      testID={`agent-row-project-${agent.serverId}-${agent.id}`}
+    />
+    <Text style={styles.sessionMetaSeparator}>·</Text>
+    <HighlightedText
+      text={branch}
+      ranges={ranges.branch}
+      style={styles.sessionMetaText}
+      numberOfLines={1}
+      testID={`agent-row-branch-${agent.serverId}-${agent.id}`}
+    />
+    <Text style={styles.sessionMetaSeparator}>·</Text>
+    <Text style={styles.sessionMetaText} onPress={onToggleDuration}>
+      {timeLabel}
+    </Text>
+    {showHostColumn && agent.serverLabel ? (
+      <>
+        <Text style={styles.sessionMetaSeparator}>·</Text>
+        <Text style={styles.sessionMetaText} numberOfLines={1}>
+          {agent.serverLabel}
+        </Text>
+      </>
+    ) : null}
+  </View>
+);
+
 function SessionRow({
   agent,
   search,
@@ -187,7 +263,6 @@ function SessionRow({
   onLongPress: (agent: AggregatedAgent) => void;
 }) {
   const { theme } = useUnistyles();
-  const { t } = useTranslation();
   const [showDuration, setShowDuration] = useState(false);
   const timeAgo = formatTimeAgo(agent.lastActivityAt);
   const duration = computeDuration(agent.createdAt, agent.lastActivityAt);
@@ -198,7 +273,6 @@ function SessionRow({
   const projectName = agent.projectPlacement?.projectName ?? "";
   const branch = agent.projectPlacement?.checkout.currentBranch ?? "";
   const workspaceName = agent.projectPlacement?.workspaceName ?? "";
-  const ProviderIcon = getProviderIcon(agent.provider, agent.serverId);
   const pendingPermissionCount = agent.pendingPermissionCount ?? 0;
   const ranges = useMemo(
     () => ({
@@ -230,20 +304,7 @@ function SessionRow({
   const showDesktopAttention =
     !isMobile && showAttentionIndicator && Boolean(agent.requiresAttention);
 
-  const agentTitle = (
-    <View style={styles.agentTitleRow}>
-      <View style={styles.providerIconWrap}>
-        <ProviderIcon size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
-      </View>
-      <HighlightedText
-        text={agent.title || t("agentList.fallbackTitle")}
-        ranges={ranges.title}
-        style={styles.sessionTitle}
-        numberOfLines={1}
-        testID={`agent-row-title-${agent.serverId}-${agent.id}`}
-      />
-    </View>
-  );
+  const agentTitle = <AgentTitleCell agent={agent} ranges={ranges} />;
 
   return (
     <Pressable
@@ -277,35 +338,15 @@ function SessionRow({
         </View>
         {isMobile ? agentTitle : null}
         {isMobile ? (
-          <View style={styles.rowMetaRow}>
-            <HighlightedText
-              text={projectName}
-              ranges={ranges.project}
-              style={styles.sessionMetaText}
-              numberOfLines={1}
-              testID={`agent-row-project-${agent.serverId}-${agent.id}`}
-            />
-            <Text style={styles.sessionMetaSeparator}>·</Text>
-            <HighlightedText
-              text={branch}
-              ranges={ranges.branch}
-              style={styles.sessionMetaText}
-              numberOfLines={1}
-              testID={`agent-row-branch-${agent.serverId}-${agent.id}`}
-            />
-            <Text style={styles.sessionMetaSeparator}>·</Text>
-            <Text style={styles.sessionMetaText} onPress={toggleDuration}>
-              {timeLabel}
-            </Text>
-            {showHostColumn && agent.serverLabel ? (
-              <>
-                <Text style={styles.sessionMetaSeparator}>·</Text>
-                <Text style={styles.sessionMetaText} numberOfLines={1}>
-                  {agent.serverLabel}
-                </Text>
-              </>
-            ) : null}
-          </View>
+          <SessionMetaRow
+            agent={agent}
+            ranges={ranges}
+            projectName={projectName}
+            branch={branch}
+            timeLabel={timeLabel}
+            showHostColumn={showHostColumn}
+            onToggleDuration={toggleDuration}
+          />
         ) : null}
       </View>
       {!isMobile ? (
