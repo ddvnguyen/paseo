@@ -131,6 +131,10 @@ import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { AgentStorage } from "./agent/agent-storage.js";
+import {
+  reapStaleAgentProcesses,
+  setAgentProcessRegistryHome,
+} from "./agent/agent-process-registry.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
 import {
@@ -622,6 +626,12 @@ export async function createPaseoDaemon(
   void reconcileManagedProcessLedger(managedProcesses, logger).catch((error) => {
     logger.warn({ err: error }, "Failed to reconcile managed helper process ledger");
   });
+  // Drop dead or recycled scoped-child records before new spawns record fresh
+  // entries; live matching records are left alone (adoption is a later slice).
+  // Pin the registry to this daemon's home first so spawn-side recording and
+  // reaping agree even when config.paseoHome came from an explicit test harness.
+  setAgentProcessRegistryHome(config.paseoHome);
+  reapStaleAgentProcesses({ logger });
   let relayRuntime: RelayRuntime | null = null;
 
   const staticDir = config.staticDir;
