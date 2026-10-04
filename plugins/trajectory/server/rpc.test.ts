@@ -75,12 +75,17 @@ describe("trajectory read handlers", () => {
         });
       }
 
-      const page = await handleList(store)({ agentId: "agent-1", limit: 4 });
-      // Tail-first: the newest four of ten.
-      expect(page.events.map((event) => event.seq)).toEqual([7, 8, 9, 10]);
-      expect(page.headSeq).toBe(10);
-      // The cursor names a row the client actually holds.
-      expect(page.headSeq).toBe(page.events[page.events.length - 1].seq);
+      // Deliberately a `changes` page and not a `list` one: for a tail-first
+      // `list` the page tail IS the global max, so that shape cannot tell the
+      // two apart and the assertion would pass either way. Draining forward
+      // from a cursor puts the page tail in the middle of the backlog.
+      const page = await handleChanges(store)({ agentId: "agent-1", afterSeq: 2, limit: 3 });
+      expect(page.events.map((event) => event.seq)).toEqual([3, 4, 5]);
+      expect({
+        headSeq: page.headSeq,
+        pageTail: page.events[page.events.length - 1].seq,
+        globalMax: store.headSeq("agent-1"),
+      }).toEqual({ headSeq: 5, pageTail: 5, globalMax: 10 });
     } finally {
       store.close();
     }

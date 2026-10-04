@@ -631,6 +631,18 @@ describe("ledger screen tail-follow", () => {
     expect(appendRows()).toBe(0);
   });
 
+  it("keeps follow engaged inside the 24px threshold, where dsh's 2px would not", () => {
+    render();
+    driveScroll(SCROLLED_UP);
+    expect(appendRows()).toBe(0);
+
+    // 20px short of the end. That is inside this screen's 24px threshold, and
+    // OUTSIDE dsh's 2px — so dropping the constant to dsh's value fails here,
+    // which is the point of recording the divergence in a comment.
+    driveScroll({ y: 3980, contentHeight: 5000, viewport: 1000 });
+    expect(appendRows()).toBe(1);
+  });
+
   it("flipping follow mid-scroll does not re-render the list", () => {
     render();
     driveScroll(SCROLLED_UP);
@@ -831,6 +843,24 @@ describe("ledger screen search index cadence", () => {
     ];
   }
 
+  function typeQuery(value: string): void {
+    act(() => {
+      const input = document.querySelector('[data-testid="ledger-search"]') as HTMLInputElement;
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  /** How many cells the current query leaves on screen. */
+  function searchHits(value: string): number {
+    typeQuery(value);
+    return container.querySelectorAll('[data-testid^="cell-"]').length;
+  }
+
   let updates: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
     updates = vi.spyOn(TrajectorySearchIndex.prototype, "update");
@@ -861,16 +891,32 @@ describe("ledger screen search index cadence", () => {
     renderRows(turn("a", 100));
     const before = updates.mock.calls.length;
 
-    act(() => {
-      const input = document.querySelector('[data-testid="ledger-search"]') as HTMLInputElement;
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype,
-        "value",
-      )?.set;
-      setter?.call(input, "answer");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
+    typeQuery("answer");
     // The filtered list cannot lag behind the query that produced it.
     expect(updates.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  /**
+   * The index must actually re-index, not merely be CALLED. An earlier version
+   * of the test above asserted only on call count, which a no-op `update`
+   * satisfies: `update` returns false immediately when handed the same outer
+   * array, so a screen that reused one wrapper froze the index at its first
+   * commit while every call still counted. Search then silently ignored every
+   * event that arrived after the first render.
+   *
+   * So this asserts the observable result: a row appended after the first render
+   * is findable by a query typed afterwards.
+   */
+  it("finds a row that was appended after the first render", () => {
+    // `turn(id, base)` labels its rows `${id} prompt` / `${id} answer`, so
+    // "b answer" is text that exists only once the second turn is appended.
+    const first = turn("a", 100);
+    renderRows(first);
+    expect({ hitsBeforeAppend: searchHits("b answer") }).toEqual({ hitsBeforeAppend: 0 });
+
+    // A second turn arrives from the live stream.
+    renderRows([...first, ...turn("b", 200)]);
+
+    expect({ hitsAfterAppend: searchHits("b answer") }).toEqual({ hitsAfterAppend: 1 });
   });
 });

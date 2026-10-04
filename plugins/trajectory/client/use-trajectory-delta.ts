@@ -21,6 +21,21 @@ export type TrajectoryDelta =
  *   receipt, independent of the frame gate.
  * - `trajectory.subscribe` is payload-identical to `changes` (T1 seam), so a
  *   future push transport swaps the `changes` call without touching the fold.
+ *
+ * PAGE DIRECTION, and what it costs. The read path is tail-first: `list` takes
+ * the NEWEST rows in the window and `changes` takes the OLDEST rows above the
+ * cursor, so the drain walks forward from the head of what it was given without
+ * stepping over its own backlog. Measured against the real store with a 20-row
+ * ledger and a 5-row page: this loop receives [16..20] and stops.
+ *
+ * That is right for a live ledger, which is watched at its head — spending the
+ * first page on the OLDEST rows meant opening on the beginning of the ledger.
+ * The cost is that history older than one page is not fetched: at the default
+ * `limit` of 500 the whole ledger arrives, so this is invisible below 500 rows,
+ * and above it the earlier rows are simply not requested. The reverse cursor
+ * (`beforeSeq`) exists on the wire for exactly this, but nothing sends it yet —
+ * there is no load-older affordance. Landing one is what makes the tail-first
+ * page complete rather than merely correct.
  */
 export function useTrajectoryDelta(agentId: string): TrajectoryDelta & {
   refresh: () => void;

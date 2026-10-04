@@ -29,12 +29,17 @@ import { groupTrajectoryVirtualRows } from "./virtual-rows.js";
 /**
  * Best of N, so one GC pause cannot read as a scaling failure.
  *
- * N is 5 rather than #30's 3 because at 400 turns the smallest measured path
+ * N is 7 rather than #30's 3 because at 400 turns the smallest measured path
  * runs in about a millisecond, and best-of-3 on a baseline that short reported
  * the LINEAR derive path at 7.4x for 4x the work. Per-doubling ratios measured
  * directly are ~2.0, i.e. it is linear and the sample was noise.
+ *
+ * Every case is also run once untimed first. Without that warm-up the two sides
+ * of a ratio are compared at different points on the JIT curve, and the
+ * virtual-row projection went red on roughly 1 run in 12 before it.
  */
-function best<T>(run: () => T, repeats = 5): number {
+function best<T>(run: () => T, repeats = 7): number {
+  run();
   let lowest = Number.POSITIVE_INFINITY;
   for (let i = 0; i < repeats; i++) {
     const start = process.hrtime.bigint();

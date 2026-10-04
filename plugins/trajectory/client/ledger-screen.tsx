@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import type { TextStyle, ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -79,8 +79,10 @@ const ALL_OPEN: FoldState = { closedTurns: new Set() };
  *
  * dsh uses 2px. This is deliberately more forgiving: at 2px a one-pixel
  * overscroll disengages follow, and on a live ledger that means the view
- * silently stops advancing while new events pile up unseen. Revisit alongside
- * the windowing work, once there is a virtualizer to anchor against.
+ * silently stops advancing while new events pile up unseen.
+ *
+ * Pinned by a behaviour test, so dropping it to dsh's 2px is a red test rather
+ * than a quiet change in when the view stops following.
  */
 const BOTTOM_FOLLOW_THRESHOLD_PX = 24;
 
@@ -180,9 +182,6 @@ export function LedgerScreen(props: {
   // so a query can never narrow what a later query can match.
   const indexRef = useRef<TrajectorySearchIndex | null>(null);
   if (indexRef.current === null) indexRef.current = new TrajectorySearchIndex();
-  // One wrapper for the index's whole life: `update` short-circuits on the
-  // outer array's identity, and a fresh `[turns]` per call would defeat it.
-  const layoutsRef = useRef<[readonly TrajectoryTurnModel[]]>([[]]);
   const throttleRef = useRef<CommitThrottle | null>(null);
   if (throttleRef.current === null) {
     throttleRef.current = createCommitThrottle(
@@ -192,6 +191,7 @@ export function LedgerScreen(props: {
       (handle) => clearTimeout(handle),
     );
   }
+  const unfiltered = query.trim() === "";
   /**
    * The search index is the largest single cost on the data plane — a full
    * re-index is ~32 ms at 25k cells — and `turns` is a fresh array on every
@@ -200,25 +200,45 @@ export function LedgerScreen(props: {
    * It is throttled ONLY while no query is active, because then the index can
    * only ever answer a FUTURE search and the list on screen is unfiltered. The
    * moment a query is active the list IS the index's output, so that commit
-   * stays immediate: a throttled commit there would filter the list up to the
-   * throttle interval late, which is the coupling dsh's architecture note
-   * forbids. Display and search keep separate cadences.
+   * happens now and is never throttled: a throttled commit there would filter
+   * the list up to the throttle interval late, which is the coupling dsh's
+   * architecture note forbids. Display and search keep separate cadences.
+   *
+   * `update` is called with a FRESH `[turns]` every time, and that is load
+   * bearing rather than incidental. Its first check is `this.layouts ===
+   * layouts` — identity of the OUTER array (search-index.ts, `update`) — so
+   * reusing one wrapper and mutating the slot makes every call after the first
+   * return false and re-index nothing. The inner check (`this.turns ===
+   * layouts[0]`) is the one that spares the keystroke path, since `turns` is
+   * stable across keystrokes.
    */
   const matches = useMemo(() => {
     const index = indexRef.current;
     if (index === null) return null;
-    if (query.trim() === "") {
-      throttleRef.current?.request(() => {
-        layoutsRef.current[0] = turns;
-        index.update(layoutsRef.current);
-      });
-      return null;
-    }
-    // A live query: exact now, and never throttled.
-    layoutsRef.current[0] = turns;
-    index.update(layoutsRef.current);
+    // Unfiltered: the commit is the effect's job (below), and nothing on screen
+    // reads this index yet.
+    if (unfiltered) return null;
+    index.update([turns]);
     return index.search(query);
-  }, [turns, query]);
+  }, [turns, query, unfiltered]);
+
+  /**
+   * The throttled commit for the unfiltered view, in an effect rather than in
+   * the memo above: it starts a timer, and docs/coding-standards.md puts timers
+   * in effects. Scheduling it during render would arm a timer for a render React
+   * might discard, and would double-arm under StrictMode.
+   *
+   * The cleanup cancels a pending batch, so no timer outlives the screen. The
+   * index is a ref, so the component is not stale by the time it fires.
+   */
+  useEffect(() => {
+    if (!unfiltered) return;
+    const index = indexRef.current;
+    const throttle = throttleRef.current;
+    if (index === null || throttle === null) return;
+    throttle.request(() => index.update([turns]));
+    return () => throttle.cancel();
+  }, [turns, unfiltered]);
 
   // A match inside a collapsed turn would be unreachable, so an active search
   // forces the fold open rather than hiding results behind a header.

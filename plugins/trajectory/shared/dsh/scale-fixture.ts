@@ -87,6 +87,7 @@ export function scaleEvents(turnCount: number, cellsPerTurn: number): Trajectory
   }
   return events;
 }
+
 /** Turn numbers derived in order, matching the live path when none are supplied. */
 export function turnNumbersFor(rows: readonly TrajectoryFoldRow[]): Map<string, number> {
   const numbers = new Map<string, number>();

@@ -40,15 +40,25 @@ function readPage(
     direction,
   });
   // `headSeq` describes the page that was just returned, so it is the page's
-  // own last seq. Asking the store for MAX(seq) instead runs a second query
-  // that can disagree with the first: rows written between the page SELECT and
-  // the MAX(seq) read fall in that gap, the client adopts the newer cursor,
-  // and those rows are then unreachable by any `seq > afterSeq` poll. Derived
-  // from the page, the cursor can only ever name a row the client holds.
+  // own last seq. Asking the store for MAX(seq) instead names a row the client
+  // may not hold, and there are two ways that bites:
+  //
+  // - Always, once the backlog exceeds a page. A forward drain of a 10-row
+  //   ledger three rows at a time would be handed cursor 10 on its first page
+  //   and never see rows 4-9 at all. This is the reachable bug.
+  // - Under a store that can be written between the two reads. node:sqlite is
+  //   synchronous so it cannot happen with the driver in this directory, but
+  //   `TrajectoryStore` is a seam, and a second query is a second snapshot: a
+  //   row landing in that gap is one the client never received and that no
+  //   later `seq > afterSeq` poll can return.
+  //
+  // Derived from the page, the cursor can only ever name a row the client holds.
   //
   // An empty page reports the cursor the caller sent: no rows means no
   // progress, so the cursor must not move (0 for a fresh read, which is the
-  // only way a first page is legitimately empty).
+  // only way a first page is legitimately empty). The cost is that a cursor
+  // left ahead of a truncated or recreated database cannot rewind by polling;
+  // only a fresh read (no afterSeq) restarts from 0.
   //
   // On a REVERSE page (beforeSeq set) this is the page's OLDEST row, which is
   // not a forward cursor: a caller paging backwards keeps its own. Stated here
