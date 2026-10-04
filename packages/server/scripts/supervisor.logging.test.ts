@@ -3,16 +3,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
 import { describe, expect, test } from "vitest";
 import { isPlatform } from "../src/test-utils/platform.js";
 import { resolveSupervisorLogFile } from "./supervisor-log-config.js";
 
 const repoRoot = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const supervisorPath = fileURLToPath(new URL("./supervisor.ts", import.meta.url));
-// The fixture spawns from the repo root, where pnpm does not hoist tsx. Resolve
-// the loader from this workspace instead of relying on hoisting.
-const tsxLoader = createRequire(import.meta.url).resolve("tsx");
+// The fixture spawns from the repo root, so `--import tsx` has to resolve from
+// there. The root package declares tsx for exactly that reason. Passing a
+// resolved absolute loader path instead works on Linux but breaks on Windows,
+// where the runner never starts and the fixture then reads a daemon.log that
+// was never created.
 
 function isProcessRunning(pid: number): boolean {
   try {
@@ -66,7 +67,7 @@ async function runSupervisorFixture(options: {
   );
 
   const startedAt = Date.now();
-  const child = spawn(process.execPath, ["--import", tsxLoader, runnerPath], {
+  const child = spawn(process.execPath, ["--import", "tsx", runnerPath], {
     cwd: repoRoot,
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
@@ -102,7 +103,18 @@ async function runSupervisorFixture(options: {
     });
   });
 
-  const log = await readFile(logPath, "utf8");
+  // A runner that never starts leaves no log file, and "ENOENT daemon.log"
+  // says nothing about why. Report the child's own output instead.
+  let log: string;
+  try {
+    log = await readFile(logPath, "utf8");
+  } catch (error) {
+    throw new Error(
+      `supervisor fixture wrote no log (exit ${code}/${signal})\n` +
+        `stdout: ${stdout}\nstderr: ${stderr}`,
+      { cause: error },
+    );
+  }
   return { code, signal, elapsedMs: Date.now() - startedAt, log, stdout, stderr };
 }
 
