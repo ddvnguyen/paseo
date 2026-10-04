@@ -1,18 +1,29 @@
 import { describe, expect, test, afterEach, beforeEach } from "vitest";
 import { once } from "node:events";
+import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import pino from "pino";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import { readAgentProcessRegistry } from "./agent-process-registry.js";
+import { classifyAgentProcessEntry, readAgentProcessRegistry } from "./agent-process-registry.js";
 import {
   __setAgentProcessScopeDetectionForTests,
+  __setAgentProcessScopeProbeForTests,
   buildAgentScopeInvocation,
+  probeAgentScopeRoundTrip,
   spawnInAgentScope,
 } from "./agent-process-scope.js";
 
 const logger = createTestLogger();
+const thisDir = path.dirname(fileURLToPath(import.meta.url));
+const scopeModulePath = path.join(thisDir, "agent-process-scope.ts");
+const tsxBin = path.resolve(thisDir, "../../../node_modules/.bin/tsx");
+// Probe once at collection: e2e survival claims require a real systemd user
+// session that can host scopes; anywhere else the test skips.
+const realScopeProbe = process.platform === "linux" ? probeAgentScopeRoundTrip() : { ok: false };
 
 describe("buildAgentScopeInvocation", () => {
   test("wraps the command in a transient systemd scope", () => {
@@ -34,15 +45,30 @@ describe("buildAgentScopeInvocation", () => {
 describe("spawnInAgentScope", () => {
   let tmpDir: string;
   let previousPaseoHome: string | undefined;
+  let fixtureChild: ReturnType<typeof spawn> | null = null;
+  let grandchildPid: number | null = null;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(path.join(os.tmpdir(), "agent-process-scope-"));
     previousPaseoHome = process.env.PASEO_HOME;
     process.env.PASEO_HOME = tmpDir;
+    fixtureChild = null;
+    grandchildPid = null;
   });
 
   afterEach(() => {
+    if (fixtureChild && fixtureChild.exitCode === null) {
+      fixtureChild.kill("SIGKILL");
+    }
+    if (grandchildPid !== null) {
+      try {
+        process.kill(grandchildPid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
     __setAgentProcessScopeDetectionForTests(null);
+    __setAgentProcessScopeProbeForTests(null);
     if (previousPaseoHome === undefined) {
       delete process.env.PASEO_HOME;
     } else {
@@ -68,28 +94,210 @@ describe("spawnInAgentScope", () => {
     await once(child, "close");
   });
 
-  test("spawns through systemd-run when the scope is available and records an entry", async () => {
+  // Finding 6: only meaningful where systemd-run can really round-trip a scope.
+  test.skipIf(!realScopeProbe.ok)(
+    "spawns through systemd-run when the scope is available and records an entry",
+    async () => {
+      __setAgentProcessScopeDetectionForTests({ available: true, reason: "forced by test" });
+      __setAgentProcessScopeProbeForTests(() => ({ ok: true, reason: "forced by test" }));
+      const child = spawnInAgentScope(
+        process.execPath,
+        ["-e", "setTimeout(() => {}, 50)"],
+        { stdio: "ignore" },
+        { provider: "scope-test", logger },
+      );
+      expect(child.pid).toBeGreaterThan(0);
+      expect(String(child.spawnfile)).toContain("systemd-run");
+
+      const entries = readAgentProcessRegistry({
+        filePath: path.join(tmpDir, "agent-processes.json"),
+      });
+      expect(entries).toHaveLength(1);
+      expect(entries[0].pid).toBe(child.pid);
+      expect(entries[0].provider).toBe("scope-test");
+      expect(entries[0].unit).toMatch(/\.scope$/);
+
+      await once(child, "close");
+      expect(
+        readAgentProcessRegistry({ filePath: path.join(tmpDir, "agent-processes.json") }),
+      ).toEqual([]);
+    },
+  );
+
+  test("falls back to a plain spawn with a loud warning when the scope probe fails", async () => {
+    const logs: string[] = [];
+    const captureLogger = pino({ level: "warn" }, { write: (line) => logs.push(line) });
+    let probeCalls = 0;
     __setAgentProcessScopeDetectionForTests({ available: true, reason: "forced by test" });
-    const child = spawnInAgentScope(
+    __setAgentProcessScopeProbeForTests(() => {
+      probeCalls += 1;
+      return { ok: false, reason: "user bus gone" };
+    });
+
+    const first = spawnInAgentScope(
       process.execPath,
       ["-e", "setTimeout(() => {}, 50)"],
       { stdio: "ignore" },
-      { provider: "scope-test", logger },
+      { provider: "scope-test", logger: captureLogger },
     );
-    expect(child.pid).toBeGreaterThan(0);
-    expect(String(child.spawnfile)).toContain("systemd-run");
+    expect(String(first.spawnfile)).not.toContain("systemd-run");
 
-    const entries = readAgentProcessRegistry({
-      filePath: path.join(tmpDir, "agent-processes.json"),
-    });
-    expect(entries).toHaveLength(1);
-    expect(entries[0].pid).toBe(child.pid);
-    expect(entries[0].provider).toBe("scope-test");
-    expect(entries[0].unit).toMatch(/\.scope$/);
+    // Sticky: the downgrade applies to every later spawn without re-probing.
+    const second = spawnInAgentScope(
+      process.execPath,
+      ["-e", "setTimeout(() => {}, 50)"],
+      { stdio: "ignore" },
+      { provider: "scope-test", logger: captureLogger },
+    );
+    expect(String(second.spawnfile)).not.toContain("systemd-run");
+    expect(probeCalls).toBe(1);
 
-    await once(child, "close");
+    // No scope attempt means no scope registry records.
     expect(
       readAgentProcessRegistry({ filePath: path.join(tmpDir, "agent-processes.json") }),
     ).toEqual([]);
+
+    const warning = logs.find((line) => line.includes("scope probe failed"));
+    expect(warning, "probe failure logs a loud warning").toBeTruthy();
+    expect(warning).toContain("user bus gone");
+
+    await Promise.all([once(first, "close"), once(second, "close")]);
   });
+
+  test("a missing command still surfaces as a normal ENOENT spawn error", async () => {
+    let probeCalls = 0;
+    __setAgentProcessScopeDetectionForTests({ available: true, reason: "forced by test" });
+    __setAgentProcessScopeProbeForTests(() => {
+      probeCalls += 1;
+      return { ok: true, reason: "forced by test" };
+    });
+
+    const missing = path.join(tmpDir, "definitely-not-a-real-provider-binary");
+    const child = spawnInAgentScope(
+      missing,
+      ["serve"],
+      { stdio: "ignore" },
+      { provider: "scope-test", logger },
+    );
+    // The unresolvable command never reaches systemd-run (which would swallow
+    // ENOENT into a unit start failure); it spawns plainly so the caller sees
+    // the standard 'error' event.
+    expect(child.spawnfile).toBe(missing);
+    expect(probeCalls).toBe(0);
+    const [error] = (await once(child, "error")) as [NodeJS.ErrnoException];
+    expect(error.code).toBe("ENOENT");
+  });
+
+  // Finding 3: the survival claim under review. A scoped child that ignores
+  // stdin EOF keeps running after the parent that held its stdio pipes dies:
+  // it observes EOF (pipes really closed) and stays alive (scope not torn
+  // down). Skipped where there is no real systemd session to scope into.
+  test.skipIf(!realScopeProbe.ok)(
+    "keeps a piped grandchild running after its parent dies, even with stdin EOF",
+    async () => {
+      const registryPath = path.join(tmpDir, "agent-processes.json");
+      const grandchildScript = path.join(tmpDir, "grandchild.cjs");
+      const statusFile = path.join(tmpDir, "grandchild-status.json");
+      const readyFile = path.join(tmpDir, "fixture-ready.json");
+      const fixtureFile = path.join(tmpDir, "fixture.mts");
+
+      writeFileSync(grandchildScript, GRANDCHILD_SOURCE);
+      writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+      writeFileSync(fixtureFile, buildFixtureSource());
+
+      fixtureChild = spawn(tsxBin, [fixtureFile, statusFile, readyFile, grandchildScript], {
+        stdio: "ignore",
+        env: { ...process.env, PASEO_HOME: tmpDir },
+      });
+
+      await expect.poll(() => existsSync(readyFile), { timeout: 10_000, interval: 100 }).toBe(true);
+      const ready = JSON.parse(readFileSync(readyFile, "utf8")) as {
+        fixturePid: number;
+        grandchildPid: number;
+      };
+      grandchildPid = ready.grandchildPid;
+      expect(grandchildPid).toBeGreaterThan(0);
+
+      // Real cgroup identity: the registry entry classifies live-matching with
+      // no test seam, proving finding 2's primary path on a real scoped pid.
+      await expect
+        .poll(() => readRegistryClassification(registryPath, grandchildPid), {
+          timeout: 10_000,
+          interval: 100,
+        })
+        .toBe("live-matching");
+
+      // Kill the parent: the pipes its child reads stdin from now hit EOF.
+      process.kill(ready.fixturePid, "SIGKILL");
+
+      await expect
+        .poll(
+          () => {
+            try {
+              const status = JSON.parse(readFileSync(statusFile, "utf8")) as {
+                sawStdinEnd: boolean;
+              };
+              return status.sawStdinEnd === true;
+            } catch {
+              return false;
+            }
+          },
+          { timeout: 10_000, interval: 100 },
+        )
+        .toBe(true);
+
+      expect(() => process.kill(grandchildPid as number, 0)).not.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(() => process.kill(grandchildPid as number, 0)).not.toThrow();
+    },
+  );
 });
+
+const GRANDCHILD_SOURCE = `
+const fs = require("node:fs");
+const statusFile = process.argv[2];
+let sawStdinEnd = false;
+function report() {
+  fs.writeFileSync(statusFile, JSON.stringify({ pid: process.pid, sawStdinEnd, alive: true }));
+}
+process.stdin.on("end", () => {
+  sawStdinEnd = true;
+  report();
+});
+process.stdin.on("close", () => {
+  if (!sawStdinEnd) {
+    sawStdinEnd = true;
+    report();
+  }
+});
+// Without resume() the stream stays paused and EOF is never observed.
+process.stdin.resume();
+report();
+setInterval(report, 200);
+`;
+
+function readRegistryClassification(registryPath: string, pid: number | null): string {
+  const entry = readAgentProcessRegistry({ filePath: registryPath }).find(
+    (candidate) => candidate.pid === pid,
+  );
+  return entry ? classifyAgentProcessEntry(entry) : "missing";
+}
+
+function buildFixtureSource(): string {
+  return [
+    `import { writeFileSync } from "node:fs";`,
+    `import { spawnInAgentScope } from ${JSON.stringify(scopeModulePath)};`,
+    `const statusFile = process.argv[2];`,
+    `const readyFile = process.argv[3];`,
+    `const script = process.argv[4];`,
+    `const child = spawnInAgentScope(`,
+    `  process.execPath,`,
+    `  [script, statusFile],`,
+    `  { stdio: ["pipe", "pipe", "pipe"] },`,
+    `  { provider: "claude-acp" },`,
+    `);`,
+    `child.on("error", () => {});`,
+    `writeFileSync(readyFile, JSON.stringify({ fixturePid: process.pid, grandchildPid: child.pid }));`,
+    `setInterval(() => {}, 1000);`,
+  ].join("\n");
+}

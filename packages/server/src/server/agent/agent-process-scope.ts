@@ -1,6 +1,6 @@
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
+import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import path from "node:path";
 import type { Logger } from "pino";
 
@@ -19,6 +19,11 @@ export interface AgentScopeDetection {
   reason: string;
 }
 
+export interface AgentScopeProbeResult {
+  ok: boolean;
+  reason: string;
+}
+
 export interface AgentScopeInvocation {
   scopeId: string;
   unit: string;
@@ -29,6 +34,11 @@ export interface AgentScopeInvocation {
 let cachedDetection: AgentScopeDetection | null = null;
 let detectionLogged = false;
 let detectionOverride: AgentScopeDetection | null = null;
+// Sticky reason set when a systemd-run scope probe failed at spawn time; once
+// set, every later spawn in this process uses a plain spawn.
+let runtimeDowngradeReason: string | null = null;
+// Test seam for the systemd-run round-trip probe.
+let probeOverride: (() => AgentScopeProbeResult) | null = null;
 
 /**
  * Probe once whether a systemd user session can host scope units.
@@ -56,11 +66,84 @@ function detectAgentProcessScope(): AgentScopeDetection {
 }
 
 function getScopeDetection(): AgentScopeDetection {
+  // A failed round-trip probe wins over any (test) override: the downgrade
+  // sticks for the process lifetime so one bad spawn never retriggers
+  // systemd-run on the next one.
+  if (runtimeDowngradeReason) return { available: false, reason: runtimeDowngradeReason };
   if (detectionOverride) return detectionOverride;
   if (!cachedDetection) {
     cachedDetection = detectAgentProcessScope();
   }
   return cachedDetection;
+}
+
+/**
+ * Real round-trip check: run a harmless transient scope to completion. This is
+ * the only way to know systemd-run can actually execute the target — `--version`
+ * succeeding says nothing about whether the unit can start (bus gone, no
+ * permission, bad unit). Never throws.
+ */
+export function probeAgentScopeRoundTrip(): AgentScopeProbeResult {
+  if (probeOverride) return probeOverride();
+  try {
+    execFileSync(
+      "systemd-run",
+      [
+        "--user",
+        "--scope",
+        "--quiet",
+        `--unit=paseo-agent-probe-${randomUUID().replaceAll("-", "").slice(0, 12)}`,
+        "--property=KillMode=process",
+        "--collect",
+        "--",
+        "/bin/true",
+      ],
+      { stdio: ["ignore", "ignore", "pipe"], timeout: 5_000 },
+    );
+    return { ok: true, reason: "scope round trip succeeded" };
+  } catch (error) {
+    const stderr =
+      error && typeof error === "object" && "stderr" in error
+        ? String((error as { stderr?: Buffer | string }).stderr ?? "").trim()
+        : "";
+    return {
+      ok: false,
+      reason: stderr || `scope round trip failed: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * Best-effort PATH resolvability check for the target command, using the same
+ * env resolution spawnProcess uses. A command that cannot be resolved must
+ * still surface as a normal spawn error (ENOENT on the plain-spawn 'error'
+ * event), not as a scope probe failure — so this decides only whether to
+ * attempt the scope at all, never whether the spawn is legal. Unresolvable
+ * PATH (unset) assumes resolvable and lets spawn decide.
+ */
+export function isCommandResolvableOnPath(command: string, options?: SpawnProcessOptions): boolean {
+  if (command.includes("/") || command.includes("\\")) {
+    try {
+      accessSync(command, fsConstants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const baseEnv = options?.env ?? options?.baseEnv ?? process.env;
+  const env = options?.envOverlay ? { ...baseEnv, ...options.envOverlay } : baseEnv;
+  const pathValue = env.PATH ?? env.Path;
+  if (!pathValue) return true;
+  for (const dir of pathValue.split(path.delimiter)) {
+    if (!dir) continue;
+    try {
+      accessSync(path.join(dir, command), fsConstants.X_OK);
+      return true;
+    } catch {
+      // keep scanning PATH
+    }
+  }
+  return false;
 }
 
 function logDetectionOnce(detection: AgentScopeDetection, logger?: Logger): void {
@@ -122,8 +205,21 @@ export function spawnInAgentScope(
     try {
       const detection = getScopeDetection();
       logDetectionOnce(detection, logger);
-      if (detection.available) {
-        invocation = buildAgentScopeInvocation(command, args);
+      if (detection.available && isCommandResolvableOnPath(command, options)) {
+        const probe = probeAgentScopeRoundTrip();
+        if (probe.ok) {
+          invocation = buildAgentScopeInvocation(command, args);
+        } else {
+          // One failed round trip downgrades every later spawn in this process
+          // to plain spawn: systemd-run is up per detection, so this means the
+          // session cannot host scopes right now and retrying per spawn would
+          // only multiply the failure.
+          runtimeDowngradeReason = probe.reason;
+          logger?.warn(
+            { reason: probe.reason, command },
+            "Agent process scope probe failed; downgrading to plain spawn for the rest of this process",
+          );
+        }
       }
     } catch (error) {
       logger?.warn(
@@ -164,7 +260,7 @@ export function spawnInAgentScope(
 
 /**
  * Test-only: force (or clear) the scope detection result and reset the
- * once-per-process detection state.
+ * once-per-process detection state, including any sticky probe downgrade.
  */
 export function __setAgentProcessScopeDetectionForTests(
   detection: AgentScopeDetection | null,
@@ -172,4 +268,14 @@ export function __setAgentProcessScopeDetectionForTests(
   detectionOverride = detection;
   cachedDetection = null;
   detectionLogged = false;
+  runtimeDowngradeReason = null;
+}
+
+/**
+ * Test-only: force (or clear) the systemd-run round-trip probe result.
+ */
+export function __setAgentProcessScopeProbeForTests(
+  probe: (() => AgentScopeProbeResult) | null,
+): void {
+  probeOverride = probe;
 }
