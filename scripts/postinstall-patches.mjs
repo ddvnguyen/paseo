@@ -71,9 +71,14 @@ if (!existsSync("patches") || installedPackages.length === 0) {
 
 const patchFiles = readdirSync("patches").filter((file) => file.endsWith(".patch"));
 
-// Group patch files by the directory patch-package must run from.
+// Group patch files by the directory patch-package must run from. Two entries
+// may share a patch prefix for the root and the workspace install; a group only
+// runs if the packages it patches are actually installed there, otherwise
+// patch-package fails on a path that does not exist.
 const patchFilesByCwd = new Map();
-for (const { patchPrefix, cwd = "." } of installedPackages) {
+for (const { patchPrefix, nodeModulesPath, cwd = "." } of installedPackages) {
+  const target = cwd === "." ? nodeModulesPath : relative(".", nodeModulesPath);
+  if (!existsSync(target)) continue;
   const files = patchFiles.filter((file) => file.startsWith(patchPrefix));
   if (files.length === 0) {
     continue;
@@ -96,6 +101,9 @@ for (const [cwd, files] of patchFilesByCwd) {
   const tempPatchDir = join(".tmp", `postinstall-patches-${process.pid}-${groupIndex}`);
 
   mkdirSync(tempPatchDir, { recursive: true });
+  // patch-package resolves a patch's node_modules/... paths relative to its cwd,
+  // which is exactly what the workspace entries need: the same patch file works
+  // from the root install and from a workspace's own node_modules.
   for (const patchFile of files) {
     copyFileSync(join("patches", patchFile), join(tempPatchDir, patchFile));
   }
