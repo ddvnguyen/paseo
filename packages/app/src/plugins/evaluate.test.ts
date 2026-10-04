@@ -309,9 +309,13 @@ describe("evaluatePluginClientBundle", () => {
     );
     expect(legacy.workspacePanels[0]?.fullScreen).toBe(false);
 
-    const invalid = evaluatePluginClientBundle(
-      "bad",
-      bundle(`
+    // An invalid flag is a plugin bug, and the host reports it the same way it
+    // reports every other malformed contribution: by throwing out of the
+    // bundle runner, not by returning a half-built plugin.
+    expect(() =>
+      evaluatePluginClientBundle(
+        "bad",
+        bundle(`
         function BadPanel() { return null; }
         plugin.addWorkspacePanel({
           id: "bad",
@@ -323,8 +327,8 @@ describe("evaluatePluginClientBundle", () => {
           Component: BadPanel,
         });
       `),
-    );
-    expect(invalid).toBeNull();
+      ),
+    ).toThrow(/invalid fullScreen/);
   });
 
   it("normalizes and validates workspace panel locations", () => {
