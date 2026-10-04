@@ -1,0 +1,21 @@
+{
+  "name": "@getpaseo/fleet-backend-spike-mastra",
+  "version": "0.0.0",
+  "private": true,
+  "description": "B2 spike: Mastra Memory on embedded Turso. VOLATILE — never merge to Paseo-hub; drop/rebase before any merge.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@mastra/memory": "^1.35.0",
+    "@mastra/turso": "^0.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^20.9.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.6",
+    "zod": "4.6.5"
+  }
+}
