@@ -380,6 +380,33 @@ jobs:
       - name: Typecheck client examples
         run: npm run typecheck:examples --workspace=@getpaseo/client
 
+  fleet-backend:
+    name: fleet-backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      # No workspace deps (MCP SDK + Turso only), so no cross-package build
+      # step is needed here. Covers tests/unit, tests/concurrency and
+      # tests/gates. tests/parity stays out on purpose -- it is ~5 min and
+      # boots two servers over stdio, gated behind `pnpm parity`
+      # (see packages/fleet-backend/tests/parity/HARNESS.md).
+      - name: Run fleet-backend tests
+        run: npm run test --workspace=@getpaseo/fleet-backend
+
+      - name: Typecheck fleet-backend
+        run: npm run typecheck --workspace=@getpaseo/fleet-backend
+
   playwright-1:
     name: playwright (shard 1/4)
     needs: changes

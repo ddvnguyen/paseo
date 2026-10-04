@@ -11,6 +11,11 @@ const examplesDirectory = fileURLToPath(
 );
 const examples = (await readdir(examplesDirectory, { withFileTypes: true }))
   .filter((entry) => entry.isDirectory())
+  // `plugin-examples/` is also a pnpm workspace, so it holds `node_modules`
+  // alongside the example plugins. It is a directory, so the isDirectory()
+  // filter above does not exclude it, and readPluginManifest would then fail
+  // with "Plugin manifest is missing: .../plugin-examples/node_modules".
+  .filter((entry) => entry.name !== "node_modules" && !entry.name.startsWith("."))
   .map((entry) => entry.name);
 
 afterEach(async () => {
