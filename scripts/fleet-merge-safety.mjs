@@ -4,6 +4,10 @@
 //   fails when the changeset touches files under BOTH plugins/ and packages/.
 // Rule 2 (#31: "@tursodatabase/database may only be imported from
 //   store/turso-repository.ts"): fails on any other importer in the package.
+//   SUBSTRING match on the forbidden name (not an anchored ^prefix): a
+//   node_modules-prefixed specifier (../node_modules/@tursodatabase/...) must
+//   also fire. Matcher + extension set + allowlist MUST stay identical to
+//   packages/fleet-backend/tests/gates/turso-import.test.ts.
 //
 // Usage:
 //   node scripts/fleet-merge-safety.mjs --base <sha> --head <sha>
@@ -53,7 +57,7 @@ function collectFiles(dir, out = []) {
       continue;
     const full = path.join(dir, entry);
     if (statSync(full).isDirectory()) collectFiles(full, out);
-    else if (/\.(ts|mts|js|mjs|cjs)$/.test(entry) && !entry.endsWith(".d.ts")) out.push(full);
+    else if (/\.(ts|mts|js|mjs|cjs)$/.test(entry) && !entry.endsWith(".d.ts") && !entry.endsWith(".d.ts.map")) out.push(full);
   }
   return out;
 }
@@ -61,11 +65,20 @@ function collectFiles(dir, out = []) {
 function checkTursoImport() {
   const pkg = path.join(ROOT, "packages", "fleet-backend");
   if (!existsSync(pkg)) return { ok: true, skipped: true };
-  const allowed = new Set([path.join(pkg, "src", "store", "turso-repository.ts")]);
+  // Allowlist MUST stay identical to tests/gates/turso-import.test.ts. The
+  // fixture-regen script is a MANUAL op (never CI/tests); it opens a
+  // disposable sqlite copy, so it holds a narrow exception to the rule.
+  const allowed = new Set([
+    path.join(pkg, "src", "store", "turso-repository.ts"),
+    path.join(pkg, "scripts", "regenerate-fixture.mjs"),
+  ]);
   const offenders = [];
   for (const file of collectFiles(pkg)) {
     const text = readFileSync(file, "utf-8");
-    if (/(?:from\s+['"]|import\s*\(\s*['"])@tursodatabase\/database(?:\/[^'"]*)?['"]/.test(text)) {
+    // SUBSTRING match on the forbidden package name: also fires on
+    // node_modules-prefixed specifiers (../node_modules/@tursodatabase/...).
+    // Keep in sync with tests/gates/turso-import.test.ts.
+    if (/(?:from\s+['"]|import\s*\(\s*['"]|require\s*\(\s*['"])[^'"]*@tursodatabase\/database(?:\/[^'"]*)?['"]/.test(text)) {
       if (!allowed.has(file)) offenders.push(path.relative(ROOT, file));
     }
   }
