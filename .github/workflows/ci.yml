@@ -196,7 +196,9 @@ jobs:
   server-tests-macos:
     name: server-tests (macos-14, file observation)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false') }}
+    # Fork CI scope is server, web and Android; desktop/macOS/iOS run only when
+    # the repo variable PASEO_CI_ALL_PLATFORMS is 'true' (owner 2026-10-04).
+    if: ${{ vars.PASEO_CI_ALL_PLATFORMS == 'true' && !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false') }}
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -226,7 +228,9 @@ jobs:
   desktop-tests-ubuntu:
     name: desktop-tests (ubuntu-latest)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') }}
+    # Fork CI scope is server, web and Android; desktop/macOS/iOS run only when
+    # the repo variable PASEO_CI_ALL_PLATFORMS is 'true' (owner 2026-10-04).
+    if: ${{ vars.PASEO_CI_ALL_PLATFORMS == 'true' && !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -304,7 +308,9 @@ jobs:
   desktop-tests-windows:
     name: desktop-tests (windows-latest)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') }}
+    # Fork CI scope is server, web and Android; desktop/macOS/iOS run only when
+    # the repo variable PASEO_CI_ALL_PLATFORMS is 'true' (owner 2026-10-04).
+    if: ${{ vars.PASEO_CI_ALL_PLATFORMS == 'true' && !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') }}
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
