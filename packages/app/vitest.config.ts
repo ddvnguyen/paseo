@@ -128,8 +128,8 @@ export default defineConfig({
       {
         find: /^react-native-gesture-handler$/,
         replacement: path.resolve(
-          rootNodeModules,
-          "react-native-gesture-handler/lib/module/index.js",
+          resolvePackageEntry("react-native-gesture-handler"),
+          "lib/module/index.js",
         ),
       },
       // Must precede the `react-native` alias: a string `find` matches by prefix, so this subpath

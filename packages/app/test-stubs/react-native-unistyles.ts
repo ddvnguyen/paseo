@@ -97,4 +97,5 @@ export const useUnistyles = () => ({
 export const UnistylesRuntime = {
   setTheme: () => undefined,
   themeName: "light",
+  getTheme: () => testTheme,
 };
