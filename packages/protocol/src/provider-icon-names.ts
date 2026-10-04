@@ -26,6 +26,7 @@ export const ACP_PROVIDER_ICON_NAMES = [
   "dirac",
   "factory-droid",
   "fast-agent",
+  "freebuff",
   "gemini",
   "gjc",
   "glm-acp-agent",

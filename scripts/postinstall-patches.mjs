@@ -31,6 +31,14 @@ const patchedPackages = [
     patchPrefix: "react-native-svg+",
   },
   {
+    // pnpm keeps react-native-svg inside the app workspace; without this entry
+    // the SVG transform hardening never applies and a CSS keyword transform
+    // throws at render time.
+    nodeModulesPath: "packages/app/node_modules/react-native-svg",
+    patchPrefix: "react-native-svg+",
+    cwd: "packages/app",
+  },
+  {
     nodeModulesPath: "node_modules/@mattermost/react-native-paste-input",
     patchPrefix: "@mattermost+react-native-paste-input+",
   },

@@ -25,7 +25,7 @@ function resolveWranglerBin(): string {
   const pkgPath = createRequire(import.meta.url).resolve("wrangler/package.json");
   const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
   const bin = typeof pkg.bin === "string" ? pkg.bin : (pkg.bin?.wrangler as string);
-  return path.resolve(dirname(pkgPath), bin);
+  return resolvePath(dirname(pkgPath), bin);
 }
 
 const wranglerCliPath = resolveWranglerBin();
