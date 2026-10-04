@@ -25,6 +25,18 @@ LOG_FILE="$REPO_ROOT/deploy-production.log"
 XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export XDG_RUNTIME_DIR
 
+# One deploy at a time. Two overlapping runs would interleave stop/restart on
+# the same systemd unit and the loser would leave the daemon down. `set -o
+# noclobber` makes the redirect atomic, so the lock is a file holding a PID
+# rather than a directory (a directory is not empty once the PID is written in
+# it, so rmdir could never release it).
+DEPLOY_LOCK="$REPO_ROOT/.deploy-production.lock"
+if ! (set -o noclobber; echo $$ > "$DEPLOY_LOCK") 2>/dev/null; then
+  echo "ERROR: another deploy holds $DEPLOY_LOCK (pid $(cat "$DEPLOY_LOCK" 2>/dev/null || echo unknown))." >&2
+  exit 1
+fi
+release_deploy_lock() { rm -f "$DEPLOY_LOCK"; }
+
 # Tee all output so a killed background job still leaves a full log behind.
 exec > >(tee "$LOG_FILE") 2>&1
 
@@ -132,13 +144,14 @@ done
 
 restore_stamp() {
   local status=$?
+  release_deploy_lock
   for f in "${STAMP_TARGETS[@]}"; do
     [ -f "$STAMP_BACKUP_DIR/$f" ] && cp "$STAMP_BACKUP_DIR/$f" "$f"
   done
   rm -rf "$STAMP_BACKUP_DIR"
   return $status
 }
-trap restore_stamp EXIT
+trap 'restore_stamp; release_deploy_lock' EXIT
 
 if [[ "$CURRENT_VERSION" == *"-$SHORT_HASH" ]]; then
   say "  Version already stamped ($CURRENT_VERSION) — skipping"
