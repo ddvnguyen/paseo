@@ -22,6 +22,7 @@ allowBuilds:
   electron-winstaller: true
   esbuild: true
   lefthook: true
+  msgpackr-extract: true
   node-pty: true
   sharp: true
   unrs-resolver: true

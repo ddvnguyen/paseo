@@ -7,8 +7,9 @@ on:
       - "CHANGELOG.md"
       - "public-docs/**"
       - "packages/website/**"
+      - "packages/protocol/**"
       - "package.json"
-      - "pnpm-lock.yaml"
+      - "package-lock.json"
       - "patches/**"
       - ".github/workflows/deploy-website.yml"
   release:
@@ -23,16 +24,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache: "npm"
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: node scripts/npm-retry.mjs ci --workspace=@getpaseo/website --workspace=@getpaseo/protocol --include-workspace-root
+
+      - name: Build protocol
+        run: npm run build:protocol
 
       - name: Typecheck
         run: npm run typecheck --workspace=@getpaseo/website
