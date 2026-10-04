@@ -6,6 +6,11 @@ import { deriveTrajectoryLayout } from "../shared/dsh/layout.js";
 import type { TrajectoryFoldRow, TrajectoryTurnModel } from "../shared/dsh/layout.js";
 import { groupTrajectoryVirtualRows } from "../shared/dsh/virtual-rows.js";
 import { TrajectorySearchIndex } from "../shared/dsh/search-index.js";
+import {
+  createCommitThrottle,
+  SEARCH_COMMIT_THROTTLE_MS,
+  type CommitThrottle,
+} from "./search-commit-throttle.js";
 import { trajectoryRecordId, type TrajectoryCellProps } from "../shared/dsh/record.js";
 import { LedgerColumnHeader, TrajectoryCellRow } from "./ledger-cells.js";
 import { TrajectoryTimelineStrip, type TimelinePlatform } from "./trajectory-timeline.js";
@@ -175,10 +180,43 @@ export function LedgerScreen(props: {
   // so a query can never narrow what a later query can match.
   const indexRef = useRef<TrajectorySearchIndex | null>(null);
   if (indexRef.current === null) indexRef.current = new TrajectorySearchIndex();
+  // One wrapper for the index's whole life: `update` short-circuits on the
+  // outer array's identity, and a fresh `[turns]` per call would defeat it.
+  const layoutsRef = useRef<[readonly TrajectoryTurnModel[]]>([[]]);
+  const throttleRef = useRef<CommitThrottle | null>(null);
+  if (throttleRef.current === null) {
+    throttleRef.current = createCommitThrottle(
+      SEARCH_COMMIT_THROTTLE_MS,
+      () => Date.now(),
+      (fn, ms) => setTimeout(fn, ms) as unknown as number,
+      (handle) => clearTimeout(handle),
+    );
+  }
+  /**
+   * The search index is the largest single cost on the data plane — a full
+   * re-index is ~32 ms at 25k cells — and `turns` is a fresh array on every
+   * append, so the index's own identity short-circuit cannot fire on that path.
+   *
+   * It is throttled ONLY while no query is active, because then the index can
+   * only ever answer a FUTURE search and the list on screen is unfiltered. The
+   * moment a query is active the list IS the index's output, so that commit
+   * stays immediate: a throttled commit there would filter the list up to the
+   * throttle interval late, which is the coupling dsh's architecture note
+   * forbids. Display and search keep separate cadences.
+   */
   const matches = useMemo(() => {
     const index = indexRef.current;
     if (index === null) return null;
-    index.update([turns]);
+    if (query.trim() === "") {
+      throttleRef.current?.request(() => {
+        layoutsRef.current[0] = turns;
+        index.update(layoutsRef.current);
+      });
+      return null;
+    }
+    // A live query: exact now, and never throttled.
+    layoutsRef.current[0] = turns;
+    index.update(layoutsRef.current);
     return index.search(query);
   }, [turns, query]);
 
