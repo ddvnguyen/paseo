@@ -40,8 +40,10 @@ export function createPluginNavigation(input: {
     openSettings(pluginId, screenId) {
       router.push(buildPluginSettingsRoute(serverId, pluginId, screenId));
     },
-    openSurface(pluginId, surfaceId) {
-      router.push(buildPluginSurfaceRoute(serverId, pluginId, { kind: "surface", id: surfaceId }));
+    openSurface(pluginId, surfaceId, params) {
+      router.push(
+        buildPluginSurfaceRoute(serverId, pluginId, { kind: "surface", id: surfaceId }, params),
+      );
     },
     openWorkspacePanel(pluginId, panelId, location) {
       if (location === "dialog") {

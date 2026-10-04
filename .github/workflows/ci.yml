@@ -123,8 +123,14 @@ jobs:
       - name: Build server stack
         run: npm run build:server
 
+      - name: Verify built-in plugins from built output
+        run: node --test scripts/builtin-plugins-dist.test.mjs
+
       - name: Typecheck all packages
         run: npm run typecheck
+
+      - name: Run website tests
+        run: npx vitest run packages/website/src --bail=1
 
       - name: Install website test browsers
         run: npx playwright install --with-deps chromium webkit
@@ -177,6 +183,10 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Run built-in plugin tests
+        if: ${{ needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' }}
+        run: npm run test --workspace=@getpaseo/builtin-plugins
 
       - name: Run Hub CLI/daemon contract
         if: ${{ needs.changes.outputs.full == 'false' && needs.changes.outputs.server == 'false' && needs.changes.outputs.hub != 'false' }}
@@ -246,7 +256,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Install dependencies with retry
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Build server stack
@@ -265,7 +275,7 @@ jobs:
 
       - name: Verify Windows daemon process control
         if: ${{ runner.os == 'Windows' }}
-        run: pnpm --filter @getpaseo/cli exec vitest run src/commands/daemon/lifecycle.e2e.test.ts --bail=1 --maxWorkers=1 -t "Windows unbound|managed two-home"
+        run: npx vitest run packages/cli/src/commands/daemon/lifecycle.e2e.test.ts --bail=1 --maxWorkers=1 -t "Windows unbound|managed two-home"
 
       - name: Run desktop lifecycle E2E (Linux)
         if: ${{ runner.os == 'Linux' }}
@@ -333,7 +343,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Install dependencies with retry
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright browsers
@@ -386,33 +396,6 @@ jobs:
       - name: Typecheck client examples
         run: npm run typecheck:examples --workspace=@getpaseo/client
 
-  fleet-backend:
-    name: fleet-backend tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - run: pnpm install --frozen-lockfile
-
-      # No workspace deps (MCP SDK + Turso only), so no cross-package build
-      # step is needed here. Covers tests/unit, tests/concurrency and
-      # tests/gates. tests/parity stays out on purpose -- it is ~5 min and
-      # boots two servers over stdio, gated behind `pnpm parity`
-      # (see packages/fleet-backend/tests/parity/HARNESS.md).
-      - name: Run fleet-backend tests
-        run: npm run test --workspace=@getpaseo/fleet-backend
-
-      - name: Typecheck fleet-backend
-        run: npm run typecheck --workspace=@getpaseo/fleet-backend
-
   playwright-1:
     name: playwright (shard 1/4)
     needs: changes
@@ -432,7 +415,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Install dependencies with retry
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright browsers

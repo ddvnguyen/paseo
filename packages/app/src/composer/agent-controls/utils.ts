@@ -79,11 +79,6 @@ function pickSelectedModel(
   preferredModelId: string | null,
   fallbackModel: AgentModelDefinition | null,
 ): AgentModelDefinition | null {
-  // No known id at all (nothing configured, nothing running yet): the catalog
-  // default is the honest choice. But a known id that misses the catalog (a
-  // customize-mapped or versioned runtime id) must NOT resolve to the default
-  // — that shows the default's friendly label while a different model runs.
-  // Returning null surfaces the raw id via resolveModelDisplay instead.
   if (!preferredModelId) {
     return fallbackModel;
   }
@@ -91,9 +86,16 @@ function pickSelectedModel(
 }
 
 function resolveThinkingId(
+  runtimeThinkingOptionId: string | null | undefined,
   explicitThinkingOptionId: string | null | undefined,
   selectedModel: AgentModelDefinition | null,
 ): string | null {
+  const runtimeThinkingOption = selectedModel?.thinkingOptions?.find(
+    (option) => option.id === runtimeThinkingOptionId,
+  );
+  if (runtimeThinkingOption) {
+    return runtimeThinkingOption.id;
+  }
   if (explicitThinkingOptionId && explicitThinkingOptionId !== "default") {
     return explicitThinkingOptionId;
   }
@@ -144,9 +146,16 @@ export function resolveAgentModelSelection(input: {
   models: AgentModelDefinition[] | null;
   runtimeModelId: string | null | undefined;
   configuredModelId: string | null | undefined;
+  runtimeThinkingOptionId: string | null | undefined;
   explicitThinkingOptionId: string | null | undefined;
 }) {
-  const { models, runtimeModelId, configuredModelId, explicitThinkingOptionId } = input;
+  const {
+    models,
+    runtimeModelId,
+    configuredModelId,
+    runtimeThinkingOptionId,
+    explicitThinkingOptionId,
+  } = input;
   const normalizedRuntimeModelId = normalizeModelId(runtimeModelId);
   const normalizedConfiguredModelId = normalizeModelId(configuredModelId);
 
@@ -167,9 +176,13 @@ export function resolveAgentModelSelection(input: {
   );
 
   const thinkingOptions = selectedModel?.thinkingOptions ?? null;
-  const resolvedThinkingId = resolveThinkingId(explicitThinkingOptionId, selectedModel);
+  const resolvedThinkingId = resolveThinkingId(
+    runtimeThinkingOptionId,
+    explicitThinkingOptionId,
+    selectedModel,
+  );
   const effectiveThinking = resolveEffectiveThinking(thinkingOptions, resolvedThinkingId);
-  const selectedThinkingId = effectiveThinking?.id ?? null;
+  const selectedThinkingId = effectiveThinking?.id ?? resolvedThinkingId;
   const displayThinking = resolveThinkingDisplay(
     effectiveThinking,
     selectedThinkingId,

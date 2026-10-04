@@ -16,12 +16,29 @@ overrides:
   react-native-reanimated: "4.3.1"
   react-native-worklets: "0.8.3"
 
+# Workspace linking. These were `link-workspace-packages` and
+# `prefer-workspace-packages` in .npmrc, where pnpm 11 does not read them:
+# `pnpm config get link-workspace-packages` returned undefined with the .npmrc
+# present. Left there, `pnpm install --frozen-lockfile` failed against
+# @getpaseo/expo-two-way-audio because workspace deps were resolved from the
+# registry instead of linked to the local package. They have to be here for a
+# plain frozen-lockfile install to work with no extra flags.
+linkWorkspacePackages: true
+preferWorkspacePackages: true
+
 allowBuilds:
   dtrace-provider: true
   electron: true
   electron-winstaller: true
   esbuild: true
   lefthook: true
+  # Newly transitive through msgpackr@2.1.0 after the merge. pnpm 11 writes a
+  # literal `set this to true or false` placeholder for an unlisted build
+  # script, which is not a boolean, and the install then aborts with
+  # ERR_PNPM_IGNORED_BUILDS. Approved: it installs prebuilt per-platform
+  # binaries (@msgpackr-extract/msgpackr-extract-<platform>), so its script is
+  # a prebuild selection, not a source compile.
+  msgpackr-extract: true
   node-pty: true
   sharp: true
   unrs-resolver: true
