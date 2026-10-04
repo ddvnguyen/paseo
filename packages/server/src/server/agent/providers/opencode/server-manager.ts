@@ -6,7 +6,8 @@ import path from "node:path";
 import type { Logger } from "pino";
 
 import { findExecutable } from "../../../../executable-resolution/executable-resolution.js";
-import { spawnProcess, type SpawnProcessOptions } from "../../../../utils/spawn.js";
+import type { SpawnProcessOptions } from "../../../../utils/spawn.js";
+import { spawnInAgentScope } from "../../agent-process-scope.js";
 import { terminateWithTreeKill, type ProcessTerminator } from "../../../../utils/tree-kill.js";
 import type { ManagedProcessRegistry } from "../../../managed-processes/managed-processes.js";
 import {
@@ -108,7 +109,13 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
       options.resolveCommandPrefix ??
       (() => resolveProviderCommandPrefix(this.runtimeSettings?.command, resolveOpenCodeBinary));
     this.resolveHomeDir = options.resolveHomeDir ?? resolveOpenCodeHomeDir;
-    this.spawnServerProcess = options.spawnServerProcess ?? spawnProcess;
+    this.spawnServerProcess =
+      options.spawnServerProcess ??
+      ((command, args, spawnOptions) =>
+        spawnInAgentScope(command, args, spawnOptions, {
+          provider: "opencode",
+          logger: this.logger,
+        }));
     this.createEventSource =
       options.createEventSource ?? ((input) => new OpenCodeEventConsumer(input));
     this.decorateServerEnv = options.decorateServerEnv;

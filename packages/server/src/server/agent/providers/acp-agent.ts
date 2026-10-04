@@ -124,6 +124,7 @@ import {
   createStringCommandShellEnvOverlay,
 } from "../../../utils/string-command-shell.js";
 import { spawnProcess } from "../../../utils/spawn.js";
+import { spawnInAgentScope } from "../agent-process-scope.js";
 import {
   type DiagnosticEntry,
   toDiagnosticErrorMessage,
@@ -2731,14 +2732,19 @@ export class ACPAgentSession implements AgentSession, ACPClient {
 
     const command = prefix.command;
     const args = [...prefix.args, ...this.defaultCommand.slice(1)];
-    const child = spawnProcess(command, args, {
-      cwd: this.config.cwd,
-      ...createProviderEnvSpec({
-        runtimeSettings: this.runtimeSettings,
-        overlays: [this.launchEnv],
-      }),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawnInAgentScope(
+      command,
+      args,
+      {
+        cwd: this.config.cwd,
+        ...createProviderEnvSpec({
+          runtimeSettings: this.runtimeSettings,
+          overlays: [this.launchEnv],
+        }),
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+      { provider: this.provider, logger: this.logger },
+    );
     assertChildWithPipes(child);
 
     const stderrChunks: string[] = [];
