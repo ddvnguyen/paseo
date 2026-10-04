@@ -19,10 +19,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..", "..", "..");
 
 // npm workspace scripts only add the local node_modules/.bin to PATH; hoisted
-// packages live in the root. pnpm does not hoist at all: the package's own bin
-// links into packages/cli/node_modules/.bin. Prepend both so `paseo` resolves.
+// packages live in the root. pnpm hoists nothing and does not link a workspace
+// package's own bin into its .bin either, so point at the bin directory itself.
 const rootNodeModulesBin = join(repoRoot, "node_modules", ".bin");
-const cliBin = join(__dirname, "..", "node_modules", ".bin");
+const cliBin = join(__dirname, "..", "bin");
 const args = process.argv.slice(2);
 const testEnvDefaults = {
   PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD: process.env.PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD ?? "0",
