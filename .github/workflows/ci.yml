@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, Paseo-hub]
   pull_request:
-    branches: [main]
+    branches: [main, Paseo-hub]
   merge_group:
   workflow_dispatch:
 
