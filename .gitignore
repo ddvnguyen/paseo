@@ -109,4 +109,4 @@ app.json
 # temporary local vitest harnesses (leader/worker test runs)
 vt.tmp.config.mts
 vt2.tmp.mts
-mcp.json
+/.mcp.json
