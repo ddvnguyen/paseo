@@ -34,6 +34,25 @@ function packageNameOf(specifier: string): string {
 }
 
 function resolvePackageDir(name: string): string | null {
+  // Resolve the way the runtime does. Walking `<base>/node_modules/<name>`
+  // only works when the package manager hoists; pnpm links into
+  // node_modules/.pnpm and a plain path guess misses transitive deps.
+  try {
+    return path.dirname(require.resolve(`${name}/package.json`, { paths: [packageRoot] }));
+  } catch {
+    // Some packages hide their manifest behind exports; fall back to walking
+    // up from the resolved main entry.
+    try {
+      const entry = require.resolve(name, { paths: [packageRoot] });
+      let dir = path.dirname(entry);
+      while (dir !== path.dirname(dir)) {
+        if (fs.existsSync(path.join(dir, "package.json"))) return dir;
+        dir = path.dirname(dir);
+      }
+    } catch {
+      // fall through
+    }
+  }
   for (const base of [packageRoot, repoRoot]) {
     const dir = path.join(base, "node_modules", name);
     if (fs.existsSync(path.join(dir, "package.json"))) return dir;

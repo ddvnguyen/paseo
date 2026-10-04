@@ -19,8 +19,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..", "..", "..");
 
 // npm workspace scripts only add the local node_modules/.bin to PATH; hoisted
-// packages live in the root. Prepend it so `npx paseo` resolves locally.
+// packages live in the root. pnpm does not hoist at all: the package's own bin
+// links into packages/cli/node_modules/.bin. Prepend both so `paseo` resolves.
 const rootNodeModulesBin = join(repoRoot, "node_modules", ".bin");
+const cliBin = join(__dirname, "..", "node_modules", ".bin");
 const args = process.argv.slice(2);
 const testEnvDefaults = {
   PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD: process.env.PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD ?? "0",
@@ -207,7 +209,7 @@ async function runSingleTest(testFile: string): Promise<TestOutcome> {
           ),
           HOME: osHome,
           USERPROFILE: osHome,
-          PATH: [rootNodeModulesBin, process.env.PATH].filter(Boolean).join(delimiter),
+          PATH: [cliBin, rootNodeModulesBin, process.env.PATH].filter(Boolean).join(delimiter),
           npm_config_cache: npmCache,
           PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD: testEnvDefaults.PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD,
           PASEO_DICTATION_ENABLED: testEnvDefaults.PASEO_DICTATION_ENABLED,
