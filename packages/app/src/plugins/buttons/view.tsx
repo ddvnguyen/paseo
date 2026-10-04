@@ -1,5 +1,3 @@
-import { useRetainedPanelActive } from "@/components/retained-panel";
-import { PluginClientStateProvider } from "@getpaseo/plugin/client/host";
 import type {
   PluginButtonBehavior,
   PluginButtonIcon,
@@ -8,14 +6,13 @@ import type {
 } from "@getpaseo/plugin/client";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useCallback, useMemo, useSyncExternalStore, type ReactNode } from "react";
-import { Platform, Pressable, Text, View, useWindowDimensions } from "react-native";
+import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { AlertCircle, ChevronDown, MoreHorizontal } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import {
   MenuRoot,
   MenuTrigger,
-  MenuSurface,
   MenuItem,
   MenuSeparator,
   MenuSubTrigger,
@@ -31,22 +28,27 @@ import {
 } from "@/components/ui/icon-button-chrome";
 import { composerPillStyles } from "@/composer/pill-styles";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { ToastApiProvider, useToast } from "@/contexts/toast-context";
+import { useToast } from "@/contexts/toast-context";
 import { useHostRuntimeClient, useHosts } from "@/runtime/host-runtime";
 import type { Theme } from "@/styles/theme";
 import { createPluginClientStateSource } from "../client-state/source";
 import { Icon } from "../icons";
-import { PluginRuntimeBoundary } from "../runtime-boundary";
+import {
+  PluginEnvironmentProvider,
+  PluginPopoverContent,
+  PluginPopoverSurface,
+  type PluginEnvironment,
+} from "../popover";
 import { SurfaceErrorBoundary } from "../surface-error-boundary";
 import { toPluginTheme } from "../theme";
 import { buttonMatches, type RegisteredPluginButton } from "./model";
 import { pluginButtonStore } from "./store";
+import { resolvePluginPlatform } from "../platform";
 
 interface ButtonView {
   entry: RegisteredPluginButton;
   props: PluginHostProps & RegisteredPluginButton["context"];
-  client: NonNullable<ReturnType<typeof useHostRuntimeClient>>;
-  state: ReturnType<typeof createPluginClientStateSource>;
+  environment: PluginEnvironment;
   toast: ReturnType<typeof useToast>;
 }
 
@@ -68,21 +70,9 @@ function headerButtonStyle(compact: boolean, state: IconButtonChromeState, disab
   ];
 }
 
-function resolvePlatform(): PluginHostProps["layout"]["platform"] {
-  if (Platform.OS === "ios") return "ios";
-  if (Platform.OS === "android") return "android";
-  return "web";
-}
-
-// These providers live inside the surface content as well as around its trigger. Native sheets
-// teleport their children, so providers around MenuRoot alone cannot reach the plugin body.
 function ButtonEnvironment({ view, children }: { view: ButtonView; children: ReactNode }) {
   return (
-    <ToastApiProvider api={view.toast}>
-      <PluginRuntimeBoundary plugin={view.entry.installation} client={view.client}>
-        <PluginClientStateProvider source={view.state}>{children}</PluginClientStateProvider>
-      </PluginRuntimeBoundary>
-    </ToastApiProvider>
+    <PluginEnvironmentProvider environment={view.environment}>{children}</PluginEnvironmentProvider>
   );
 }
 
@@ -185,9 +175,9 @@ function ButtonBody({
   if (behavior.kind === "popover") {
     const Content = behavior.Content;
     return (
-      <View style={styles.content}>
+      <PluginPopoverContent>
         <Content {...view.props} close={close} />
-      </View>
+      </PluginPopoverContent>
     );
   }
   if (behavior.kind !== "menu") return null;
@@ -337,19 +327,15 @@ function ButtonControl({ view }: { view: ButtonView }) {
         </TooltipContent>
       </Tooltip>
       {expanded ? (
-        <MenuSurface
+        <PluginPopoverSurface
           sheetTitle={button.title}
           side={composer ? "top" : "bottom"}
           align={composer ? "start" : "end"}
           offset={composer ? 12 : 4}
-          minWidth={280}
-          maxWidth={420}
-          maxHeight={440}
-          scrollable
           pages={pages}
         >
           <ButtonSurfaceBody view={view} behavior={button.behavior} path={ROOT_PATH} />
-        </MenuSurface>
+        </PluginPopoverSurface>
       ) : null}
     </MenuRoot>
   );
@@ -399,14 +385,17 @@ function createButtonView({
   if (!client) return null;
   return {
     entry,
-    client,
     toast,
-    state: createPluginClientStateSource(entry.installation.serverId),
+    environment: {
+      installation: entry.installation,
+      toast,
+      state: createPluginClientStateSource(entry.installation.serverId),
+    },
     props: {
       ...entry.context,
       theme,
       host: { id: entry.installation.serverId, label: hostLabel },
-      layout: { compact, platform: resolvePlatform() },
+      layout: { compact, platform: resolvePluginPlatform() },
     },
   };
 }
@@ -512,17 +501,13 @@ function OverflowPages({
   }, [entries, client, toast, theme, hostLabel, compact]);
   const { t } = useTranslation();
   return (
-    <MenuSurface
+    <PluginPopoverSurface
       sheetTitle={t("workspace.git.actions.moreActions")}
       align="end"
-      minWidth={280}
-      maxWidth={420}
-      maxHeight={440}
-      scrollable
       pages={menuContent.pages}
     >
       {menuContent.rows}
-    </MenuSurface>
+    </PluginPopoverSurface>
   );
 }
 
@@ -540,35 +525,14 @@ function useButtons(serverId: string, workspaceId: string, agentId: string | nul
   );
 }
 
-/**
- * Whether this screen's composer shows a pill row.
- *
- * Reports false while the screen is retained-and-hidden, so the row the caller
- * reserves matches what PluginComposerPills actually renders. The two used to
- * disagree: the hook said yes and reserved the row while the pills themselves
- * were gated off.
- */
 export function useHasPluginComposerPills(
   serverId: string,
   workspaceId: string,
   agentId: string,
 ): boolean {
-  const active = useRetainedPanelActive();
-  const entries = useButtons(serverId, workspaceId, agentId);
-  return active && entries.length > 0;
+  return useButtons(serverId, workspaceId, agentId).length > 0;
 }
 
-/**
- * Plugin pills in an agent's composer.
- *
- * Gated on the retained-panel context for the same reason PluginHeaderButtons is:
- * the workspace deck keeps inactive workspaces mounted and only hides them with
- * `display: "none"`, so an ungated pill renders once per mounted screen. Measured
- * after a client-side workspace switch, the deck held two composers -- the live
- * one and a 0x0 ghost inside the hidden screen -- so every pill in here would
- * have had a twin. A retained screen must contribute nothing to the document it
- * is not showing.
- */
 export function PluginComposerPills({
   serverId,
   workspaceId,
@@ -580,11 +544,9 @@ export function PluginComposerPills({
   agentId: string;
   compact: boolean;
 }) {
-  const active = useRetainedPanelActive();
   const entries = useButtons(serverId, workspaceId, agentId);
   const hosts = useHosts();
   const hostLabel = hosts.find((host) => host.serverId === serverId)?.label ?? serverId;
-  if (!active) return null;
   return entries.map((entry) => (
     <ThemedPluginButton
       key={entry.key}
@@ -596,19 +558,6 @@ export function PluginComposerPills({
   ));
 }
 
-/**
- * Workspace top-bar plugin buttons.
- *
- * The active check is the same one PluginPanelDialogHost uses, and for the same
- * reason. The workspace deck keeps inactive workspaces MOUNTED (RetainedPanel)
- * and only hides them with `display: "none"`, so without this gate every retained
- * screen still rendered its own copy of these buttons. After a client-side
- * workspace switch the DOM then held two matching buttons — one 0x0 inside the
- * hidden panel — and anything that took the first match (a scripted click, a
- * querySelectorAll scan, an assistive tool) hit the invisible one and did nothing,
- * with no error to show for it. A retained screen must contribute nothing to the
- * document it is not showing.
- */
 export function PluginHeaderButtons({
   serverId,
   workspaceId,
@@ -616,7 +565,6 @@ export function PluginHeaderButtons({
   serverId: string;
   workspaceId: string;
 }) {
-  const active = useRetainedPanelActive();
   const entries = useButtons(serverId, workspaceId, null);
   const compact = useIsCompactFormFactor();
   const { width } = useWindowDimensions();
@@ -630,7 +578,7 @@ export function PluginHeaderButtons({
     (state: IconButtonChromeState) => headerButtonStyle(compact, state),
     [compact],
   );
-  if (entries.length === 0 || !active) return null;
+  if (entries.length === 0) return null;
   return (
     <View
       accessibilityRole="toolbar"
@@ -703,5 +651,4 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 0,
     overflow: "hidden",
   },
-  content: { padding: theme.spacing[3], gap: theme.spacing[2] },
 }));
