@@ -1,14 +1,13 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 
-import { FreebuffSurface } from "./client/surface";
+import { FreebuffSettings } from "./client/settings-screen";
 
 export default function contribute(client: PluginClientContext) {
-  client.addSurface("freebuff", FreebuffSurface);
-  client.addSidebarItem({
+  client.addSettingsScreen({
     id: "freebuff",
     title: "Freebuff",
     icon: "Wallet",
-    surface: "freebuff",
+    Component: FreebuffSettings,
   });
   return () => {};
 }

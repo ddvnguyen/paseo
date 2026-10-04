@@ -79,10 +79,15 @@ function pickSelectedModel(
   preferredModelId: string | null,
   fallbackModel: AgentModelDefinition | null,
 ): AgentModelDefinition | null {
-  if (!models || !preferredModelId) {
+  // No known id at all (nothing configured, nothing running yet): the catalog
+  // default is the honest choice. But a known id that misses the catalog (a
+  // customize-mapped or versioned runtime id) must NOT resolve to the default
+  // — that shows the default's friendly label while a different model runs.
+  // Returning null surfaces the raw id via resolveModelDisplay instead.
+  if (!preferredModelId) {
     return fallbackModel;
   }
-  return findModelById(models, preferredModelId) ?? fallbackModel;
+  return findModelById(models, preferredModelId);
 }
 
 function resolveThinkingId(

@@ -5,11 +5,14 @@ import {
   useImperativeHandle,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
-import { Text, View } from "react-native";
-import { StyleSheet } from "react-native-unistyles";
+import { Pressable, Text, View } from "react-native";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type {
+  SettingsIconButtonProps,
+  SettingsIconRowProps,
   SettingsRowProps,
   SettingsSwitchProps,
   SettingsSelectProps,
@@ -20,10 +23,18 @@ import type { EditingTextInputHandle } from "@/components/ui/text-input";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { FormTextInput } from "@/components/ui/form-field";
+import {
+  iconButtonChromeGlyphSize,
+  iconButtonChromeStyle,
+} from "@/components/ui/icon-button-chrome";
+import { mutedIconColorMapping } from "@/components/ui/icon-color";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { DropdownTrigger } from "@/components/ui/dropdown-trigger";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { Icon } from "@/plugins/icons";
 import { settingsStyles } from "@/styles/settings";
+import type { Theme } from "@/styles/theme";
 export { SettingsGroup } from "./headings/settings-group";
 export { SettingsSection } from "./headings/settings-section";
 
@@ -192,6 +203,98 @@ export function SettingsAction({ actionLabel, onPress, disabled, ...row }: Setti
   );
 }
 
+const ThemedSettingsIcon = withUnistyles(Icon);
+
+function settingsIconButtonUniProps(destructive: boolean) {
+  return destructive
+    ? (theme: Theme) => ({ color: theme.colors.statusDanger })
+    : mutedIconColorMapping;
+}
+
+export function SettingsIconButton({
+  icon,
+  accessibilityLabel,
+  onPress,
+  disabled,
+  destructive,
+  testID,
+}: SettingsIconButtonProps) {
+  const compact = useIsCompactFormFactor();
+  const [hovered, setHovered] = useState(false);
+  const handleHoverIn = useCallback(() => setHovered(true), []);
+  const handleHoverOut = useCallback(() => setHovered(false), []);
+  const uniProps = useMemo(() => settingsIconButtonUniProps(destructive ?? false), [destructive]);
+  const accessibilityState = useMemo(() => ({ disabled: disabled ?? false }), [disabled]);
+  return (
+    <Tooltip enabledOnMobile={false}>
+      <TooltipTrigger asChild>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+          accessibilityState={accessibilityState}
+          disabled={disabled}
+          onPress={onPress}
+          onHoverIn={handleHoverIn}
+          onHoverOut={handleHoverOut}
+          style={iconButtonChromeStyle({
+            size: "small",
+            compact,
+            disabled,
+            state: { hovered },
+          })}
+          testID={testID}
+        >
+          <ThemedSettingsIcon
+            name={icon}
+            size={iconButtonChromeGlyphSize("small", compact)}
+            uniProps={uniProps}
+          />
+        </Pressable>
+      </TooltipTrigger>
+      <TooltipContent>
+        <Text style={styles.tooltipLabel}>{accessibilityLabel}</Text>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+export function SettingsIconRow({
+  icon,
+  label,
+  hint,
+  error,
+  children,
+  trailing,
+  testID,
+}: SettingsIconRowProps) {
+  const compact = useIsCompactFormFactor();
+  return (
+    <View style={[settingsStyles.row, compact && styles.stackedRow]} testID={testID}>
+      <View style={styles.rowIcon}>
+        <ThemedSettingsIcon name={icon} size={14} uniProps={mutedIconColorMapping} />
+      </View>
+      <View style={styles.rowBody}>
+        <Text style={settingsStyles.rowTitle}>{label}</Text>
+        {typeof hint === "string" ? <Text style={settingsStyles.rowHint}>{hint}</Text> : hint}
+        {children}
+        {error ? (
+          <Text accessibilityRole="alert" style={settingsStyles.rowError}>
+            {error}
+          </Text>
+        ) : null}
+      </View>
+      {trailing ? (
+        <View
+          style={[styles.trailing, compact && styles.trailingStacked]}
+          testID={testID ? `${testID}-trailing` : undefined}
+        >
+          {trailing}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create((theme) => ({
   compactRow: { flexWrap: "wrap", gap: theme.spacing[3] },
   label: { flexGrow: 1, flexShrink: 1, flexBasis: 160, marginRight: theme.spacing[3] },
@@ -205,4 +308,18 @@ const styles = StyleSheet.create((theme) => ({
   control: { flexShrink: 1, maxWidth: "100%" },
   value: { color: theme.colors.foreground, fontSize: theme.fontSize.base },
   input: { minWidth: 180 },
+  tooltipLabel: { fontSize: theme.fontSize.sm, color: theme.colors.foreground },
+  stackedRow: { flexDirection: "column", alignItems: "stretch" },
+  // Optical nudge: aligns the 14px glyph with the row title's cap height.
+  rowIcon: { alignSelf: "flex-start", marginTop: 2, marginRight: theme.spacing[3] },
+  rowBody: { flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 },
+  trailing: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    flexShrink: 0,
+    marginLeft: theme.spacing[3],
+  },
+  // Stacked trailing stays on the card's leading rail, below the content.
+  trailingStacked: { marginLeft: 0, marginTop: theme.spacing[3], alignSelf: "flex-start" },
 }));

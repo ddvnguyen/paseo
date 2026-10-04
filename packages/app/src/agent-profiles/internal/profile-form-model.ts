@@ -116,7 +116,10 @@ export interface AgentProfileFormModel {
   subscribe: (listener: () => void) => () => void;
   close: () => void;
   /** Late input: the host-scoped provider catalog. Never touches selections. */
-  applyProviderCatalog: (entries: readonly ProviderSnapshotEntry[]) => void;
+  applyProviderCatalog: (
+    entries: readonly ProviderSnapshotEntry[],
+    excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>,
+  ) => void;
   /** Late input: the feature list for one request. Stale keys are ignored. */
   applyFeatures: (requestKey: string, features: readonly AgentFeature[]) => void;
   /** Resolve a request that produced no usable features (provider error). */
@@ -146,8 +149,14 @@ function findEntry(
 function resolveModels(
   entries: readonly ProviderSnapshotEntry[],
   provider: string,
+  excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>,
 ): AgentModelDefinition[] {
-  return filterSelectableModels(findEntry(entries, provider)?.models ?? null) ?? [];
+  return (
+    filterSelectableModels(
+      findEntry(entries, provider)?.models ?? null,
+      excludedByProvider?.get(provider),
+    ) ?? []
+  );
 }
 
 function resolveModes(entries: readonly ProviderSnapshotEntry[], provider: string): AgentMode[] {
@@ -174,8 +183,12 @@ function resolveThinkingOptions(
   entries: readonly ProviderSnapshotEntry[],
   provider: string,
   modelId: string,
+  excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>,
 ): AgentSelectOption[] {
-  return resolveEffectiveModel(resolveModels(entries, provider), modelId)?.thinkingOptions ?? [];
+  return (
+    resolveEffectiveModel(resolveModels(entries, provider, excludedByProvider), modelId)
+      ?.thinkingOptions ?? []
+  );
 }
 
 /** Every real option is selected by its own id; only the unset row differs. */
@@ -421,6 +434,8 @@ function buildInitialState(snapshot: AgentProfileFormSnapshot): AgentProfileForm
 
 export function openAgentProfileForm(snapshot: AgentProfileFormSnapshot): AgentProfileFormModel {
   let entries: readonly ProviderSnapshotEntry[] = [];
+  // Disabled-model exclusion for new selection (C2), pushed with the catalog.
+  let excludedByProvider: ReadonlyMap<string, ReadonlySet<string>> = new Map();
   let catalogResolution: AgentProfileResolutionStatus = "idle";
   let resolvedFeatureKey: string | null = null;
   let resolvedFeatures: AgentFeature[] = [];
@@ -428,14 +443,19 @@ export function openAgentProfileForm(snapshot: AgentProfileFormSnapshot): AgentP
   let closed = false;
 
   function derive(incoming: AgentProfileFormState): AgentProfileFormState {
-    const models = resolveModels(entries, incoming.provider);
+    const models = resolveModels(entries, incoming.provider, excludedByProvider);
     const modes = resolveModes(entries, incoming.provider);
     const next = seedSelections(incoming, {
       entry: findEntry(entries, incoming.provider),
       models,
       modes,
     });
-    const thinking = resolveThinkingOptions(entries, next.provider, next.modelId);
+    const thinking = resolveThinkingOptions(
+      entries,
+      next.provider,
+      next.modelId,
+      excludedByProvider,
+    );
     const featureRequest = buildFeatureRequest(next);
     const featureRequestKey = buildFeatureRequestKey(featureRequest);
     const featuresAreCurrent =
@@ -526,8 +546,11 @@ export function openAgentProfileForm(snapshot: AgentProfileFormSnapshot): AgentP
       closed = true;
       listeners = new Set();
     },
-    applyProviderCatalog: (nextEntries) => {
+    applyProviderCatalog: (nextEntries, nextExcludedByProvider) => {
       entries = [...nextEntries];
+      if (nextExcludedByProvider) {
+        excludedByProvider = nextExcludedByProvider;
+      }
       catalogResolution = "complete";
       publish((current) => current);
     },

@@ -144,7 +144,7 @@ test("PR routing declares stable behavior ownership", () => {
       ".mise.toml",
       ".tool-versions",
       "package.json",
-      "package-lock.json",
+      "pnpm-lock.yaml",
       "patches/**",
       "scripts/**",
       "tsconfig.json",

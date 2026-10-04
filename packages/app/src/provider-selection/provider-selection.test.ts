@@ -129,6 +129,48 @@ describe("combined model selector data", () => {
     ).toEqual([]);
   });
 
+  it("hides user-disabled models from selector rows", () => {
+    const [provider] = buildSelectableProviderSelectorProviders(
+      [snapshotEntry({ provider: "codex", models: [codexModel] })],
+      new Map([["codex", new Set(["gpt-5.4"])]]),
+    );
+
+    // Everything disabled degrades to the synthetic default row (never empty).
+    expect(provider?.modelSelection).toMatchObject({
+      kind: "models",
+      rows: [{ modelId: "", isDefault: true }],
+    });
+  });
+
+  it("keeps enabled models when only some are disabled", () => {
+    const secondModel: AgentModelDefinition = {
+      provider: "codex",
+      id: "gpt-5.5",
+      label: "GPT-5.5",
+    };
+    const [provider] = buildSelectableProviderSelectorProviders(
+      [snapshotEntry({ provider: "codex", models: [codexModel, secondModel] })],
+      new Map([["codex", new Set(["gpt-5.4"])]]),
+    );
+
+    expect(provider?.modelSelection).toMatchObject({
+      kind: "models",
+      rows: [{ modelId: "gpt-5.5" }],
+    });
+  });
+
+  it("ignores exclusion sets for other providers", () => {
+    const [provider] = buildSelectableProviderSelectorProviders(
+      [snapshotEntry({ provider: "codex", models: [codexModel] })],
+      new Map([["claude", new Set(["gpt-5.4"])]]),
+    );
+
+    expect(provider?.modelSelection).toMatchObject({
+      kind: "models",
+      rows: [{ modelId: "gpt-5.4" }],
+    });
+  });
+
   it("surfaces non-ready providers with their state-specific selection", () => {
     expect(
       buildSelectableProviderSelectorProviders([

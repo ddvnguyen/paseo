@@ -356,6 +356,51 @@ describe("runAcpProvider", () => {
     await connection.close();
   });
 
+  it("accepts a permission request that carries no rawInput", async () => {
+    const harness = connectorHarness();
+    const registration = runAcpProvider({
+      id: "sdk-acp",
+      label: "SDK ACP",
+      connector: harness.connector,
+    });
+    const connection = await registration.connect({
+      versions: [1],
+      capabilities: ["prompt.message", "permission"],
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    await connection.send(openInput());
+    await waitForEvent(events, (event) => event.type === "session.ready");
+
+    const request = harness.instances[1]!.request("session/request_permission", {
+      sessionId: "connector-session",
+      toolCall: {
+        toolCallId: "tool-no-input",
+        title: "Open new session",
+        status: "pending",
+        content: [],
+      },
+      options: [{ optionId: "allow-once", name: "Allow once", kind: "allow_once" }],
+    });
+    const event = await waitForEvent(
+      events,
+      (candidate) =>
+        candidate.type === "session.permission" &&
+        candidate.request.id === "permission:tool-no-input",
+    );
+    expect(event).toMatchObject({ type: "session.permission", request: { input: {} } });
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: "permission:tool-no-input",
+      response: { behavior: "allow" },
+    });
+    await expect(request).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "allow-once" },
+    });
+    await connection.close();
+  });
+
   it("rejects an explicit ACP permission option with the wrong behavior", async () => {
     const harness = connectorHarness();
     const registration = runAcpProvider({
@@ -645,6 +690,159 @@ describe("runAcpProvider", () => {
         .map((event) => (event as Extract<ProviderEvent, { type: "request.completed" }>).requestId),
     ).toEqual(["configure-first", "configure-second"]);
 
+    await connection.close();
+  });
+
+  it("delivers replayed history before session/open resolves on resume", async () => {
+    // Regression: a `session/load` that streams history notifications before
+    // its response used to race the host — session.ready fired before the
+    // notification lane drained, so the host hydrated an empty timeline and
+    // rendered the conversation blank after a daemon restart.
+    const harness = connectorHarness({
+      capabilities: { loadSession: true },
+      handleMessage(instance, message) {
+        if (!("method" in message) || message.method !== "session/load") return false;
+        const request = message as AcpRequestMessage;
+        // Replay first (like freebuff-acp does), then answer the load.
+        instance.notify("session/update", {
+          sessionId: "connector-session",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "replayed" },
+          },
+        });
+        instance.respond(request, {
+          sessionId: "connector-session",
+          modes: null,
+          configOptions: [],
+        });
+        return true;
+      },
+    });
+    const registration = runAcpProvider({
+      id: "replay-acp",
+      label: "Replay ACP",
+      connector: harness.connector,
+    });
+    const connection = await registration.connect({
+      versions: [1],
+      capabilities: ["prompt.message", "session.persistence"],
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    const open = connection.send({
+      ...openInput(),
+      persistence: { version: 1, data: { sessionId: "connector-session" } },
+    });
+    await open;
+    // The open promise resolves only after session.ready, which must now be
+    // behind the drained replay notification.
+    await waitForEvent(events, (event) => event.type === "session.ready");
+    const replayed = events.find(
+      (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
+    );
+    expect(replayed).toBeTruthy();
+    await connection.close();
+  });
+
+  it("rewinds the conversation to an earlier user turn via session.revert (owner directive)", async () => {
+    // The adapter (freebuff-acp) owns the actual conversation state; this
+    // harness asserts the bridge contract: capability advertisement, revert
+    // token → user-turn ordinal mapping, and the extMethod round-trip.
+    const harness = connectorHarness({
+      handleMessage(instance, message) {
+        if (!("method" in message) || message.method !== "freebuff/rewindToUserTurn") return false;
+        const request = message as AcpRequestMessage;
+        const params = request.params as { sessionId?: string; turn?: number } | undefined;
+        instance.respond(request, {
+          replays: (params?.turn ?? 0) * 2 - 2,
+          remainingTurns: (params?.turn ?? 1) - 1,
+        });
+        return true;
+      },
+    });
+    const registration = runAcpProvider({
+      id: "rewind-acp",
+      label: "Rewind ACP",
+      connector: harness.connector,
+    });
+    const connection = await registration.connect({
+      versions: [1],
+      capabilities: ["prompt.message", "session.revert.conversation"],
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    await connection.send(openInput());
+    await waitForEvent(events, (event) => event.type === "session.ready");
+    expect(connection.capabilities).toContain("session.revert.conversation");
+
+    // Two real prompts → user turns 1 and 2, each carrying a revert token.
+    for (const clientMessageId of ["first", "second"]) {
+      await connection.send({
+        type: "session.prompt",
+        sessionId: "session-1",
+        prompt: {
+          clientMessageId,
+          delivery: "auto",
+          input: { type: "message", content: [{ type: "text", text: clientMessageId }] },
+        },
+      });
+      await waitForEvent(
+        events,
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === `acp:${clientMessageId}` &&
+          event.state === "completed",
+      );
+    }
+    const userItems = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "user_message" ? [event.item] : [],
+    );
+    expect(userItems).toHaveLength(2);
+    expect(userItems[0]?.revertToken).toEqual({ kind: "freebuff-user-turn", turn: 1 });
+    expect(userItems[1]?.revertToken).toEqual({ kind: "freebuff-user-turn", turn: 2 });
+
+    // Rewind to turn 2: the host sends the token back; the bridge maps it to
+    // ordinal 2 and drives the adapter's extension method.
+    await connection.send({
+      type: "session.revert",
+      requestId: "revert-1",
+      sessionId: "session-1",
+      token: { kind: "freebuff-user-turn", turn: 2 },
+      scope: "conversation",
+    });
+    await waitForEvent(events, (event) => event.type === "request.completed");
+    const rewindRequest = harness.instances[1]!.requests.find(
+      (request) => request.method === "freebuff/rewindToUserTurn",
+    );
+    expect(rewindRequest?.params).toMatchObject({ turn: 2 });
+
+    // Unknown tokens and file scope fail without reaching the adapter.
+    await connection.send({
+      type: "session.revert",
+      requestId: "revert-2",
+      sessionId: "session-1",
+      token: { kind: "freebuff-user-turn", turn: 99 },
+      scope: "conversation",
+    });
+    await waitForEvent(events, (event) => event.type === "request.failed");
+    // Files scope is not advertised: admission rejects before any adapter call.
+    await expect(
+      connection.send({
+        type: "session.revert",
+        requestId: "revert-3",
+        sessionId: "session-1",
+        token: { kind: "freebuff-user-turn", turn: 1 },
+        scope: "files",
+      }),
+    ).rejects.toThrow(/session\.revert\.files/);
+    const failedCount = () => events.filter((event) => event.type === "request.failed").length;
+    await expect.poll(failedCount, { timeout: 3_000 }).toBe(1);
+    expect(
+      harness.instances[1]!.requests.filter(
+        (request) => request.method === "freebuff/rewindToUserTurn",
+      ),
+    ).toHaveLength(1);
     await connection.close();
   });
 
@@ -994,6 +1192,29 @@ lines.on("line", (line) => {
     expect(failure).toMatchObject({
       sessionId: "session-1",
       error: { message: expect.stringContaining("17") },
+    });
+    await connection.close();
+  });
+
+  it("keeps the commands an agent announces before the session/new response lands", async () => {
+    const executable = await fakeAcp(`const readline = require("node:readline");
+const lines = readline.createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+lines.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: message.params.protocolVersion, agentCapabilities: {} } });
+  else if (message.method === "session/new") {
+    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "native-1", update: { sessionUpdate: "available_commands_update", availableCommands: [{ name: "skills", description: "List skills" }] } } });
+    setTimeout(() => send({ jsonrpc: "2.0", id: message.id, result: { sessionId: "native-1", modes: null, configOptions: [] } }), 20);
+  }
+});`);
+    const { connection, events } = await connect(executable, ["prompt.message"]);
+    await connection.send(openInput());
+
+    const commands = await waitForEvent(events, (event) => event.type === "session.commands");
+    expect(commands).toMatchObject({
+      sessionId: "session-1",
+      commands: [{ name: "skills", description: "List skills" }],
     });
     await connection.close();
   });

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
+import { useExcludedModelIdsByProvider } from "@/stores/disabled-models-store";
 import type { ScheduleFormModel, ScheduleFormState } from "./schedule-form-model";
 
 export function useScheduleFormProviderSnapshot(
@@ -13,13 +14,15 @@ export function useScheduleFormProviderSnapshot(
     cwd,
     enabled,
   });
+  // Disabled models stay hidden from new selection (C2); re-applied live.
+  const excludedByProvider = useExcludedModelIdsByProvider(serverId ?? null);
 
   useEffect(() => {
     if (!enabled || !serverId || !snapshot.entries) {
       return;
     }
-    model.applyProviderSnapshot(serverId, { entries: snapshot.entries });
-  }, [enabled, model, serverId, snapshot.entries]);
+    model.applyProviderSnapshot(serverId, { entries: snapshot.entries, excludedByProvider });
+  }, [enabled, excludedByProvider, model, serverId, snapshot.entries]);
 
   return snapshot;
 }

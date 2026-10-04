@@ -1,0 +1,367 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Pressable, Text, View } from "react-native";
+import type { TextStyle, ViewStyle } from "react-native";
+import type { PluginTheme } from "@getpaseo/plugin";
+import type { PluginAgentPanelProps, PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
+import { usePaseo } from "@getpaseo/plugin/client";
+import type { TrajectoryCellProps } from "../shared/dsh/record.js";
+import { LedgerScreen } from "./ledger-screen.js";
+import { DOCK_WIDTH, TrajectoryInspector } from "./trajectory-inspector.js";
+import { useTrajectoryDelta } from "./use-trajectory-delta.js";
+import {
+  foldRowTextKeys,
+  textKey,
+  useTrajectoryText,
+  type TimelineRefetch,
+} from "./trajectory-text.js";
+
+export type TrajectoryPanelProps = PluginAgentPanelProps | PluginWorkspacePanelProps;
+
+type AgentSelection =
+  | { status: "loading" }
+  | { status: "ready"; agentId: string }
+  | { status: "empty" }
+  | { status: "error"; error: string };
+
+/**
+ * Trajectory panel root. Agent-context opens carry their agentId;
+ * workspace-context opens auto-select the workspace's first agent via
+ * `paseo.agents.list` (entries are `{agent, project}`; filter client-side on
+ * `agent.workspaceId` — fetch_agents has no workspace filter). Rows come
+ * from the settle-driven delta loop (list once, changes on settle,
+ * frame-coalesced); the ledger underneath is the dsh-parity screen (folds,
+ * tail-follow only at bottom, compact tags, in-flight "—").
+ */
+export function TrajectoryPanel(props: TrajectoryPanelProps) {
+  const { theme, layout, onClosePanel } = props;
+  const selection = useTrajectoryAgent(props);
+
+  if (selection.status !== "ready") {
+    return (
+      <PanelNotice
+        theme={theme}
+        testID="trajectory-panel-notice"
+        message={noticeMessage(selection)}
+        onClose={onClosePanel}
+      />
+    );
+  }
+
+  return (
+    <LiveLedger
+      agentId={selection.agentId}
+      compact={layout.compact}
+      platform={layout.platform}
+      theme={theme}
+      onClose={onClosePanel}
+    />
+  );
+}
+
+/**
+ * Live ledger for one agent. Split so the delta hook runs unconditionally
+ * for a fixed agentId (no conditional-hook lint/ordering hazard in the
+ * selection branch above). Loading shows a notice; errors keep the last
+ * rows with a retry kick (the loop parks on error — no timers, no auto
+ * retry — so manual refresh is the only recovery).
+ */
+function LiveLedger(props: {
+  agentId: string;
+  compact: boolean;
+  platform: "ios" | "android" | "web";
+  theme: PluginTheme;
+  onClose: (() => void) | undefined;
+}) {
+  const { agentId, compact, platform, theme, onClose } = props;
+  const delta = useTrajectoryDelta(agentId);
+  // Selected row seq (null = inspector closed, the default). Seq — not the
+  // row object — so live updates refresh the inspector content in place; a
+  // selection whose row left the window resolves to null and closes it.
+  const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
+
+  useEffect(() => {
+    setSelectedSeq(null);
+  }, [agentId]);
+
+  const onCellPress = useCallback((cell: TrajectoryCellProps) => {
+    if (cell.sourceSeq !== undefined) setSelectedSeq(cell.sourceSeq);
+  }, []);
+
+  const onCloseInspector = useCallback(() => {
+    setSelectedSeq(null);
+  }, []);
+
+  /**
+   * Timeline bars select by source seq, the same identity the ledger rows and
+   * the inspector use, so a bar press just moves the existing selection.
+   */
+  const onSelectSpan = useCallback((sourceSeq: number) => {
+    setSelectedSeq(sourceSeq);
+  }, []);
+
+  /**
+   * On-demand row text. Only the cells the ledger reports as on screen are
+   * resolved, and the cache lives for this session: nothing is written back to
+   * the recorder and nothing is logged. A row with no key, or a fetch that
+   * fails, simply keeps its `(N chars)` label.
+   */
+  const paseo = usePaseo();
+  const [visibleCells, setVisibleCells] = useState<readonly TrajectoryCellProps[]>([]);
+  const refetchTimeline = useCallback<TimelineRefetch>(
+    async () => paseo.agents.ref(agentId).timeline.refetch(),
+    [paseo, agentId],
+  );
+  const resolver = useTrajectoryText(agentId, visibleCells, refetchTimeline);
+  const textFor = resolver.textFor;
+  /**
+   * FlatList re-fires viewability on every scroll tick, and each call hands over
+   * a fresh array. Publishing that straight into state would loop — the state
+   * change re-renders, which re-fires viewability. So publish only when the SET
+   * of resolvable keys actually changes, which also stops redundant refetches.
+   */
+  const visibleSignature = useRef("");
+  const onVisibleCells = useCallback((cells: readonly TrajectoryCellProps[]) => {
+    const signature = cells
+      .map((cell) => textKey(cell))
+      .filter((key): key is string => key !== null)
+      .sort()
+      .join("|");
+    if (signature === visibleSignature.current) return;
+    visibleSignature.current = signature;
+    setVisibleCells(cells);
+  }, []);
+  const selectedRow =
+    selectedSeq === null ? null : (delta.rows.find((row) => row.seq === selectedSeq) ?? null);
+  /**
+   * Compose the selected row's text. A merged response row spans several stream
+   * events and can carry several message ids, so its body is the distinct texts
+   * joined in seq order -- not the first chunk, which is all a single key gives.
+   * Rows whose segments have not resolved yet fall through to the length summary
+   * rather than showing a partial body.
+   */
+  const selectedText = useMemo(() => {
+    if (selectedRow === null) return undefined;
+    const keys = foldRowTextKeys(selectedRow);
+    if (keys.length === 0) return undefined;
+    const parts: string[] = [];
+    for (const key of keys) {
+      const segment = resolver.cache.get(key);
+      if (segment === undefined) return undefined;
+      parts.push(segment);
+    }
+    return parts.join("");
+  }, [selectedRow, resolver.cache]);
+
+  if (delta.status === "loading") {
+    return (
+      <PanelNotice
+        theme={theme}
+        testID="trajectory-panel-loading"
+        message="loading trajectory…"
+        onClose={onClose}
+      />
+    );
+  }
+
+  return (
+    <View style={panelStyles(theme)} testID="trajectory-panel">
+      {/* No caption row: the dialog goes flush and the host owns the padding.
+          The retry affordance stays, but only while the ledger is in its error
+          state — dropping it with the caption would have left no way back. */}
+      {delta.status === "error" ? (
+        <View style={captionRowStyles()}>
+          <Text style={captionStyles(theme)} testID="trajectory-panel-error">
+            trajectory unavailable — showing last known rows
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={delta.refresh}
+            testID="trajectory-panel-retry"
+          >
+            <Text style={retryStyles(theme)}>retry</Text>
+          </Pressable>
+        </View>
+      ) : null}
+      <View style={bodyStyles()}>
+        <View style={ledgerStyles()}>
+          <LedgerScreen
+            rows={delta.rows}
+            compact={compact}
+            platform={platform}
+            theme={theme}
+            onCellPress={onCellPress}
+            textFor={textFor}
+            onVisibleCells={onVisibleCells}
+            selectedSeq={selectedSeq}
+            onSelectSpan={onSelectSpan}
+            onClose={onClose}
+          />
+        </View>
+        {/* Wide dock takes layout space; compact overlays (absolute fill). */}
+        {selectedRow === null || compact ? null : <View style={dockSpacerStyles()} />}
+        <TrajectoryInspector
+          row={selectedRow}
+          compact={compact}
+          theme={theme}
+          resolvedText={selectedText}
+          onClose={onCloseInspector}
+        />
+      </View>
+    </View>
+  );
+}
+
+function useTrajectoryAgent(props: TrajectoryPanelProps): AgentSelection {
+  const paseo = usePaseo();
+  const [selection, setSelection] = useState<AgentSelection>(() =>
+    props.context === "agent" ? { status: "ready", agentId: props.agentId } : { status: "loading" },
+  );
+
+  useEffect(() => {
+    if (props.context === "agent") {
+      setSelection({ status: "ready", agentId: props.agentId });
+      return;
+    }
+    let cancelled = false;
+    setSelection({ status: "loading" });
+    void (async () => {
+      try {
+        const result = await paseo.agents.list();
+        if (cancelled) return;
+        const match = result.entries.find((entry) => entry.agent.workspaceId === props.workspaceId);
+        setSelection(
+          match === undefined ? { status: "empty" } : { status: "ready", agentId: match.agent.id },
+        );
+      } catch (error) {
+        if (cancelled) return;
+        setSelection({
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [paseo, props]);
+
+  return selection;
+}
+
+function noticeMessage(selection: Exclude<AgentSelection, { status: "ready" }>): string {
+  if (selection.status === "loading") return "finding trajectory…";
+  if (selection.status === "empty") return "no agents in this workspace yet";
+  return `trajectory unavailable: ${selection.error}`;
+}
+
+/**
+ * A panel that has nothing to show yet: the notice, plus a way out.
+ *
+ * The notice states get their own close because they have no toolbar to carry
+ * one, and the host stands its close down once a surface draws its own — a
+ * loading or empty panel that could only be left with Escape would strand
+ * anyone on a device without a keyboard. Same opt-in shape as the toolbar's:
+ * absent on an older host, so the control is not drawn at all.
+ */
+function PanelNotice(props: {
+  theme: PluginTheme;
+  testID: string;
+  message: string;
+  onClose?: (() => void) | undefined;
+}) {
+  const { theme, testID, message, onClose } = props;
+  return (
+    <View style={panelStyles(theme)} testID={testID}>
+      <View style={noticeRowStyles()}>
+        <Text style={captionStyles(theme)}>{message}</Text>
+        {onClose === undefined ? null : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close trajectory"
+            hitSlop={8}
+            onPress={onClose}
+            style={noticeCloseStyles()}
+            testID="trajectory-notice-close"
+          >
+            <Text style={captionStyles(theme)}>close</Text>
+          </Pressable>
+        )}
+      </View>
+    </View>
+  );
+}
+
+// Plain style objects (not StyleSheet.create): these carry dynamic theme
+// values and react-native-web's create only accepts named-style dicts —
+// a flat object throws inside its WeakMap cache on web.
+function panelStyles(theme: PluginTheme): ViewStyle {
+  return {
+    flex: 1,
+    backgroundColor: theme.colors.surface0,
+  };
+}
+
+function captionRowStyles(): ViewStyle {
+  return {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  };
+}
+
+function bodyStyles(): ViewStyle {
+  return {
+    flex: 1,
+    flexDirection: "row",
+  };
+}
+
+/** Notice centred in the panel, with the one way out beneath it. */
+function noticeRowStyles(): ViewStyle {
+  return {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  };
+}
+
+/** Ghost, painted on the panel surface, so the larger target stays invisible. */
+function noticeCloseStyles(): ViewStyle {
+  return {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 4,
+  };
+}
+
+function ledgerStyles(): ViewStyle {
+  return {
+    flex: 1,
+  };
+}
+
+/** Reserves exactly the inspector's dock width; shares DOCK_WIDTH with it. */
+function dockSpacerStyles(): ViewStyle {
+  return {
+    width: DOCK_WIDTH,
+  };
+}
+
+function retryStyles(theme: PluginTheme): TextStyle {
+  return {
+    color: theme.colors.foregroundMuted,
+    fontSize: 11,
+  };
+}
+
+function captionStyles(theme: PluginTheme): TextStyle {
+  return {
+    color: theme.colors.foregroundMuted,
+    fontSize: 11,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  };
+}

@@ -682,6 +682,27 @@ export interface ACPBeforeModeWriteResult {
   configOptions?: SessionConfigOption[];
 }
 
+/**
+ * The turn's response usage, keeping the context-window fill reported earlier
+ * by `usage_update`. Only those two fields carry over; per-turn token counts
+ * always come from the latest response.
+ */
+function mergeAgentUsage(
+  current: AgentUsage | undefined,
+  next: AgentUsage | undefined,
+): AgentUsage | undefined {
+  if (!next) return current;
+  return {
+    ...next,
+    ...(current?.contextWindowUsedTokens !== undefined
+      ? { contextWindowUsedTokens: current.contextWindowUsedTokens }
+      : {}),
+    ...(current?.contextWindowMaxTokens !== undefined
+      ? { contextWindowMaxTokens: current.contextWindowMaxTokens }
+      : {}),
+  };
+}
+
 export function mapACPUsage(usage: Usage | null | undefined): AgentUsage | undefined {
   if (!usage) {
     return undefined;
@@ -1668,6 +1689,9 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   private readonly toolCalls = new Map<string, ACPToolSnapshot>();
   private readonly terminalEntries = new Map<string, TerminalEntry>();
   private readonly persistedHistory: AgentTimelineItem[] = [];
+  /** Context usage reported while a session was restored; published with the history. */
+  private restoredContextUsage: AgentUsage | undefined;
+  private capturingRestoredUsage = false;
   private readonly initialHandle?: AgentPersistenceHandle;
 
   private readonly config: AgentSessionConfig;
@@ -1751,8 +1775,10 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       this.sessionId = response.sessionId;
       this.bootstrapThreadEventPending = true;
       this.applySessionState(response);
+      this.capturingRestoredUsage = false;
       await this.applyConfiguredOverrides();
     } catch (error) {
+      this.capturingRestoredUsage = false;
       await this.closeAfterInitializationFailure(error);
     }
   }
@@ -1779,6 +1805,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       this.bootstrapThreadEventPending = true;
 
       const sessionCapabilities = this.agentCapabilities?.sessionCapabilities;
+      this.capturingRestoredUsage = true;
       if (this.agentCapabilities?.loadSession) {
         this.replayingHistory = true;
         const response = await this.runACPRequest(() =>
@@ -1904,14 +1931,18 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   }
 
   async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
-    if (!this.historyPending || this.persistedHistory.length === 0) {
-      return;
+    const restoredUsage = this.restoredContextUsage;
+    this.restoredContextUsage = undefined;
+    if (this.historyPending && this.persistedHistory.length > 0) {
+      const history = [...this.persistedHistory];
+      this.persistedHistory.length = 0;
+      this.historyPending = false;
+      for (const item of history) {
+        yield { type: "timeline", provider: this.provider, item };
+      }
     }
-    const history = [...this.persistedHistory];
-    this.persistedHistory.length = 0;
-    this.historyPending = false;
-    for (const item of history) {
-      yield { type: "timeline", provider: this.provider, item };
+    if (restoredUsage) {
+      yield { type: "usage_updated", provider: this.provider, usage: restoredUsage };
     }
   }
 
@@ -2548,6 +2579,15 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   }
 
   private deliverTranslatedEvents(events: AgentStreamEvent[]): void {
+    if (this.capturingRestoredUsage) {
+      // No subscriber can exist before the restored session is returned, so
+      // the usage is held and published by streamHistory().
+      for (const event of events) {
+        if (event.type === "usage_updated") {
+          this.restoredContextUsage = event.usage;
+        }
+      }
+    }
     if (this.replayingHistory) {
       for (const event of events) {
         if (event.type === "timeline") {
@@ -2968,8 +3008,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
         this.handleSessionInfoUpdate(update);
         return pendingUserEvents;
       case "usage_update":
-        this.handleUsageUpdate(update);
-        return pendingUserEvents;
+        return [...pendingUserEvents, ...this.handleUsageUpdate(update)];
       case "available_commands_update":
         this.cachedCommands = update.availableCommands.map((command) => ({
           name: command.name,
@@ -3129,12 +3168,21 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     }
   }
 
-  private handleUsageUpdate(update: UsageUpdate): void {
-    void update;
+  /**
+   * ACP `usage_update` reports the conversation's context fill: `used` tokens
+   * of a `size` window. A `size` of 0 means the agent does not know the window.
+   */
+  private handleUsageUpdate(update: UsageUpdate): AgentStreamEvent[] {
+    const usage: AgentUsage = {
+      contextWindowUsedTokens: update.used,
+      ...(update.size > 0 ? { contextWindowMaxTokens: update.size } : {}),
+    };
+    this.currentTurnUsage = { ...this.currentTurnUsage, ...usage };
+    return [{ type: "usage_updated", provider: this.provider, usage }];
   }
 
   private handlePromptResponse(response: PromptResponse, turnId: string): void {
-    this.currentTurnUsage = mapACPUsage(response.usage) ?? this.currentTurnUsage;
+    this.currentTurnUsage = mergeAgentUsage(this.currentTurnUsage, mapACPUsage(response.usage));
 
     switch (response.stopReason) {
       case "cancelled":

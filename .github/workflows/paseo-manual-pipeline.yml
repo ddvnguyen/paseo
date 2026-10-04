@@ -701,13 +701,24 @@ jobs:
   deploy-freebuff:
     if: ${{ always() && inputs.run_deploy_freebuff }}
     runs-on: [self-hosted, paseo-host]
+    # Checkout and local file operations only.
+    permissions:
+      contents: read
     steps:
       - name: Resolve ref
         id: ref
+        # Inputs go through env, never interpolated into the script: a crafted
+        # value must not be able to run shell on the self-hosted runner.
+        env:
+          FREEBUFF_REF: ${{ inputs.freebuff_ref }}
         run: |
           set -euo pipefail
-          REF="${{ inputs.freebuff_ref }}"
-          if [ -z "$REF" ]; then REF="${{ github.sha }}"; fi
+          REF="${FREEBUFF_REF:-${{ github.sha }}}"
+          # The ref becomes a directory name and a grep pattern below.
+          if ! printf '%s' "$REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            echo "::error::freebuff_ref must be a hex commit SHA (7-40 chars)"
+            exit 1
+          fi
           echo "sha=$REF" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
@@ -721,17 +732,26 @@ jobs:
           node-version: "22"
 
       - name: Build and install release
+        # `choice` inputs are only enforced by the UI; `gh workflow run -f`
+        # bypasses them, so the value is matched in the case below and passed via env.
+        env:
+          FREEBUFF_TARGET: ${{ inputs.freebuff_target }}
+          RESOLVED_SHA: ${{ steps.ref.outputs.sha }}
         run: |
           set -euo pipefail
-          SHA="${{ steps.ref.outputs.sha }}"
-          case "${{ inputs.freebuff_target }}" in
+          SHA="$RESOLVED_SHA"
+          case "$FREEBUFF_TARGET" in
             test) HOMES="${{ env.TEST_HOME }}" ;;
             prod) HOMES="${{ env.PROD_HOME }}" ;;
             both) HOMES="${{ env.TEST_HOME }} ${{ env.PROD_HOME }}" ;;
+            *) echo "::error::freebuff_target must be test, prod or both"; exit 1 ;;
           esac
           for HOME_DIR in $HOMES; do
             ROOT="$HOME_DIR/freebuff-acp"
-            REL="$ROOT/releases/$SHA"
+            # Unique per run: redeploying a SHA that `current` already serves must
+            # never wipe the live release while the replacement is being built.
+            RELNAME="${SHA}-r${GITHUB_RUN_ID}"
+            REL="$ROOT/releases/$RELNAME"
             rm -rf "$REL"
             mkdir -p "$REL/plugins" "$REL/packages/freebuff-acp"
             cp -r plugins/freebuff "$REL/plugins/freebuff"
@@ -748,5 +768,6 @@ jobs:
             mv -Tf "$ROOT/current.new" "$ROOT/current"
             echo "## freebuff-acp $SHA -> $ROOT/current/plugins/freebuff/dist/entry.js" >> "$GITHUB_STEP_SUMMARY"
             # Keep the 3 newest releases (never the one `current` points to).
-            (cd "$ROOT/releases" && ls -1t | tail -n +4 | { grep -vx "$SHA" || true; } | xargs -r rm -rf)
+            LIVE="$(basename "$(readlink "$ROOT/current")")"
+            (cd "$ROOT/releases" && ls -1t | tail -n +4 | { grep -vxF -e "$RELNAME" -e "$LIVE" || true; } | xargs -r rm -rf)
           done

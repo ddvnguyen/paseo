@@ -38,7 +38,7 @@ describe("FreebuffQuotaProvider", () => {
     expect(usage.planLabel).toBe("2 accounts");
     expect(usage.windows).toHaveLength(1);
     expect(usage.windows[0]).toMatchObject({
-      label: "Duc · 5/25 Freebucks left today",
+      label: "Duc · 5/25 daily",
       usedPct: 80,
       remainingPct: 20,
       resetsAt: "2026-09-25T17:00:00.000Z",
@@ -51,9 +51,14 @@ describe("FreebuffQuotaProvider", () => {
     );
   });
 
-  it("is unavailable with the error when the adapter CLI fails", async () => {
-    const usage = await provider(new Error("boom")).fetchUsage();
-    expect(usage).toMatchObject({ status: "error", error: "boom", windows: [] });
+  it("is unavailable with a generic error and never forwards the CLI's raw failure text", async () => {
+    const usage = await provider(new Error("Command failed: secret-stderr")).fetchUsage();
+    expect(usage).toMatchObject({
+      status: "error",
+      error: "Freebuff status unavailable",
+      windows: [],
+    });
+    expect(JSON.stringify(usage)).not.toContain("secret-stderr");
   });
 
   it("is unavailable when the adapter is not deployed", async () => {

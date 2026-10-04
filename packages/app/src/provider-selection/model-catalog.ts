@@ -16,6 +16,12 @@ export function findModelByReference(
 
 export function filterSelectableModels(
   models: AgentModelDefinition[] | null,
+  excludedModelIds?: ReadonlySet<string>,
 ): AgentModelDefinition[] | null {
-  return models?.filter((model) => model.isSelectable !== false) ?? null;
+  if (!models) return null;
+  return models.filter(
+    (model) =>
+      model.isSelectable !== false &&
+      (excludedModelIds === undefined || !excludedModelIds.has(model.id)),
+  );
 }

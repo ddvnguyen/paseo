@@ -208,9 +208,7 @@ function QuestionNavButton({
           color={isActive ? theme.colors.foreground : theme.colors.foregroundMuted}
         />
       ) : null}
-      <Text style={textStyle} numberOfLines={1}>
-        {header}
-      </Text>
+      <Text style={textStyle}>{header}</Text>
     </Pressable>
   );
 }

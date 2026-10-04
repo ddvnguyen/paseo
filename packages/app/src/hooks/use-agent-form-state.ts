@@ -12,6 +12,7 @@ import {
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
 import { filterSelectableModels } from "@/provider-selection/model-catalog";
+import { useExcludedModelIdsByProvider } from "@/stores/disabled-models-store";
 import { OptimisticFormPreferences } from "@/create-agent-preferences/optimistic-preferences";
 import { applyAgentProfilePreferences } from "@/create-agent-preferences/preferences";
 import { useProvidersSnapshot } from "./use-providers-snapshot";
@@ -97,22 +98,29 @@ function resolveSelectedProviderModes(input: {
 
 function buildAllProviderModels(
   snapshotEntries: ProviderSnapshotEntry[] | undefined,
+  excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>,
 ): Map<string, AgentModelDefinition[]> {
   const map = new Map<string, AgentModelDefinition[]>();
   for (const entry of snapshotEntries ?? []) {
-    map.set(entry.provider, filterSelectableModels(entry.models ?? []) ?? []);
+    map.set(
+      entry.provider,
+      filterSelectableModels(entry.models ?? [], excludedByProvider?.get(entry.provider)) ?? [],
+    );
   }
   return map;
 }
 
 function buildProviderModelsByProvider(
   snapshotEntries: ProviderSnapshotEntry[] | undefined,
+  excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>,
 ): ProviderModelsByProvider {
   const map: ProviderModelsByProvider = new Map();
   for (const entry of snapshotEntries ?? []) {
     map.set(
       entry.provider,
-      entry.status === "ready" ? filterSelectableModels(entry.models ?? null) : null,
+      entry.status === "ready"
+        ? filterSelectableModels(entry.models ?? null, excludedByProvider?.get(entry.provider))
+        : null,
     );
   }
   return map;
@@ -186,6 +194,9 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
     refetchIfStale: refetchSnapshotIfStale,
   } = useProvidersSnapshot(serverId, { cwd: workingDir });
 
+  // Disabled models stay hidden from new selection (C2).
+  const excludedByProvider = useExcludedModelIdsByProvider(serverId);
+
   const allProviderEntries = useMemo(() => snapshotEntries ?? [], [snapshotEntries]);
   const snapshotProviderDefinitions = useMemo(
     () => buildProviderDefinitions(snapshotEntries),
@@ -212,16 +223,16 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
     });
   }, [snapshotEntries, snapshotProviderDefinitions]);
   const snapshotAllProviderModels = useMemo(
-    () => buildAllProviderModels(snapshotEntries),
-    [snapshotEntries],
+    () => buildAllProviderModels(snapshotEntries, excludedByProvider),
+    [excludedByProvider, snapshotEntries],
   );
   const snapshotProviderModelsByProvider = useMemo(
-    () => buildProviderModelsByProvider(snapshotEntries),
-    [snapshotEntries],
+    () => buildProviderModelsByProvider(snapshotEntries, excludedByProvider),
+    [excludedByProvider, snapshotEntries],
   );
   const snapshotModelSelectorProviders = useMemo(
-    () => buildSelectableProviderSelectorProviders(snapshotEntries),
-    [snapshotEntries],
+    () => buildSelectableProviderSelectorProviders(snapshotEntries, excludedByProvider),
+    [excludedByProvider, snapshotEntries],
   );
   const snapshotSelectedEntry = useMemo(
     () =>
@@ -232,6 +243,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
   );
   const snapshotSelectedProviderModels = filterSelectableModels(
     snapshotSelectedEntry?.models ?? null,
+    snapshotSelectedEntry ? excludedByProvider.get(snapshotSelectedEntry.provider) : undefined,
   );
   const selectedProviderIsLoading = snapshotSelectedEntry?.status === "loading";
   const snapshotSelectedProviderModes = resolveSelectedProviderModes({

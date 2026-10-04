@@ -31,6 +31,20 @@ export interface PluginHostProps {
 }
 
 interface PluginNavigableHostProps extends PluginHostProps {
+  /**
+   * Dismiss the surface this component is rendered into.
+   *
+   * The SDK has `openPanel` but no way back, so a surface that draws its own
+   * chrome — a toolbar close control, say — had no plugin-side way to close
+   * itself and had to lean on whatever the host happened to draw.
+   *
+   * Present exactly where the host has something to close (a `dialog`-location
+   * panel) and absent everywhere else: a workspace tab or side pane has no close
+   * of its own, and an older host never supplied it. Optional and additive, so a
+   * component must HIDE the affordance when it is absent rather than render a
+   * control that cannot do anything. Same posture as `navigation` below.
+   */
+  readonly onClosePanel?: () => void;
   /** Client-owned navigation. Undefined on older hosts; hide dependent affordances when absent. */
   readonly navigation?: {
     /** Present only on Electron. The browser runs locally; serverId selects workspace ownership. */
@@ -55,7 +69,12 @@ export interface PluginIconProps {
   color?: string;
 }
 
-export type PluginPanelLocation = "workspace" | "explorer";
+/**
+ * Where a registered workspace panel can appear.
+ * `dialog`: full modal overlay over the workspace (AdaptiveModalSheet on the
+ * host) — for plugin UIs that must not become a tab or side pane.
+ */
+export type PluginPanelLocation = "workspace" | "explorer" | "dialog";
 
 export interface PluginOpenPanelOptions {
   location?: PluginPanelLocation;
@@ -66,6 +85,16 @@ interface PluginWorkspacePanelBase {
   title: string;
   icon: string;
   locations?: readonly PluginPanelLocation[];
+  /**
+   * `dialog` panels only: make the modal fill the viewport instead of
+   * content-sizing. Declared on the contribution, not on `openPanel`, so every
+   * entry point — header button, Command Center, a plugin's own call — gets the
+   * same presentation without having to remember to ask for it.
+   *
+   * Optional and defaults to false: an old plugin that omits it keeps the
+   * content-sized dialog it always had.
+   */
+  fullScreen?: boolean;
 }
 
 export interface PluginWorkspacePanelProps extends PluginNavigableHostProps {

@@ -1,6 +1,8 @@
 import type { ModelInfo, SessionConfigOption } from "@agentclientprotocol/sdk";
 
 import { probeOpenSession } from "./freebuff-session.js";
+import type { FreebuffSessionServerResponse } from "./types.js";
+import { resolveDefaultAccountId } from "./accounts.js";
 
 /**
  * Account identity + quota, surfaced to the host as ACP session config
@@ -29,6 +31,13 @@ const STATUS_TIMEOUT_MS = 4000;
 /** Quota/prices from the server; null when it cannot be reached in time. */
 export async function fetchAccountStatus(token: string): Promise<AccountStatus | null> {
   const probe = await probeOpenSession(token, AbortSignal.timeout(STATUS_TIMEOUT_MS));
+  return accountStatusFromProbe(probe);
+}
+
+/** Quota/prices out of a seat-probe response; null when it carries no Freebucks block. */
+export function accountStatusFromProbe(
+  probe: FreebuffSessionServerResponse | null,
+): AccountStatus | null {
   const freebucks = probe?.freebucks;
   if (!freebucks) return null;
   return {
@@ -41,14 +50,14 @@ export async function fetchAccountStatus(token: string): Promise<AccountStatus |
   };
 }
 
-/** One line: "Duc Nguyen · 20/25 Freebucks left today · wallet 3". */
+/** One line: "Duc Nguyen · 20/25 daily · wallet 3". */
 export function formatAccountSummary(accountName: string, status: AccountStatus | null): string {
   const parts = [accountName];
   if (status?.dailyRemaining != null) {
     parts.push(
       status.dailyLimit != null
-        ? `${status.dailyRemaining}/${status.dailyLimit} Freebucks left today`
-        : `${status.dailyRemaining} Freebucks left today`,
+        ? `${status.dailyRemaining}/${status.dailyLimit} daily`
+        : `${status.dailyRemaining} daily`,
     );
   }
   if (status?.walletBalance) parts.push(`wallet ${status.walletBalance}`);
@@ -127,7 +136,10 @@ export function buildConfigOptions(input: {
   ] as SessionConfigOption[];
 }
 
-/** Account a new session starts on: FREEBUFF_ACCOUNT, else the default. */
+/**
+ * Account a new session starts on: FREEBUFF_ACCOUNT wins, else the stored
+ * default from accounts-prefs.json ("default" when none is set).
+ */
 export function initialAccountId(env: NodeJS.ProcessEnv): string | undefined {
-  return env.FREEBUFF_ACCOUNT?.trim() || undefined;
+  return env.FREEBUFF_ACCOUNT?.trim() || resolveDefaultAccountId(env);
 }

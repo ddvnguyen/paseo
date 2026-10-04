@@ -34,7 +34,7 @@ import { pluginReactNativeRuntime } from "./react-native/runtime";
 import { parsePluginThemeContribution } from "./themes";
 
 const CONTRIBUTION_ID = /^[a-z][a-z0-9-]*$/;
-const PANEL_LOCATIONS = ["workspace", "explorer"] as const;
+const PANEL_LOCATIONS = ["workspace", "explorer", "dialog"] as const;
 const TIMELINE_ITEM_TYPES = new Set([
   "user_message",
   "assistant_message",
@@ -44,6 +44,17 @@ const TIMELINE_ITEM_TYPES = new Set([
   "error",
   "compaction",
 ]);
+
+function normalizeFullScreen(
+  panelId: string,
+  fullScreen: PluginWorkspacePanelContribution["fullScreen"],
+): boolean {
+  if (fullScreen === undefined) return false;
+  if (typeof fullScreen !== "boolean") {
+    throw new Error(`Workspace panel ${panelId} has an invalid fullScreen: ${String(fullScreen)}`);
+  }
+  return fullScreen;
+}
 
 function normalizePanelLocations(
   panelId: string,
@@ -207,6 +218,7 @@ export function runPluginClientBundle(
       }
       resolvePluginIcon(icon);
       const locations = normalizePanelLocations(normalizedId, contribution.locations);
+      const fullScreen = normalizeFullScreen(normalizedId, contribution.fullScreen);
       workspacePanelIds.add(normalizedId);
       return register(
         collector.workspacePanels,
@@ -216,6 +228,7 @@ export function runPluginClientBundle(
           title,
           icon,
           locations,
+          fullScreen,
         },
         () => workspacePanelIds.delete(normalizedId),
       );

@@ -23,10 +23,15 @@ export interface SkillCommand {
   description: string;
 }
 
-/** Discover skills for `cwd`; failures degrade to "no skill commands". */
+/**
+ * Discover skills for `cwd` plus `~/.agents/skills` and `~/.claude/skills`
+ * (the SDK's standalone `loadSkills` skips the home directories unless asked,
+ * which left agents started from a skill-less cwd with no skill commands).
+ * Failures degrade to "no skill commands" but are logged, not swallowed.
+ */
 export async function discoverSkillCommands(cwd: string): Promise<SkillCommand[]> {
   try {
-    const skills = await loadSkills({ cwd });
+    const skills = await loadSkills({ cwd, includeHomeSkills: true });
     return Object.values(skills)
       .filter((skill) => typeof skill.name === "string" && !BUILTIN_NAMES.has(skill.name))
       .map((skill) => ({
@@ -34,7 +39,10 @@ export async function discoverSkillCommands(cwd: string): Promise<SkillCommand[]
         description: (skill.description ?? "").trim() || `Use the ${skill.name} skill`,
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
-  } catch {
+  } catch (error) {
+    process.stderr.write(
+      `freebuff-acp: skill discovery failed: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
     return [];
   }
 }

@@ -1,4 +1,7 @@
+import { existsSync, readFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2/client";
 import type { Logger } from "pino";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -10,6 +13,31 @@ import {
 } from "./event-consumer.js";
 
 const EXPECTED_STREAM_WATCHDOG_MS = 30_000;
+
+/** SDK root resolved through an exported entrypoint (CJS require.resolve cannot
+ *  see this ESM-only package: its exports map has no "require" condition). */
+function resolveSdkRoot(): string {
+  const anchor = fileURLToPath(
+    (import.meta as unknown as { resolve(s: string): string }).resolve(
+      "@opencode-ai/sdk/v2/client",
+    ),
+  );
+  let dir = dirname(anchor);
+  for (;;) {
+    const candidate = join(dir, "package.json");
+    if (existsSync(candidate)) {
+      try {
+        const manifest = JSON.parse(readFileSync(candidate, "utf8")) as { name?: string };
+        if (manifest.name === "@opencode-ai/sdk") return dir;
+      } catch {
+        // Keep walking up past unreadable manifests.
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) throw new Error("could not locate @opencode-ai/sdk root");
+    dir = parent;
+  }
+}
 
 describe("OpenCodeEventConsumer", () => {
   const cleanups: Array<() => Promise<void>> = [];
@@ -403,6 +431,25 @@ describe("OpenCodeEventConsumer", () => {
 
     await expect(consumer.ready()).rejects.toThrow("process exited before ready");
     expect(inputs).toEqual([expect.objectContaining({ type: "server-exited" })]);
+  });
+
+  test("installed OpenCode SDK swallows reader.cancel() rejection on abort", () => {
+    // Regression: unpatched @opencode-ai/sdk calls reader.cancel() on abort without a
+    // catch; under Bun the rejection carries close()'s abort reason and crashed the
+    // daemon ("OpenCode event source closed"). Fix lives in patches/@opencode-ai+sdk+*.patch
+    // (source installs) and deploy/patch-runtime-deps.sh (deploy runtimes).
+    // Version-agnostic on purpose: the SDK is resolved, not pinned by path, so this
+    // keeps failing when a version bump drops the swallow instead of only passing
+    // while the version string happens to match. Resolved through the v2 client
+    // entrypoint because the package exports map does not expose ./package.json.
+    const sdkRoot = resolveSdkRoot();
+    for (const rel of [
+      "dist/gen/core/serverSentEvents.gen.js",
+      "dist/v2/gen/core/serverSentEvents.gen.js",
+    ]) {
+      const source = readFileSync(join(sdkRoot, rel), "utf8");
+      expect(source, rel).toMatch(/reader\.cancel\(\)\.catch\(/);
+    }
   });
 
   test("intentional close does not publish a false terminal", async () => {

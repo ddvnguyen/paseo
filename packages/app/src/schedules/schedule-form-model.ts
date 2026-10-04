@@ -54,6 +54,8 @@ export interface ScheduleFormSnapshot {
 
 export interface ScheduleFormProviderSnapshot {
   entries: ProviderSnapshotEntry[];
+  /** Disabled-model exclusion for new selection (C2), scoped to the server. */
+  excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 export interface ScheduleDisclosureState {
@@ -219,10 +221,16 @@ function resolveProjectDisplay(input: {
   return buildStoredProjectDisplay(input.cwd);
 }
 
-function buildProviderModelsByProvider(entries: ProviderSnapshotEntry[]): ProviderModelsByProvider {
+function buildProviderModelsByProvider(
+  entries: ProviderSnapshotEntry[],
+  excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>,
+): ProviderModelsByProvider {
   const map: ProviderModelsByProvider = new Map();
   for (const entry of entries) {
-    map.set(entry.provider, filterSelectableModels(entry.models ?? null));
+    map.set(
+      entry.provider,
+      filterSelectableModels(entry.models ?? null, excludedByProvider?.get(entry.provider)),
+    );
   }
   return map;
 }
@@ -247,8 +255,13 @@ function resolveModeOptions(
 function resolveAvailableModels(
   entries: readonly ProviderSnapshotEntry[],
   provider: AgentProvider | null,
+  excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>,
 ): AgentModelDefinition[] | null {
-  return filterSelectableModels(resolveSelectedEntry(entries, provider)?.models ?? null);
+  const entry = resolveSelectedEntry(entries, provider);
+  return filterSelectableModels(
+    entry?.models ?? null,
+    entry ? excludedByProvider?.get(entry.provider) : undefined,
+  );
 }
 
 function resolveEffectiveModel(
@@ -271,8 +284,12 @@ function resolveThinkingOptions(
   entries: readonly ProviderSnapshotEntry[],
   provider: AgentProvider | null,
   modelId: string,
+  excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>,
 ): NonNullable<AgentModelDefinition["thinkingOptions"]> {
-  const model = resolveEffectiveModel(resolveAvailableModels(entries, provider), modelId);
+  const model = resolveEffectiveModel(
+    resolveAvailableModels(entries, provider, excludedByProvider),
+    modelId,
+  );
   return model?.thinkingOptions ?? [];
 }
 
@@ -280,13 +297,14 @@ function resolveModelDisplay(input: {
   entries: readonly ProviderSnapshotEntry[];
   provider: AgentProvider | null;
   modelId: string;
+  excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>;
 }): ScheduleFormDisplay | null {
   const modelId = input.modelId.trim();
   if (!modelId) {
     return null;
   }
   const model = resolveEffectiveModel(
-    resolveAvailableModels(input.entries, input.provider),
+    resolveAvailableModels(input.entries, input.provider, input.excludedByProvider),
     modelId,
   );
   return { label: model?.label ?? modelId };
@@ -569,12 +587,14 @@ function updateDerivedState(input: {
   hosts: readonly ScheduleFormHost[];
   targets: readonly ScheduleProjectTarget[];
   providerEntries: readonly ProviderSnapshotEntry[];
+  excludedByProvider: ReadonlyMap<string, ReadonlySet<string>>;
 }): ScheduleFormState {
   const modeOptions = resolveModeOptions(input.providerEntries, input.state.selectedProvider);
   const availableThinkingOptions = resolveThinkingOptions(
     input.providerEntries,
     input.state.selectedProvider,
     input.state.selectedModel,
+    input.excludedByProvider,
   );
   const canUseWorktreeIsolation = resolveCanUseWorktreeIsolation({
     state: input.state,
@@ -610,6 +630,7 @@ function updateDerivedState(input: {
       entries: input.providerEntries,
       provider: input.state.selectedProvider,
       modelId: input.state.selectedModel,
+      excludedByProvider: input.excludedByProvider,
     }),
     selectedModeDisplay: resolveModeDisplay({ modeOptions, modeId: input.state.selectedMode }),
     selectedThinkingDisplay: resolveThinkingDisplay({
@@ -703,6 +724,7 @@ function buildInitialState(snapshot: ScheduleFormSnapshot): ScheduleFormState {
     hosts: snapshot.hosts,
     targets: snapshot.defaults.projectTargets,
     providerEntries: [],
+    excludedByProvider: new Map(),
   });
 }
 
@@ -731,6 +753,7 @@ function resolveSnapshotSelection(input: {
   initialValues: FormInitialValues | undefined;
   preferences: FormPreferences | null;
   providerEntries: ProviderSnapshotEntry[];
+  excludedByProvider: ReadonlyMap<string, ReadonlySet<string>>;
   userModified: UserModifiedFields;
 }): ScheduleFormState {
   const providerDefinitions = buildProviderDefinitions(input.providerEntries);
@@ -742,7 +765,7 @@ function resolveSnapshotSelection(input: {
   const resolved = resolveFormStateFromProviderModels(
     input.initialValues,
     input.preferences,
-    buildProviderModelsByProvider(input.providerEntries),
+    buildProviderModelsByProvider(input.providerEntries, input.excludedByProvider),
     input.userModified,
     toFormState(input.state),
     allowedProviderMap,
@@ -775,12 +798,15 @@ function pickModelForProvider(input: {
   entries: readonly ProviderSnapshotEntry[];
   provider: AgentProvider;
   modelId: string;
+  excludedByProvider?: ReadonlyMap<string, ReadonlySet<string>>;
 }): string {
   const normalizedModelId = input.modelId.trim();
   if (normalizedModelId) {
     return normalizedModelId;
   }
-  return resolveDefaultModelId(resolveAvailableModels(input.entries, input.provider));
+  return resolveDefaultModelId(
+    resolveAvailableModels(input.entries, input.provider, input.excludedByProvider),
+  );
 }
 
 function thinkingDraftKey(provider: AgentProvider, modelId: string): string {
@@ -858,6 +884,8 @@ export function openScheduleForm(snapshot: ScheduleFormSnapshot): ScheduleFormMo
     );
   }
   let providerEntries: ProviderSnapshotEntry[] = [];
+  // Disabled-model exclusion for new selection (C2), pushed with the snapshot.
+  let excludedByProvider: ReadonlyMap<string, ReadonlySet<string>> = new Map();
   let userModified = { ...INITIAL_USER_MODIFIED, isolation: false };
   const timezone = snapshot.defaults.timezone ?? DEFAULT_TIMEZONE;
   let state = buildInitialState(snapshot);
@@ -871,6 +899,7 @@ export function openScheduleForm(snapshot: ScheduleFormSnapshot): ScheduleFormMo
       hosts,
       targets: projectTargets,
       providerEntries,
+      excludedByProvider,
     });
     for (const listener of listeners) {
       listener();
@@ -898,6 +927,7 @@ export function openScheduleForm(snapshot: ScheduleFormSnapshot): ScheduleFormMo
 
   function clearProviderSelection(nextState: ScheduleFormState): ScheduleFormState {
     providerEntries = [];
+    excludedByProvider = new Map();
     return {
       ...nextState,
       selectedProvider: null,
@@ -932,6 +962,7 @@ export function openScheduleForm(snapshot: ScheduleFormSnapshot): ScheduleFormMo
       initialValues,
       preferences: preferencesForSnapshotResolution(snapshot, preferences),
       providerEntries,
+      excludedByProvider,
       userModified,
     });
   }
@@ -979,6 +1010,7 @@ export function openScheduleForm(snapshot: ScheduleFormSnapshot): ScheduleFormMo
         return;
       }
       providerEntries = providerSnapshot.entries;
+      excludedByProvider = providerSnapshot.excludedByProvider ?? new Map();
       canonicalizeThinkingDrafts(thinkingDrafts, providerEntries);
       const isPendingResolution = state.providerSnapshotRequest?.serverId === serverId;
       const resolved =
@@ -989,6 +1021,7 @@ export function openScheduleForm(snapshot: ScheduleFormSnapshot): ScheduleFormMo
               initialValues,
               preferences: preferencesForSnapshotResolution(snapshot, preferences),
               providerEntries,
+              excludedByProvider,
               userModified,
             })
           : state;
@@ -1000,7 +1033,10 @@ export function openScheduleForm(snapshot: ScheduleFormSnapshot): ScheduleFormMo
       }
       publish({
         ...resolved,
-        modelSelectorProviders: buildSelectableProviderSelectorProviders(providerEntries),
+        modelSelectorProviders: buildSelectableProviderSelectorProviders(
+          providerEntries,
+          excludedByProvider,
+        ),
         providerResolutionByServerId,
         providerSnapshotRequest: isPendingResolution ? null : state.providerSnapshotRequest,
       });
@@ -1050,8 +1086,13 @@ export function openScheduleForm(snapshot: ScheduleFormSnapshot): ScheduleFormMo
       if (closed) {
         return;
       }
-      const selectedModel = pickModelForProvider({ entries: providerEntries, provider, modelId });
-      const availableModels = resolveAvailableModels(providerEntries, provider);
+      const selectedModel = pickModelForProvider({
+        entries: providerEntries,
+        provider,
+        modelId,
+        excludedByProvider,
+      });
+      const availableModels = resolveAvailableModels(providerEntries, provider, excludedByProvider);
       const selectedThinkingOptionId = resolveThinkingOptionId({
         availableModels,
         modelId: selectedModel,

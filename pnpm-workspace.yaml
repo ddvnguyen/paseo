@@ -1,6 +1,7 @@
 packages:
   - "packages/*"
 allowBuilds:
+  '@parcel/watcher': true
   dtrace-provider: true
   electron: true
   electron-winstaller: true

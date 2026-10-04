@@ -1,3 +1,4 @@
+import { useRetainedPanelActive } from "@/components/retained-panel";
 import { PluginClientStateProvider } from "@getpaseo/plugin/client/host";
 import type {
   PluginButtonBehavior,
@@ -539,14 +540,35 @@ function useButtons(serverId: string, workspaceId: string, agentId: string | nul
   );
 }
 
+/**
+ * Whether this screen's composer shows a pill row.
+ *
+ * Reports false while the screen is retained-and-hidden, so the row the caller
+ * reserves matches what PluginComposerPills actually renders. The two used to
+ * disagree: the hook said yes and reserved the row while the pills themselves
+ * were gated off.
+ */
 export function useHasPluginComposerPills(
   serverId: string,
   workspaceId: string,
   agentId: string,
 ): boolean {
-  return useButtons(serverId, workspaceId, agentId).length > 0;
+  const active = useRetainedPanelActive();
+  const entries = useButtons(serverId, workspaceId, agentId);
+  return active && entries.length > 0;
 }
 
+/**
+ * Plugin pills in an agent's composer.
+ *
+ * Gated on the retained-panel context for the same reason PluginHeaderButtons is:
+ * the workspace deck keeps inactive workspaces mounted and only hides them with
+ * `display: "none"`, so an ungated pill renders once per mounted screen. Measured
+ * after a client-side workspace switch, the deck held two composers -- the live
+ * one and a 0x0 ghost inside the hidden screen -- so every pill in here would
+ * have had a twin. A retained screen must contribute nothing to the document it
+ * is not showing.
+ */
 export function PluginComposerPills({
   serverId,
   workspaceId,
@@ -558,9 +580,11 @@ export function PluginComposerPills({
   agentId: string;
   compact: boolean;
 }) {
+  const active = useRetainedPanelActive();
   const entries = useButtons(serverId, workspaceId, agentId);
   const hosts = useHosts();
   const hostLabel = hosts.find((host) => host.serverId === serverId)?.label ?? serverId;
+  if (!active) return null;
   return entries.map((entry) => (
     <ThemedPluginButton
       key={entry.key}
@@ -572,6 +596,19 @@ export function PluginComposerPills({
   ));
 }
 
+/**
+ * Workspace top-bar plugin buttons.
+ *
+ * The active check is the same one PluginPanelDialogHost uses, and for the same
+ * reason. The workspace deck keeps inactive workspaces MOUNTED (RetainedPanel)
+ * and only hides them with `display: "none"`, so without this gate every retained
+ * screen still rendered its own copy of these buttons. After a client-side
+ * workspace switch the DOM then held two matching buttons — one 0x0 inside the
+ * hidden panel — and anything that took the first match (a scripted click, a
+ * querySelectorAll scan, an assistive tool) hit the invisible one and did nothing,
+ * with no error to show for it. A retained screen must contribute nothing to the
+ * document it is not showing.
+ */
 export function PluginHeaderButtons({
   serverId,
   workspaceId,
@@ -579,6 +616,7 @@ export function PluginHeaderButtons({
   serverId: string;
   workspaceId: string;
 }) {
+  const active = useRetainedPanelActive();
   const entries = useButtons(serverId, workspaceId, null);
   const compact = useIsCompactFormFactor();
   const { width } = useWindowDimensions();
@@ -592,7 +630,7 @@ export function PluginHeaderButtons({
     (state: IconButtonChromeState) => headerButtonStyle(compact, state),
     [compact],
   );
-  if (entries.length === 0) return null;
+  if (entries.length === 0 || !active) return null;
   return (
     <View
       accessibilityRole="toolbar"

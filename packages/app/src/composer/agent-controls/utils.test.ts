@@ -186,4 +186,27 @@ describe("resolveAgentModelSelection", () => {
     expect(selection.selectedThinkingId).toBe("low");
     expect(selection.displayThinking).toBe("Low");
   });
+
+  it("surfaces the raw runtime id instead of the default label when nothing matches", () => {
+    // Customize-mapped / versioned runtime id with no configured model: the
+    // catalog default must not stand in — its label would lie about what runs.
+    const selection = resolveAgentModelSelection({
+      models: [
+        {
+          id: "default",
+          provider: "claude",
+          label: "Default (Sonnet 4.6)",
+          isDefault: true,
+          thinkingOptions: [{ id: "low", label: "Low" }],
+        },
+      ],
+      runtimeModelId: "my-custom-map",
+      configuredModelId: null,
+      explicitThinkingOptionId: null,
+    });
+
+    expect(selection.selectedModel).toBeNull();
+    expect(selection.activeModelId).toBe("my-custom-map");
+    expect(selection.displayModel).toBe("my-custom-map");
+  });
 });
