@@ -1,6 +1,14 @@
 name: CI
 
 on:
+  # `Paseo-hub` is the fork's default branch and its single integration branch;
+  # `main` is retired. Keep BOTH names in both lists. `Paseo-hub` is what gives a
+  # hub-targeted PR its gate: GitHub evaluates a `pull_request` trigger against
+  # the workflow file in the PR's MERGE REF, so a PR whose head branch was cut
+  # before `Paseo-hub` was added here matches nothing and runs NO ci jobs at all
+  # (observed: ddvnguyen/paseo#40-#43, merge-base 8b107acb6, merge-safety check
+  # only). Rebasing the head onto current `Paseo-hub` is what restores the gate
+  # for those PRs; do not "tidy" `Paseo-hub` out of these lists as unused.
   push:
     branches: [main, Paseo-hub]
   pull_request:
