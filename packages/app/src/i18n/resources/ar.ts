@@ -2610,7 +2610,8 @@ export const ar: TranslationResources = {
         noSearchMatches: "لا توجد نماذج تطابق بحثك",
         noneDetected: "لم يتم اكتشاف أي نماذج",
         discovered: "اكتشف",
-        custom: "نماذج مخصصة",        disableModel: "إخفاء {{id}} من قوائم اختيار النماذج",
+        custom: "نماذج مخصصة",
+        disableModel: "إخفاء {{id}} من قوائم اختيار النماذج",
         enableModel: "إظهار {{id}} في قوائم اختيار النماذج",
         lastModelHint: "يبقى نموذج واحد مفعّلاً على الأقل",
 

@@ -2579,7 +2579,8 @@ export const zhCN: TranslationResources = {
         noSearchMatches: "没有匹配搜索的 Model",
         noneDetected: "未检测到 Model",
         discovered: "已发现",
-        custom: "自定义 Models",        disableModel: "在模型选择器中隐藏 {{id}}",
+        custom: "自定义 Models",
+        disableModel: "在模型选择器中隐藏 {{id}}",
         enableModel: "在模型选择器中显示 {{id}}",
         lastModelHint: "至少保留一个启用的模型",
 

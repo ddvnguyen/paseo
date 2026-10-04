@@ -2676,7 +2676,8 @@ export const fr: TranslationResources = {
         noSearchMatches: "Aucun modèle ne correspond à votre recherche",
         noneDetected: "Aucun modèle détecté",
         discovered: "Découvert",
-        custom: "Modèles personnalisés",        disableModel: "Masquer {{id}} dans les sélecteurs de modèles",
+        custom: "Modèles personnalisés",
+        disableModel: "Masquer {{id}} dans les sélecteurs de modèles",
         enableModel: "Afficher {{id}} dans les sélecteurs de modèles",
         lastModelHint: "Au moins un modèle reste activé",
 

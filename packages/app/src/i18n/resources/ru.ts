@@ -2660,7 +2660,8 @@ export const ru: TranslationResources = {
         noSearchMatches: "Ни одна модель не соответствует вашему запросу",
         noneDetected: "Модели не обнаружены",
         discovered: "Обнаруженные модели",
-        custom: "Пользовательские модели",        disableModel: "Скрыть {{id}} из списков выбора моделей",
+        custom: "Пользовательские модели",
+        disableModel: "Скрыть {{id}} из списков выбора моделей",
         enableModel: "Показать {{id}} в списках выбора моделей",
         lastModelHint: "Как минимум одна модель остаётся включённой",
 

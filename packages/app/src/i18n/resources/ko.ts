@@ -2625,7 +2625,8 @@ export const ko: TranslationResources = {
         noSearchMatches: "검색과 일치하는 모델이 없습니다",
         noneDetected: "감지된 모델이 없습니다",
         discovered: "발견됨",
-        custom: "사용자 지정 모델",        disableModel: "모델 선택기에서 {{id}} 숨기기",
+        custom: "사용자 지정 모델",
+        disableModel: "모델 선택기에서 {{id}} 숨기기",
         enableModel: "모델 선택기에 {{id}} 표시",
         lastModelHint: "최소 한 개의 모델은 사용 가능합니다",
 

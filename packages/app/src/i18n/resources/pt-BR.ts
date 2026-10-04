@@ -2652,7 +2652,8 @@ export const ptBR: TranslationResources = {
         noSearchMatches: "Nenhum modelo corresponde à sua busca",
         noneDetected: "Nenhum modelo detectado",
         discovered: "Descobertos",
-        custom: "Modelos personalizados",        disableModel: "Ocultar {{id}} dos seletores de modelo",
+        custom: "Modelos personalizados",
+        disableModel: "Ocultar {{id}} dos seletores de modelo",
         enableModel: "Mostrar {{id}} nos seletores de modelo",
         lastModelHint: "Pelo menos um modelo permanece ativado",
 

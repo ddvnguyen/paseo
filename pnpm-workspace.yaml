@@ -1,5 +1,6 @@
 packages:
   - "packages/*"
+  - "plugin-examples"
 allowBuilds:
   dtrace-provider: true
   electron: true

@@ -2637,7 +2637,8 @@ export const ja: TranslationResources = {
         noSearchMatches: "検索に一致するモデルがありません",
         noneDetected: "モデルが検出されませんでした",
         discovered: "検出済み",
-        custom: "カスタムモデル",        disableModel: "モデルピッカーで {{id}} を非表示",
+        custom: "カスタムモデル",
+        disableModel: "モデルピッカーで {{id}} を非表示",
         enableModel: "モデルピッカーで {{id}} を表示",
         lastModelHint: "少なくとも 1 つのモデルは有効のままです",
 

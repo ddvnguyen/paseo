@@ -426,4 +426,3 @@ describe("supervisor durable logging", () => {
     }
   }, 20_000);
 });
-
