@@ -31,7 +31,15 @@ exec > >(tee "$LOG_FILE") 2>&1
 say()  { printf '%s\n' "$*"; }
 fail() { say "ERROR: $*"; exit 1; }
 
-port_listening() { ss -tln "sport = :$PORT" 2>/dev/null | grep -q LISTEN; }
+# Read the whole output before matching. Piping straight into `grep -q` exits
+# the match as soon as it finds LISTEN, the writer then dies on SIGPIPE, and
+# `set -o pipefail` reports that as "not listening" — so a held port (exactly
+# the orphaned-socket case this guards) reads as free.
+port_listening() {
+  local sockets
+  sockets=$(ss -tln "sport = :$PORT" 2>/dev/null || true)
+  [[ "$sockets" == *LISTEN* ]]
+}
 
 daemon_running() {
   # The unit launches paseo-bun, which execs
