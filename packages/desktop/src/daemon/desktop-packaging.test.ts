@@ -138,8 +138,11 @@ describe("desktop packaging", () => {
     };
     const deps = pkg.dependencies ?? {};
 
-    for (const required of ["@getpaseo/cli", "@getpaseo/server"]) {
-      expect(deps[required], `${required} must be declared in dependencies`).toBe("*");
+    for (const required of ["@getpaseo/cli", "@getpaseo/protocol", "@getpaseo/server"]) {
+      // npm used "*"; pnpm workspaces declare internal deps as "workspace:*".
+      expect(["*", "workspace:*"], `${required} must be declared in dependencies`).toContain(
+        deps[required],
+      );
     }
   });
 
