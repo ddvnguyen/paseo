@@ -389,4 +389,41 @@ describe("supervisor durable logging", () => {
       }
     }
   });
+
+  test("responsive worker survives past the hang window", async () => {
+    const originalTimeout = process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS;
+    try {
+      process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS = "1500";
+
+      const result = await runSupervisorFixture({
+        restartOnCrash: true,
+        timeoutMs: 15_000,
+        workerSource: `
+        process.on("message", (message) => {
+          if (message?.type === "paseo:supervisor-heartbeat") {
+            process.send?.({ type: "paseo:worker-heartbeat" });
+          }
+          if (message?.type === "paseo:graceful-shutdown") {
+            process.exit(0);
+          }
+        });
+        setTimeout(() => {
+          process.send?.({ type: "paseo:shutdown", reason: "responsive_worker_test_complete" });
+        }, 4_000);
+      `,
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.signal).toBeNull();
+      expect(result.log).toContain('"reason":"responsive_worker_test_complete"');
+      expect(result.log).not.toContain('"msg":"Worker considered hung; force-restarting"');
+    } finally {
+      if (originalTimeout === undefined) {
+        delete process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS;
+      } else {
+        process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS = originalTimeout;
+      }
+    }
+  }, 20_000);
 });
+

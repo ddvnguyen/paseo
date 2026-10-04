@@ -274,6 +274,7 @@ async function main() {
       }
       const type = (message as { type?: unknown }).type;
       if (type === "paseo:supervisor-heartbeat") {
+        if (typeof process.send === "function") { try { process.send({ type: "paseo:worker-heartbeat" }); } catch { /* IPC gone; supervisor-drop is handled by the liveness guard */ } }
         lastSupervisorHeartbeatAt = Date.now();
         return;
       }
