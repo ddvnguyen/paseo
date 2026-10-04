@@ -110,3 +110,4 @@ app.json
 vt.tmp.config.mts
 vt2.tmp.mts
 /.mcp.json
+/.deploy-production.lock

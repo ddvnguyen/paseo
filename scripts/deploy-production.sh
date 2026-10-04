@@ -32,8 +32,37 @@ export XDG_RUNTIME_DIR
 # it, so rmdir could never release it).
 DEPLOY_LOCK="$REPO_ROOT/.deploy-production.lock"
 if ! (set -o noclobber; echo $$ > "$DEPLOY_LOCK") 2>/dev/null; then
-  echo "ERROR: another deploy holds $DEPLOY_LOCK (pid $(cat "$DEPLOY_LOCK" 2>/dev/null || echo unknown))." >&2
-  exit 1
+  holder=$(cat "$DEPLOY_LOCK" 2>/dev/null || echo "")
+  # A SIGKILL, an OOM or a hard reboot skips the EXIT trap, so the lock can
+  # outlive its holder. Two conditions must both hold before reclaiming, and
+  # neither is sufficient alone:
+  #   - the holder is not a live deploy. `kill -0` alone is not enough because
+  #     PIDs get recycled; the cmdline is a second check, but it is brittle on
+  #     its own (a copy or a differently-named invocation would read as "not a
+  #     deploy" and get its lock stolen mid-run).
+  #   - the lock is old. A running deploy refreshes nothing, but it was written
+  #     when it started, so a fresh mtime means someone is deploying right now.
+  # Both together cannot steal a lock from a live overlapping run.
+  # 15 min: long enough that any in-flight deploy still holds a fresh lock,
+  # short enough that a crashed deploy does not block the next one for long.
+  stale_after=${PASEO_DEPLOY_LOCK_STALE_SECONDS:-900}
+  lock_age=$(( $(date +%s) - $(stat -c %Y "$DEPLOY_LOCK" 2>/dev/null || echo 0) ))
+  holder_is_deploy=false
+  if [[ "$holder" =~ ^[0-9]+$ ]] && kill -0 "$holder" 2>/dev/null &&
+    grep -qa deploy-production "/proc/$holder/cmdline" 2>/dev/null; then
+    holder_is_deploy=true
+  fi
+  if [[ "$holder_is_deploy" == false && "$lock_age" -ge "$stale_after" ]]; then
+    printf 'Reclaiming stale deploy lock from dead pid %s\n' "$holder"
+    rm -f "$DEPLOY_LOCK"
+    (set -o noclobber; echo $$ > "$DEPLOY_LOCK") 2>/dev/null || {
+      printf 'ERROR: lost the race for %s\n' "$DEPLOY_LOCK" >&2
+      exit 1
+    }
+  else
+    printf 'ERROR: another deploy holds %s (pid %s).\n' "$DEPLOY_LOCK" "${holder:-unknown}" >&2
+    exit 1
+  fi
 fi
 release_deploy_lock() { rm -f "$DEPLOY_LOCK"; }
 
