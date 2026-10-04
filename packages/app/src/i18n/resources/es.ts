@@ -2005,6 +2005,7 @@ export const es: TranslationResources = {
       notifications: "Notificaciones",
       permissions: "Permisos",
       diagnostics: "Diagnóstico",
+      debug: "Depuración",
       about: "Acerca de",
     },
     layout: en.settings.layout,
@@ -2668,7 +2669,10 @@ export const es: TranslationResources = {
         noSearchMatches: "Ningún modelo coincide con tu búsqueda",
         noneDetected: "No se detectaron modelos",
         discovered: "descubierto",
-        custom: "Modelos personalizados",
+        custom: "Modelos personalizados",        disableModel: "Ocultar {{id}} de los selectores de modelos",
+        enableModel: "Mostrar {{id}} en los selectores de modelos",
+        lastModelHint: "Permanece activado al menos un modelo",
+
         updated: "{{time}}actualizado",
       },
       diagnostic: {

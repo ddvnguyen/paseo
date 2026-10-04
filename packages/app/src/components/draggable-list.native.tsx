@@ -119,6 +119,7 @@ export function DraggableList<T>({
       scrollEnabled={scrollEnabled}
       extraData={extraData}
       simultaneousHandlers={simultaneousHandlers}
+      // @ts-ignore - fork-only passthrough prop, missing from DraggableFlatList types
       dragGestureHostPresented={gestureHostPresented}
       // Higher activation distance reduces accidental drag capture while nested
       // lists are inside a scroll container.
