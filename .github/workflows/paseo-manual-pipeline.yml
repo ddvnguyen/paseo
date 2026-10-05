@@ -192,7 +192,17 @@ jobs:
             --exclude 'packages/app/android' \
             --exclude '.pnpm-store' \
             ./ "$DEST_TMP/"
-          tar -I 'zstd -1 -T0' -cf "$ARTIFACTS_DIR/${{ steps.sha.outputs.full }}.tar.zst" -C "$DEST_TMP" .
+          # Completeness stamp, written into the staging dir so it lands in BOTH the tar
+          # artifact below and the exploded copy further down. Every downstream `locate`
+          # step now refuses a build dir that lacks this file, or whose contents are not
+          # the SHA it asked for: dir + root package.json only proves an extract started,
+          # not that it ran to completion (D2b).
+          printf '%s\n' "${{ steps.sha.outputs.full }}" > "$DEST_TMP/.paseo-build-complete"
+          # Write the artifact to a .tmp sidecar and rename it on success, so an interrupted
+          # run (OOM kill, runner loss, SIGKILL) can never leave a truncated file occupying
+          # the canonical name that a later stage would happily extract.
+          tar -I 'zstd -1 -T0' -cf "$ARTIFACTS_DIR/${{ steps.sha.outputs.full }}.tar.zst.tmp" -C "$DEST_TMP" .
+          mv -f "$ARTIFACTS_DIR/${{ steps.sha.outputs.full }}.tar.zst.tmp" "$ARTIFACTS_DIR/${{ steps.sha.outputs.full }}.tar.zst"
           rm -rf "$DEST_TMP"
           ls -lh "$ARTIFACTS_DIR/${{ steps.sha.outputs.full }}.tar.zst"
           du -sh "$ARTIFACTS_DIR/${{ steps.sha.outputs.full }}.tar.zst"
@@ -231,11 +241,27 @@ jobs:
           # SHA (e.g. 8ee0e1e38 vs 8ee0e1e38fde12...). Prefer the fresh
           # output when Stage 1 succeeded in this run.
           REF=""
+          STAGE1_SHA=""
           if [ "${{ needs.build-hydra.result }}" = "success" ]; then
-            REF="${{ needs.build-hydra.outputs.sha }}"
+            STAGE1_SHA="${{ needs.build-hydra.outputs.sha }}"
+            REF="$STAGE1_SHA"
+          fi
+          INPUT_REF="${{ inputs.android_build_ref }}"
+          # Disagreement is a hard error, not a silent precedence win (D2a/D2e) — but
+          # prefix-tolerant on purpose: the 7-char vs 40-char case documented above is
+          # the *same* build, so a bare != would reject a supported input. Only refs
+          # where neither string is a prefix of the other are a real disagreement.
+          if [ -n "$STAGE1_SHA" ] && [ -n "$INPUT_REF" ]; then
+            SAME_REF=0
+            case "$STAGE1_SHA" in "$INPUT_REF"*) SAME_REF=1 ;; esac
+            case "$INPUT_REF" in "$STAGE1_SHA"*) SAME_REF=1 ;; esac
+            if [ "$SAME_REF" -ne 1 ]; then
+              echo "::error::both Stage 1 ($STAGE1_SHA) and android_build_ref ($INPUT_REF) set and they disagree — select one, or make them the same SHA"
+              exit 1
+            fi
           fi
           if [ -z "$REF" ]; then
-            REF="${{ inputs.android_build_ref }}"
+            REF="$INPUT_REF"
           fi
           if [ -z "$REF" ]; then
             echo "::error::android_build_ref is required when Stage 1 is not selected"
@@ -249,16 +275,25 @@ jobs:
           set -euo pipefail
           BUILD_DIR="${{ env.BUILDS_ROOT }}/hydra/${{ steps.ref.outputs.sha }}"
           ARTIFACT="${{ env.BUILDS_ROOT }}/artifacts/${{ steps.ref.outputs.sha }}.tar.zst"
-          if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/package.json" ]; then
+          STAMP="$BUILD_DIR/.paseo-build-complete"
+          if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/package.json" ] && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "${{ steps.ref.outputs.sha }}" ]; then
             echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           elif [ -f "$ARTIFACT" ]; then
+            # Never overlay a stale dir: an extract that merges into leftovers
+            # from an older run passes every check below while still serving
+            # mixed-version bytes.
+            rm -rf "$BUILD_DIR"
             mkdir -p "$BUILD_DIR"
             tar -I zstd -xf "$ARTIFACT" -C "$BUILD_DIR"
             git -C "$BUILD_DIR" init -q || true
+            if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "${{ steps.ref.outputs.sha }}" ]; then
+              echo "::error::Artifact $ARTIFACT did not yield a .paseo-build-complete stamp for ${{ steps.ref.outputs.sha }} — treating it as incomplete; re-run Stage 1 to rebuild"
+              exit 1
+            fi
             echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
             echo "Extracted artifact $ARTIFACT to $BUILD_DIR"
           else
-            echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT — run Stage 1 first"
+            echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT (or it has no .paseo-build-complete stamp for ${{ steps.ref.outputs.sha }}) — run Stage 1 first"
             exit 1
           fi
           echo "## Android build — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
@@ -437,9 +472,23 @@ jobs:
         id: ref
         run: |
           set -euo pipefail
-          REF="${{ inputs.web_build_ref }}"
-          if [ -z "$REF" ] && [ "${{ needs.build-hydra.result }}" = "success" ]; then
-            REF="${{ needs.build-hydra.outputs.sha }}"
+          # Precedence stays input-first (an explicit ref means "deploy exactly this
+          # SHA"), but a disagreement with Stage 1 is now a hard error instead of a
+          # silent precedence win: Stage 1 built one SHA while the operator named
+          # another, and quietly picking one of them is how a green run ships the
+          # wrong bytes (D2a/D2e).
+          STAGE1_SHA=""
+          if [ "${{ needs.build-hydra.result }}" = "success" ]; then
+            STAGE1_SHA="${{ needs.build-hydra.outputs.sha }}"
+          fi
+          INPUT_REF="${{ inputs.web_build_ref }}"
+          if [ -n "$STAGE1_SHA" ] && [ -n "$INPUT_REF" ] && [ "$INPUT_REF" != "$STAGE1_SHA" ]; then
+            echo "::error::both Stage 1 ($STAGE1_SHA) and web_build_ref ($INPUT_REF) set and they disagree — select one, or make them the same SHA"
+            exit 1
+          fi
+          REF="$INPUT_REF"
+          if [ -z "$REF" ]; then
+            REF="$STAGE1_SHA"
           fi
           if [ -z "$REF" ]; then
             echo "::error::web_build_ref is required when Stage 1 is not selected"
@@ -453,16 +502,25 @@ jobs:
           set -euo pipefail
           BUILD_DIR="${{ env.BUILDS_ROOT }}/hydra/${{ steps.ref.outputs.sha }}"
           ARTIFACT="${{ env.BUILDS_ROOT }}/artifacts/${{ steps.ref.outputs.sha }}.tar.zst"
-          if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/package.json" ]; then
+          STAMP="$BUILD_DIR/.paseo-build-complete"
+          if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/package.json" ] && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "${{ steps.ref.outputs.sha }}" ]; then
             echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           elif [ -f "$ARTIFACT" ]; then
+            # Never overlay a stale dir: an extract that merges into leftovers
+            # from an older run passes every check below while still serving
+            # mixed-version bytes.
+            rm -rf "$BUILD_DIR"
             mkdir -p "$BUILD_DIR"
             tar -I zstd -xf "$ARTIFACT" -C "$BUILD_DIR"
             git -C "$BUILD_DIR" init -q || true
+            if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "${{ steps.ref.outputs.sha }}" ]; then
+              echo "::error::Artifact $ARTIFACT did not yield a .paseo-build-complete stamp for ${{ steps.ref.outputs.sha }} — treating it as incomplete; re-run Stage 1 to rebuild"
+              exit 1
+            fi
             echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
             echo "Extracted artifact $ARTIFACT"
           else
-            echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT"
+            echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT (or it has no .paseo-build-complete stamp for ${{ steps.ref.outputs.sha }})"
             exit 1
           fi
           echo "## Deploy web UI — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
@@ -507,9 +565,23 @@ jobs:
         id: ref
         run: |
           set -euo pipefail
-          REF="${{ inputs.test_build_ref }}"
-          if [ -z "$REF" ] && [ "${{ needs.build-hydra.result }}" = "success" ]; then
-            REF="${{ needs.build-hydra.outputs.sha }}"
+          # Precedence stays input-first (an explicit ref means "deploy exactly this
+          # SHA"), but a disagreement with Stage 1 is now a hard error instead of a
+          # silent precedence win: Stage 1 built one SHA while the operator named
+          # another, and quietly picking one of them is how a green run ships the
+          # wrong bytes (D2a/D2e).
+          STAGE1_SHA=""
+          if [ "${{ needs.build-hydra.result }}" = "success" ]; then
+            STAGE1_SHA="${{ needs.build-hydra.outputs.sha }}"
+          fi
+          INPUT_REF="${{ inputs.test_build_ref }}"
+          if [ -n "$STAGE1_SHA" ] && [ -n "$INPUT_REF" ] && [ "$INPUT_REF" != "$STAGE1_SHA" ]; then
+            echo "::error::both Stage 1 ($STAGE1_SHA) and test_build_ref ($INPUT_REF) set and they disagree — select one, or make them the same SHA"
+            exit 1
+          fi
+          REF="$INPUT_REF"
+          if [ -z "$REF" ]; then
+            REF="$STAGE1_SHA"
           fi
           if [ -z "$REF" ]; then
             echo "::error::test_build_ref is required when Stage 1 is not selected"
@@ -523,15 +595,24 @@ jobs:
           set -euo pipefail
           BUILD_DIR="${{ env.BUILDS_ROOT }}/hydra/${{ steps.ref.outputs.sha }}"
           ARTIFACT="${{ env.BUILDS_ROOT }}/artifacts/${{ steps.ref.outputs.sha }}.tar.zst"
-          if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/package.json" ]; then
+          STAMP="$BUILD_DIR/.paseo-build-complete"
+          if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/package.json" ] && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "${{ steps.ref.outputs.sha }}" ]; then
             echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           elif [ -f "$ARTIFACT" ]; then
+            # Never overlay a stale dir: an extract that merges into leftovers
+            # from an older run passes every check below while still serving
+            # mixed-version bytes.
+            rm -rf "$BUILD_DIR"
             mkdir -p "$BUILD_DIR"
             tar -I zstd -xf "$ARTIFACT" -C "$BUILD_DIR"
             git -C "$BUILD_DIR" init -q || true
+            if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "${{ steps.ref.outputs.sha }}" ]; then
+              echo "::error::Artifact $ARTIFACT did not yield a .paseo-build-complete stamp for ${{ steps.ref.outputs.sha }} — treating it as incomplete; re-run Stage 1 to rebuild"
+              exit 1
+            fi
             echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT"
+            echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT (or it has no .paseo-build-complete stamp for ${{ steps.ref.outputs.sha }})"
             exit 1
           fi
           echo "## Deploy TEST daemon — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
@@ -566,12 +647,23 @@ jobs:
           BUILD_DIR="${{ steps.locate.outputs.dir }}"
           TEST_HOME="${{ env.TEST_HOME }}"
           mkdir -p "$TEST_HOME/node_modules/@getpaseo"
+          # Fail closed on a partial build (D2b, reproduced): rsyncing only the dists
+          # that happen to exist leaves the previous SHA's bytes live inside the
+          # packages that were missing, under a fully green run. Name them, stop.
+          MISSING_DISTS=""
           for pkg in cli client highlight plugin protocol relay server; do
-            if [ -d "$BUILD_DIR/packages/$pkg/dist" ]; then
-              mkdir -p "$TEST_HOME/node_modules/@getpaseo/$pkg"
-              rsync -a --delete "$BUILD_DIR/packages/$pkg/dist/" "$TEST_HOME/node_modules/@getpaseo/$pkg/dist/"
-              cp "$BUILD_DIR/packages/$pkg/package.json" "$TEST_HOME/node_modules/@getpaseo/$pkg/package.json" 2>/dev/null || true
+            if [ ! -d "$BUILD_DIR/packages/$pkg/dist" ]; then
+              MISSING_DISTS="$MISSING_DISTS $pkg"
             fi
+          done
+          if [ -n "$MISSING_DISTS" ]; then
+            echo "::error::Missing packages/<pkg>/dist for:$MISSING_DISTS under $BUILD_DIR — refusing to deploy a partial build to TEST (it would leave the previous SHA live under a green run). Re-run Stage 1 for this SHA."
+            exit 1
+          fi
+          for pkg in cli client highlight plugin protocol relay server; do
+            mkdir -p "$TEST_HOME/node_modules/@getpaseo/$pkg"
+            rsync -a --delete "$BUILD_DIR/packages/$pkg/dist/" "$TEST_HOME/node_modules/@getpaseo/$pkg/dist/"
+            cp "$BUILD_DIR/packages/$pkg/package.json" "$TEST_HOME/node_modules/@getpaseo/$pkg/package.json" 2>/dev/null || true
           done
           echo "Server + protocol/client deps deployed to TEST via pnpm-built dist"
 
@@ -625,9 +717,23 @@ jobs:
         id: ref
         run: |
           set -euo pipefail
-          REF="${{ inputs.prod_build_ref }}"
-          if [ -z "$REF" ] && [ "${{ needs.build-hydra.result }}" = "success" ]; then
-            REF="${{ needs.build-hydra.outputs.sha }}"
+          # Precedence stays input-first (an explicit ref means "deploy exactly this
+          # SHA"), but a disagreement with Stage 1 is now a hard error instead of a
+          # silent precedence win: Stage 1 built one SHA while the operator named
+          # another, and quietly picking one of them is how a green run ships the
+          # wrong bytes (D2a/D2e).
+          STAGE1_SHA=""
+          if [ "${{ needs.build-hydra.result }}" = "success" ]; then
+            STAGE1_SHA="${{ needs.build-hydra.outputs.sha }}"
+          fi
+          INPUT_REF="${{ inputs.prod_build_ref }}"
+          if [ -n "$STAGE1_SHA" ] && [ -n "$INPUT_REF" ] && [ "$INPUT_REF" != "$STAGE1_SHA" ]; then
+            echo "::error::both Stage 1 ($STAGE1_SHA) and prod_build_ref ($INPUT_REF) set and they disagree — select one, or make them the same SHA"
+            exit 1
+          fi
+          REF="$INPUT_REF"
+          if [ -z "$REF" ]; then
+            REF="$STAGE1_SHA"
           fi
           if [ -z "$REF" ]; then
             echo "::error::prod_build_ref is required when Stage 1 is not selected"
@@ -641,15 +747,24 @@ jobs:
           set -euo pipefail
           BUILD_DIR="${{ env.BUILDS_ROOT }}/hydra/${{ steps.ref.outputs.sha }}"
           ARTIFACT="${{ env.BUILDS_ROOT }}/artifacts/${{ steps.ref.outputs.sha }}.tar.zst"
-          if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/package.json" ]; then
+          STAMP="$BUILD_DIR/.paseo-build-complete"
+          if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/package.json" ] && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "${{ steps.ref.outputs.sha }}" ]; then
             echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           elif [ -f "$ARTIFACT" ]; then
+            # Never overlay a stale dir: an extract that merges into leftovers
+            # from an older run passes every check below while still serving
+            # mixed-version bytes.
+            rm -rf "$BUILD_DIR"
             mkdir -p "$BUILD_DIR"
             tar -I zstd -xf "$ARTIFACT" -C "$BUILD_DIR"
             git -C "$BUILD_DIR" init -q || true
+            if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "${{ steps.ref.outputs.sha }}" ]; then
+              echo "::error::Artifact $ARTIFACT did not yield a .paseo-build-complete stamp for ${{ steps.ref.outputs.sha }} — treating it as incomplete; re-run Stage 1 to rebuild"
+              exit 1
+            fi
             echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT"
+            echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT (or it has no .paseo-build-complete stamp for ${{ steps.ref.outputs.sha }})"
             exit 1
           fi
           echo "## Deploy PROD daemon — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
@@ -683,12 +798,23 @@ jobs:
           BUILD_DIR="${{ steps.locate.outputs.dir }}"
           PROD_HOME="${{ env.PROD_HOME }}"
           mkdir -p "$PROD_HOME/node_modules/@getpaseo"
+          # Fail closed on a partial build (D2b, reproduced): rsyncing only the dists
+          # that happen to exist leaves the previous SHA's bytes live inside the
+          # packages that were missing, under a fully green run. Name them, stop.
+          MISSING_DISTS=""
           for pkg in cli client highlight plugin protocol relay server; do
-            if [ -d "$BUILD_DIR/packages/$pkg/dist" ]; then
-              mkdir -p "$PROD_HOME/node_modules/@getpaseo/$pkg"
-              rsync -a --delete "$BUILD_DIR/packages/$pkg/dist/" "$PROD_HOME/node_modules/@getpaseo/$pkg/dist/"
-              cp "$BUILD_DIR/packages/$pkg/package.json" "$PROD_HOME/node_modules/@getpaseo/$pkg/package.json" 2>/dev/null || true
+            if [ ! -d "$BUILD_DIR/packages/$pkg/dist" ]; then
+              MISSING_DISTS="$MISSING_DISTS $pkg"
             fi
+          done
+          if [ -n "$MISSING_DISTS" ]; then
+            echo "::error::Missing packages/<pkg>/dist for:$MISSING_DISTS under $BUILD_DIR — refusing to deploy a partial build to PROD (it would leave the previous SHA live under a green run). Re-run Stage 1 for this SHA."
+            exit 1
+          fi
+          for pkg in cli client highlight plugin protocol relay server; do
+            mkdir -p "$PROD_HOME/node_modules/@getpaseo/$pkg"
+            rsync -a --delete "$BUILD_DIR/packages/$pkg/dist/" "$PROD_HOME/node_modules/@getpaseo/$pkg/dist/"
+            cp "$BUILD_DIR/packages/$pkg/package.json" "$PROD_HOME/node_modules/@getpaseo/$pkg/package.json" 2>/dev/null || true
           done
           echo "Server + protocol/client deps deployed to PROD via pnpm-built dist"
 
