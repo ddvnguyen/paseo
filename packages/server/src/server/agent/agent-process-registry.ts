@@ -233,8 +233,35 @@ function writeAgentProcessRegistryFile(filePath: string, entries: AgentProcessEn
 }
 
 /**
- * Add (or replace) the entry for a pid. Never throws: on any failure the
- * registry simply has no entry recorded.
+ * Identity of a registry record.
+ *
+ * The pid alone is NOT an identity, and treating it as one is the same defect as
+ * keying a reap on the pid: a pid is a reusable slot. Once Linux wraps
+ * `pid_max` it hands the recorded main pid to an unrelated process, and if the
+ * first scope's members are still running (under `KillMode=process` they usually
+ * are), a pid-keyed write replaces that first record and its scope loses the only
+ * handle anything has on it.
+ *
+ * `scopeId` is the real identity, and the whole file already treats it as one:
+ * it is the validated half of the signalling target (`unit === scopeId + ".scope"`,
+ * matched against `AGENT_SCOPE_ID_PATTERN`), it is what every liveness check asks
+ * about (`cgroupHasScope`, `hasForeignScope`), and it is what the daemon signals
+ * (`systemctl --user kill --kill-whom=all -- <scopeId>.scope`). No path in this
+ * module ever signals by pid. Keying writes on the same pair the kill path uses
+ * keeps the two from disagreeing about which record a given child belongs to.
+ *
+ * The alternative — refusing to write while the incumbent's scope is still
+ * populated — was rejected: it discards the NEW record, which leaves the freshly
+ * spawned child untracked instead, and it would put a `systemctl` fork on the
+ * spawn hot path.
+ */
+function isSameRecord(left: AgentProcessEntry, right: AgentProcessEntry): boolean {
+  return left.pid === right.pid && left.scopeId === right.scopeId;
+}
+
+/**
+ * Add (or replace) the entry for a pid + scope pair. Never throws: on any failure
+ * the registry simply has no entry recorded.
  */
 export function recordAgentProcess(
   entry: AgentProcessEntry,
@@ -260,7 +287,10 @@ export function recordAgentProcess(
       );
       return false;
     }
-    const next = current.entries.filter((existing) => existing.pid !== stamped.pid);
+    // Upsert on (pid, scopeId): re-recording one scope's child refreshes that
+    // record and leaves every other scope's record — including one that shares
+    // this pid — untouched.
+    const next = current.entries.filter((existing) => !isSameRecord(existing, stamped));
     next.push(stamped);
     writeAgentProcessRegistryFile(filePath, next);
     return true;
@@ -271,14 +301,23 @@ export function recordAgentProcess(
 }
 
 /**
- * Drop the entry for a pid (idempotent). Never throws.
+ * Drop the entry for a pid, optionally narrowed to one scope (idempotent).
+ * Never throws.
+ *
+ * `scopeId` is not optional in practice: forgetting by pid alone removes EVERY
+ * record carrying that pid, so once two scopes can share a pid (see
+ * `isSameRecord`) a bare `forgetAgentProcess(pid)` from one scope's teardown
+ * would delete a sibling record whose scope is still populated — reintroducing
+ * the exact untrackable leak this module exists to prevent. Callers that know
+ * their scope pass it.
  */
 export function forgetAgentProcess(
   pid: number,
-  options: AgentProcessRegistryOptions = {},
+  options: AgentProcessRegistryOptions & { scopeId?: string } = {},
 ): boolean {
   const filePath = options.filePath ?? resolveAgentProcessRegistryPath();
   const logger = options.logger;
+  const { scopeId } = options;
   try {
     const current = readAgentProcessRegistryStrict({ filePath, logger });
     if (!current.ok) {
@@ -288,7 +327,9 @@ export function forgetAgentProcess(
       );
       return false;
     }
-    const next = current.entries.filter((entry) => entry.pid !== pid);
+    const next = current.entries.filter(
+      (entry) => entry.pid !== pid || (scopeId !== undefined && entry.scopeId !== scopeId),
+    );
     if (next.length === current.entries.length) {
       return true;
     }
@@ -998,13 +1039,38 @@ function classifyByScopePopulation(
 }
 
 /**
+ * Classification for a pid that is CONCLUSIVELY not the recorded child.
+ *
+ * A conclusive answer about the pid is still silent about the scope, and the
+ * scope — not the pid — is what owns the survivors. Under `KillMode=process` a
+ * main process that has been replaced by an unrelated one says nothing at all
+ * about what the real child left running behind it. So the same
+ * `mayForgetScopedEntry` test that gates `dead` gates this outcome too:
+ * `recycled` is removable only once the scope is PROVABLY empty, and a
+ * populated or unmeasurable scope keeps the record.
+ *
+ * Keeping is the safe direction by construction. Signalling is by scope, never
+ * by pid, so a retained record can only ever lead to a `systemctl --user kill`
+ * aimed at this entry's own validated unit — the unrelated process that happens
+ * to hold the pid is never touched either way.
+ */
+function classifyRecycledPid(
+  entry: AgentProcessEntry,
+  readScopePopulation: AgentScopePopulationReader,
+): AgentProcessClassification {
+  return mayForgetScopedEntry(readScopePopulation(entry)) ? "recycled" : "live-matching";
+}
+
+/**
  * Classify one registry entry:
  * - dead: the pid path could not identify a live child AND the scope is provably
  *   empty
  * - live-matching: pid is alive and a member of the entry's expected scope, OR
- *   the pid could not speak (gone, or no usable identity) but the scope still
- *   holds something
- * - recycled: pid is alive but provably not the recorded child
+ *   the pid could not speak (gone, no usable identity, or provably not the
+ *   recorded child) but the scope still holds something
+ * - recycled: pid is alive but provably not the recorded child, AND the scope
+ *   is provably empty. No outcome is removable on pid evidence alone: a scope
+ *   that still holds a process keeps its record whichever way the pid reads.
  *
  * Identity is decided by cgroup membership first: the ACP spawn site records
  * provider ids like `claude-acp` while launching a different binary
@@ -1036,6 +1102,16 @@ function classifyByScopePopulation(
  * prevent. Both cases now consult the scope, and only a provably empty scope is
  * `dead`.
  *
+ * A CONCLUSIVE pid is no safer than an inconclusive one here, and `recycled` is
+ * the case that proves it. "This pid is alive and provably not the recorded
+ * child" is a statement about ONE process; it says nothing about the scope,
+ * which under `KillMode=process` is exactly where the survivors live. Letting it
+ * delete the record meant the leak survived every fix above: the instant Linux
+ * handed the recorded main pid to an unrelated process, a scope with a live
+ * member lost its only handle, with no signal and regardless of how fresh the
+ * orphan stamp was. So `recycled` asks the scope too, and a populated or
+ * unmeasurable scope keeps the record exactly as it does for a zombie pid.
+ *
  * That happens only once the pid path has failed to classify the entry, so a reap
  * of live records still costs no `systemctl` fork per entry.
  */
@@ -1062,9 +1138,11 @@ export function classifyAgentProcessEntry(
   const cgroup = readProcessCgroup(entry.pid);
   if (cgroup !== null) {
     if (cgroupHasScope(cgroup, entry.scopeId)) return "live-matching";
-    if (hasForeignScope(cgroup, entry)) return "recycled";
+    if (hasForeignScope(cgroup, entry)) return classifyRecycledPid(entry, readScope);
   }
-  return matchesProviderMarker(identity, entry.provider) ? "live-matching" : "recycled";
+  return matchesProviderMarker(identity, entry.provider)
+    ? "live-matching"
+    : classifyRecycledPid(entry, readScope);
 }
 
 /** Flush outcome: records kept because the pid is alive, records dropped. */
@@ -1135,7 +1213,9 @@ export function flushLiveAgentProcesses(
  * - `dead` — drop the record, never signal: the pid is gone and the scope is
  *   provably empty.
  * - `recycled` — drop the record, never signal. The pid is alive but provably
- *   not the recorded child, so it is not ours to touch.
+ *   not the recorded child, so it is not ours to touch. This outcome now also
+ *   requires a provably empty scope (see `classifyRecycledPid`), so dropping
+ *   here means the scope holds nothing — exactly the `dead` guarantee.
  * - `live-matching`, owned by this daemon — keep, never signal. This is a child
  *   of the running daemon; it may be a legitimately long-lived agent. It stays
  *   reapable: if this daemon exits, the next one sees it as an orphan.
@@ -1240,6 +1320,12 @@ function decideReapForEntry(
   const classification = classifyAgentProcessEntry(entry, () => population);
   if (classification === "recycled") {
     // Alive but provably not the recorded child, so it is not ours to touch.
+    // `classifyAgentProcessEntry` reached "recycled" only after the same
+    // `mayForgetScopedEntry` test that gates "dead" — so a populated or
+    // unmeasurable scope never lands here and this branch, like "dead", means
+    // "the scope is provably empty". Keeping the gate in the classifier rather
+    // than repeating it here is deliberate: it is one predicate, one place, and
+    // every caller of the exported classifier inherits it.
     logger?.info(
       { filePath, pid: entry.pid, provider: entry.provider, unit: entry.unit, classification },
       "Reaped stale agent process registry entry",

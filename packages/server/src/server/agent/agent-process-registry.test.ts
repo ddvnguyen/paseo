@@ -517,6 +517,159 @@ describe.runIf(process.platform === "linux")("agent process reaper", () => {
     expectPidAlive(recycled.pid, "recycled probe survives the reaper");
   });
 
+  // -------------------------------------------------------------------------
+  // A `recycled` pid must not, by itself, cost a record whose scope still lives.
+  //
+  // `classifyAgentProcessEntry` used to answer `recycled` on the pid path
+  // ALONE — a live pid that carries no provider marker, or that sits in a
+  // foreign scope — and `decideReapForEntry` deletes the record on that
+  // outcome. Every other outcome had already been changed to ask the scope
+  // first; this one was missed. So the moment Linux handed the recorded main pid
+  // to an unrelated process, the record for a scope that still had a live member
+  // was deleted with zero signals, and nothing was left pointing at it.
+  // -------------------------------------------------------------------------
+
+  test("classifies a recycled pid as removable only when its scope is provably empty", async () => {
+    const recycled = spawnProbe(tmpDir, liveChildren, ["--unrelated-marker=elsewhere"]);
+    await waitUntilProbeReady(recycled);
+    const entry = buildSignalableEntry({ pid: recycled.pid });
+
+    // Precondition: a live pid that is genuinely not the recorded child.
+    expectPidAlive(recycled.pid, "the unrelated pid is alive");
+    expect(
+      classifyAgentProcessEntry(entry, () => ({ known: true, populated: false, pids: [] })),
+    ).toBe("recycled");
+
+    // A populated scope means something the recorded child spawned is still
+    // running, so the record has to stay. Signalling is by scope, so keeping it
+    // is always safe — it never puts the unrelated pid at risk.
+    expect(
+      classifyAgentProcessEntry(entry, () => ({
+        known: true,
+        populated: true,
+        pids: [recycled.pid],
+      })),
+    ).toBe("live-matching");
+
+    // An UNMEASURABLE scope is not proof of emptiness either, and an unreadable
+    // scope is never "empty": it keeps the record like every other unknown.
+    expect(
+      classifyAgentProcessEntry(entry, () => ({
+        known: false,
+        populated: true,
+        pids: [],
+        reason: "cgroup.events unreadable",
+      })),
+    ).toBe("live-matching");
+  });
+
+  test("keeps a recycled-pid record whose scope is populated, unexpired and unowned", async () => {
+    const recycled = spawnProbe(tmpDir, liveChildren, ["--unrelated-marker=elsewhere"]);
+    await waitUntilProbeReady(recycled);
+    const entry = buildSignalableEntry({
+      pid: recycled.pid,
+      ownerDaemonId: "previous-daemon-generation",
+      // One second old, so the entry is well INSIDE the orphan TTL. The record
+      // must survive regardless of expiry: the deletion under test hangs on the
+      // scope, not on the clock.
+      orphanedAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    expect(recordAgentProcess(entry, { filePath, logger })).toBe(true);
+
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger,
+      readScopePopulation: () => ({ known: true, populated: true, pids: [recycled.pid] }),
+    });
+
+    expect(result.removed, "a recycled pid must not cost a populated scope its record").toEqual([]);
+    expect(result.kept.map((kept) => kept.scopeId)).toEqual([entry.scopeId]);
+    expect(readAgentProcessRegistry({ filePath, logger }).map((kept) => kept.scopeId)).toEqual([
+      entry.scopeId,
+    ]);
+    // Nothing is signalled either way: the record is bookkeeping, and this pid
+    // is not ours.
+    expectPidAlive(recycled.pid, "the unrelated process is never signalled");
+  });
+
+  // -------------------------------------------------------------------------
+  // Two scopes can legitimately carry the same pid. The registry used to key on
+  // the pid alone, so recording a second entry REPLACED the first while that
+  // first scope was still populated — the same defect class one layer up, and one
+  // the reaper cannot see because the record is simply gone.
+  // -------------------------------------------------------------------------
+
+  test("records two entries that share a pid under different scopes without clobbering one", async () => {
+    const shared = spawnProbe(tmpDir, liveChildren, ["--unrelated-marker=elsewhere"]);
+    await waitUntilProbeReady(shared);
+    const first = buildSignalableEntry({
+      pid: shared.pid,
+      scopeId: "paseo-agent-4242-aaaaaaaaaaaa",
+      unit: "paseo-agent-4242-aaaaaaaaaaaa.scope",
+    });
+    const second = buildSignalableEntry({
+      pid: shared.pid,
+      scopeId: "paseo-agent-4242-bbbbbbbbbbbb",
+      unit: "paseo-agent-4242-bbbbbbbbbbbb.scope",
+    });
+
+    expect(recordAgentProcess(first, { filePath, logger })).toBe(true);
+    expect(recordAgentProcess(second, { filePath, logger })).toBe(true);
+
+    // Both scopes survive: the second pid reuse must not erase the first
+    // scope's only handle on whatever is still running inside it.
+    expect(
+      readAgentProcessRegistry({ filePath, logger })
+        .map((kept) => kept.scopeId)
+        .sort(),
+    ).toEqual(["paseo-agent-4242-aaaaaaaaaaaa", "paseo-agent-4242-bbbbbbbbbbbb"]);
+
+    // Re-recording the SAME (pid, scope) is still an upsert, so a retried spawn
+    // of one scope does not accumulate duplicates.
+    expect(recordAgentProcess(second, { filePath, logger })).toBe(true);
+    expect(readAgentProcessRegistry({ filePath, logger })).toHaveLength(2);
+  });
+
+  test("reaps a shared pid per scope and forgets a scope without touching its sibling", async () => {
+    const shared = spawnProbe(tmpDir, liveChildren, ["--unrelated-marker=elsewhere"]);
+    await waitUntilProbeReady(shared);
+    const populated = buildSignalableEntry({
+      pid: shared.pid,
+      scopeId: "paseo-agent-4242-aaaaaaaaaaaa",
+      unit: "paseo-agent-4242-aaaaaaaaaaaa.scope",
+    });
+    const empty = buildSignalableEntry({
+      pid: shared.pid,
+      scopeId: "paseo-agent-4242-bbbbbbbbbbbb",
+      unit: "paseo-agent-4242-bbbbbbbbbbbb.scope",
+    });
+    recordAgentProcess(populated, { filePath, logger });
+    recordAgentProcess(empty, { filePath, logger });
+
+    // One shared pid, two opposite scope answers: the reap has to decide per
+    // scope, not per pid.
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger,
+      readScopePopulation: (entry) =>
+        entry.scopeId === populated.scopeId
+          ? { known: true, populated: true, pids: [shared.pid] }
+          : { known: true, populated: false, pids: [] },
+    });
+    expect(result.removed.map((entry) => entry.scopeId)).toEqual([empty.scopeId]);
+    expect(result.kept.map((entry) => entry.scopeId)).toEqual([populated.scopeId]);
+
+    // A scoped forget must not take the sibling down with it: forgetting by pid
+    // alone would drop the populated scope's record, which is the leak this
+    // whole path exists to prevent.
+    recordAgentProcess(populated, { filePath, logger });
+    recordAgentProcess(empty, { filePath, logger });
+    expect(forgetAgentProcess(shared.pid, { filePath, logger, scopeId: empty.scopeId })).toBe(true);
+    expect(readAgentProcessRegistry({ filePath, logger }).map((kept) => kept.scopeId)).toEqual([
+      populated.scopeId,
+    ]);
+  });
+
   // Review finding #42-B1. The previous version of this test asserted the
   // opposite of the fix: it reaped an expired unowned record and then asserted
   // the child was STILL ALIVE. That encoded the defect — dropping the record
@@ -1808,5 +1961,105 @@ describe.skipIf(process.platform !== "linux")("scope membership (real systemd)",
 
     // Still a zombie at the end of all of that: nothing reaped it behind our back.
     expectRealZombie(fixture.zombiePid);
+  });
+
+  // The reviewer's original probe, against real systemd and the real reaper: a
+  // REAL `KillMode=process` scope whose main pid has exited and been REUSED by an
+  // unrelated live process, while a real member keeps running in the scope.
+  //
+  // Before the fix this reported
+  //   reap removed: 1 kept: 0
+  //   after: registry records = 0 ; scope STILL populated = true [544452]
+  // i.e. the record was deleted with zero signals and the member was left running
+  // with nothing pointing at it. `orphanedAt` is one second old here, so the entry
+  // is NOT expired — the drop had nothing to do with the TTL.
+  test("keeps the record of a real scope whose main pid was reused by an unrelated process", async () => {
+    if (!requireRealScope()) return;
+    const beatFile = path.join(tmpDir, "grandchild.beat");
+    const { mainPid } = await spawnScopeWithSurvivingGrandchild(true);
+    await expect.poll(() => isPidAlive(mainPid), { timeout: 15_000, interval: 50 }).toBe(false);
+    // The survivor publishes its pid and only starts beating one interval later,
+    // so wait for the first beat here. Without it the "nothing signalled it"
+    // assertion below can race the first write and read the file before it exists.
+    await expect.poll(() => existsSync(beatFile), { timeout: 15_000, interval: 25 }).toBe(true);
+
+    // Stand in for pid reuse: a genuinely live, genuinely unrelated process now
+    // answers to the recorded pid. It carries no provider marker and is not a
+    // member of this scope, so the pid path classifies it as `recycled`.
+    const unrelatedReadyFile = path.join(tmpDir, "unrelated.ready");
+    const unrelated = spawn(
+      process.execPath,
+      [
+        "-e",
+        `require("node:fs").writeFileSync(${JSON.stringify(unrelatedReadyFile)}, "ready");setInterval(() => {}, 1000)`,
+      ],
+      { stdio: "ignore" },
+    );
+    scopeChildren.push(unrelated);
+    if (typeof unrelated.pid !== "number") throw new Error("failed to spawn the unrelated process");
+    const unrelatedPid = unrelated.pid;
+    await expect
+      .poll(() => existsSync(unrelatedReadyFile), { timeout: 15_000, interval: 25 })
+      .toBe(true);
+    expectPidAlive(unrelatedPid, "the unrelated process is alive before the reap");
+    // An identity the classifier can actually read: an empty cmdline would send
+    // it down the zombie branch instead of the recycled one.
+    expect(
+      readFileSync(`/proc/${unrelatedPid}/cmdline`, "utf8"),
+      "the unrelated pid has a cmdline",
+    ).not.toBe("");
+    expect(
+      readFileSync(`/proc/${unrelatedPid}/cgroup`, "utf8"),
+      "the unrelated pid is not a member of this scope",
+    ).not.toContain(unitName);
+
+    // Re-point the recorded entry at the reused pid, keeping the REAL scope. The
+    // orphan stamp is one second old, so this entry is not expired.
+    const recorded = readAgentProcessRegistry({ filePath, logger });
+    expect(recorded, "the scoped fixture must record one entry").toHaveLength(1);
+    expect(forgetAgentProcess(mainPid, { filePath, logger })).toBe(true);
+    const entry: AgentProcessEntry = {
+      ...recorded[0],
+      pid: unrelatedPid,
+      ownerDaemonId: "previous-daemon-generation",
+      orphanedAt: new Date(Date.now() - 1_000).toISOString(),
+    };
+    expect(recordAgentProcess(entry, { filePath, logger })).toBe(true);
+
+    // Precondition: the pid path really does say `recycled` here. Without this the
+    // test could pass for the wrong reason (e.g. by reaching `live-matching` through
+    // some other route) and would no longer be the reviewer's probe.
+    expect(
+      classifyAgentProcessEntry(entry, () => ({ known: true, populated: false, pids: [] })),
+    ).toBe("recycled");
+    // And the scope really is still populated by the surviving member.
+    expect(readAgentScopePopulation(entry)).toMatchObject({ known: true, populated: true });
+    expectPidAlive(grandchildPid as number, "the survivor is running before the reap");
+
+    // No seam anywhere below: the real reaper, the real reader, the real scope.
+    const result = reapStaleAgentProcesses({ filePath, logger });
+    expect(result.removed, "a reused main pid must not cost a populated scope its record").toEqual(
+      [],
+    );
+    expect(result.kept.map((kept) => kept.pid)).toEqual([unrelatedPid]);
+    expect(readAgentProcessRegistry({ filePath, logger }).map((kept) => kept.pid)).toEqual([
+      unrelatedPid,
+    ]);
+
+    // The scope is still there and still tracked — the exact `after:` line the
+    // reviewer reported as `records = 0 ; scope STILL populated = true`.
+    expect(readAgentScopePopulation(entry).populated, "the scope stays populated").toBe(true);
+    expectPidAlive(grandchildPid as number, "the survivor keeps running, now tracked");
+    expectPidAlive(unrelatedPid, "the unrelated process is never signalled");
+    // A reap inside the orphan window signals nothing at all. The heartbeat is
+    // what separates "still running" from "merely present", and it survives pid
+    // reuse, so this is the assertion that proves the survivor was untouched.
+    const beatBefore = readFileSync(beatFile, "utf8");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(
+      readFileSync(beatFile, "utf8"),
+      "the survivor's heartbeat must still advance: nothing may signal it",
+    ).not.toBe(beatBefore);
+    expect(isPidRunning(grandchildPid as number), "the survivor is untouched").toBe(true);
   });
 });

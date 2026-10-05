@@ -459,7 +459,10 @@ export function spawnInAgentScope(
       if (!population.known || population.populated) {
         return;
       }
-      forgetAgentProcess(pid, { logger });
+      // Scoped: a pid can be shared with another scope's record (pid reuse), and
+      // dropping that sibling's record here would leave its still-populated scope
+      // with nothing pointing at it.
+      forgetAgentProcess(pid, { logger, scopeId: entry.scopeId });
     };
     child.once("exit", forget);
     child.once("error", forget);
