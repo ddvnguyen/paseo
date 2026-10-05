@@ -111,6 +111,33 @@ env:
 
 jobs:
   # ═══════════════════════════════════════════════════════════════════════
+  # Preflight — guard an empty or under-specified dispatch
+  # ═══════════════════════════════════════════════════════════════════════
+  # A dispatch with nothing ticked completes *green* having done nothing: every
+  # job is skipped, and a run where all jobs skip is not a failure (D4). The
+  # same silence hides a deploy stage ticked without Stage 1 and without its
+  # *_build_ref (D1) — the failure only surfaces as that stage's own error.
+  preflight:
+    # Leaf job by design: `preflight` appears in NO `needs` list and no job
+    # depends on it. Wiring it into a needs list would force an edit of that
+    # job's if-chain — build-android's is a hand-rolled per-job result check
+    # (needs.deploy-web.result == 'success' || ... == 'skipped') that a new
+    # edge would silently change the meaning of. The guard works because a
+    # failing job turns the run red, not because it gates a stage.
+    if: |
+      !inputs.run_build_hydra &&
+      !inputs.run_build_android &&
+      !inputs.run_deploy_web &&
+      !inputs.run_deploy_test &&
+      !inputs.run_deploy_prod &&
+      !inputs.run_deploy_freebuff
+    runs-on: [self-hosted, paseo-host]
+    steps:
+      - name: Require at least one stage
+        run: |
+          echo "::error::No stage selected — this dispatch would finish green having done nothing. Tick at least one of: Stage 1 Build hydra, Stage 2 Android, Stage 3 Web, Stage 4 TEST, Stage 5 PROD, Stage 6 freebuff-acp. A deploy stage ticked without Stage 1 also needs its own *_build_ref."
+          exit 1
+  # ═══════════════════════════════════════════════════════════════════════
   # Stage 1 — Build paseo hydra
   # ═══════════════════════════════════════════════════════════════════════
   build-hydra:
@@ -269,7 +296,14 @@ jobs:
             REF="$INPUT_REF"
           fi
           if [ -z "$REF" ]; then
-            echo "::error::android_build_ref is required when Stage 1 is not selected"
+            echo "::error::android_build_ref is required — Stage 1 not selected or failed"
+            exit 1
+          fi
+          # The resolved REF is the strongest single check available: it is exactly
+          # what the locate step turns into a path and rm -rf's. Stage 1's output is
+          # a `git rev-parse` result, so only a supplied ref can fail this.
+          if ! printf '%s' "$REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            echo "::error::android_build_ref must be a hex commit SHA (7-40 chars)"
             exit 1
           fi
           # The resolved REF is the strongest single check available: it is exactly
@@ -508,7 +542,14 @@ jobs:
             REF="$STAGE1_SHA"
           fi
           if [ -z "$REF" ]; then
-            echo "::error::web_build_ref is required when Stage 1 is not selected"
+            echo "::error::web_build_ref is required — Stage 1 not selected or failed"
+            exit 1
+          fi
+          # The resolved REF is the strongest single check available: it is exactly
+          # what the locate step turns into a path and rm -rf's. Stage 1's output is
+          # a `git rev-parse` result, so only a supplied ref can fail this.
+          if ! printf '%s' "$REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            echo "::error::web_build_ref must be a hex commit SHA (7-40 chars)"
             exit 1
           fi
           # The resolved REF is the strongest single check available: it is exactly
@@ -622,7 +663,14 @@ jobs:
             REF="$STAGE1_SHA"
           fi
           if [ -z "$REF" ]; then
-            echo "::error::test_build_ref is required when Stage 1 is not selected"
+            echo "::error::test_build_ref is required — Stage 1 not selected or failed"
+            exit 1
+          fi
+          # The resolved REF is the strongest single check available: it is exactly
+          # what the locate step turns into a path and rm -rf's. Stage 1's output is
+          # a `git rev-parse` result, so only a supplied ref can fail this.
+          if ! printf '%s' "$REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            echo "::error::test_build_ref must be a hex commit SHA (7-40 chars)"
             exit 1
           fi
           # The resolved REF is the strongest single check available: it is exactly
@@ -822,7 +870,14 @@ jobs:
             REF="$STAGE1_SHA"
           fi
           if [ -z "$REF" ]; then
-            echo "::error::prod_build_ref is required when Stage 1 is not selected"
+            echo "::error::prod_build_ref is required — Stage 1 not selected or failed"
+            exit 1
+          fi
+          # The resolved REF is the strongest single check available: it is exactly
+          # what the locate step turns into a path and rm -rf's. Stage 1's output is
+          # a `git rev-parse` result, so only a supplied ref can fail this.
+          if ! printf '%s' "$REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            echo "::error::prod_build_ref must be a hex commit SHA (7-40 chars)"
             exit 1
           fi
           # The resolved REF is the strongest single check available: it is exactly
