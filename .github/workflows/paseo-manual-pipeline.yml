@@ -78,14 +78,26 @@ on:
         type: string
         default: ""
 
-      # ── Stage 6: Deploy freebuff-acp adapter ──────────────────────────
+      # ── Stage 6: Deploy BETA daemon ───────────────────────────────────
+      run_deploy_beta:
+        description: "Stage 6 — Deploy paseo BETA daemon (:6768)"
+        required: false
+        type: boolean
+        default: false
+      beta_build_ref:
+        description: "Git SHA to deploy (empty = use this run's fresh build from Stage 1)"
+        required: false
+        type: string
+        default: ""
+
+      # ── Stage 7: Deploy freebuff-acp adapter ──────────────────────────
       run_deploy_freebuff:
-        description: "Stage 6 — Deploy freebuff-acp adapter (no daemon restart; new agents pick it up)"
+        description: "Stage 7 — Deploy freebuff-acp adapter (no daemon restart; new agents pick it up)"
         required: false
         type: boolean
         default: false
       freebuff_target:
-        description: "Stage 6 — Which daemon home receives the adapter"
+        description: "Stage 7 — Which daemon home receives the adapter"
         required: false
         type: choice
         default: test
@@ -94,7 +106,7 @@ on:
           - prod
           - both
       freebuff_ref:
-        description: "Stage 6 — Git SHA of packages/freebuff-acp + plugins/freebuff to deploy"
+        description: "Stage 7 — Git SHA of packages/freebuff-acp + plugins/freebuff to deploy"
         required: false
         type: string
         default: ""
@@ -108,6 +120,7 @@ env:
   WEB_UI_DEPLOY: /home/ddv/paseo/app/web-ui
   TEST_HOME: /home/ddv/paseo/TEST
   PROD_HOME: /home/ddv/paseo/PROD
+  BETA_HOME: /home/ddv/paseo/BETA
 
 jobs:
   # ═══════════════════════════════════════════════════════════════════════
@@ -130,12 +143,13 @@ jobs:
       !inputs.run_deploy_web &&
       !inputs.run_deploy_test &&
       !inputs.run_deploy_prod &&
+      !inputs.run_deploy_beta &&
       !inputs.run_deploy_freebuff
     runs-on: [self-hosted, paseo-host]
     steps:
       - name: Require at least one stage
         run: |
-          echo "::error::No stage selected — this dispatch would finish green having done nothing. Tick at least one of: Stage 1 Build hydra, Stage 2 Android, Stage 3 Web, Stage 4 TEST, Stage 5 PROD, Stage 6 freebuff-acp. A deploy stage ticked without Stage 1 also needs its own *_build_ref."
+          echo "::error::No stage selected — this dispatch would finish green having done nothing. Tick at least one of: Stage 1 Build hydra, Stage 2 Android, Stage 3 Web, Stage 4 TEST, Stage 5 PROD, Stage 6 BETA, Stage 7 freebuff-acp. A deploy stage ticked without Stage 1 also needs its own *_build_ref."
           exit 1
   # ═══════════════════════════════════════════════════════════════════════
   # Stage 1 — Build paseo hydra
@@ -297,13 +311,6 @@ jobs:
           fi
           if [ -z "$REF" ]; then
             echo "::error::android_build_ref is required — Stage 1 not selected or failed"
-            exit 1
-          fi
-          # The resolved REF is the strongest single check available: it is exactly
-          # what the locate step turns into a path and rm -rf's. Stage 1's output is
-          # a `git rev-parse` result, so only a supplied ref can fail this.
-          if ! printf '%s' "$REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
-            echo "::error::android_build_ref must be a hex commit SHA (7-40 chars)"
             exit 1
           fi
           # The resolved REF is the strongest single check available: it is exactly
@@ -552,13 +559,6 @@ jobs:
             echo "::error::web_build_ref must be a hex commit SHA (7-40 chars)"
             exit 1
           fi
-          # The resolved REF is the strongest single check available: it is exactly
-          # what the locate step turns into a path and rm -rf's. Stage 1's output is
-          # a `git rev-parse` result, so only a supplied ref can fail this.
-          if ! printf '%s' "$REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
-            echo "::error::web_build_ref must be a hex commit SHA (7-40 chars)"
-            exit 1
-          fi
           echo "sha=$REF" >> "$GITHUB_OUTPUT"
 
       - name: Locate persisted build (dist-only pnpm artifact)
@@ -673,13 +673,6 @@ jobs:
             echo "::error::test_build_ref must be a hex commit SHA (7-40 chars)"
             exit 1
           fi
-          # The resolved REF is the strongest single check available: it is exactly
-          # what the locate step turns into a path and rm -rf's. Stage 1's output is
-          # a `git rev-parse` result, so only a supplied ref can fail this.
-          if ! printf '%s' "$REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
-            echo "::error::test_build_ref must be a hex commit SHA (7-40 chars)"
-            exit 1
-          fi
           echo "sha=$REF" >> "$GITHUB_OUTPUT"
 
       - name: Locate persisted build (dist-only pnpm artifact)
@@ -744,7 +737,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "pnpm"
+          # No `cache: pnpm` here (D3): the pnpm store lives on ntfs, where the
+          # actions/cache tar walk always exits 2, so every run pays a doomed
+          # walk for a permanent cache MISS. The store is a persistent shared
+          # directory, so the cache buys nothing anyway. build-hydra and
+          # build-android already run without it.
 
       - name: Install TEST runtime deps (pnpm frozen, shared store)
         run: |
@@ -880,13 +877,6 @@ jobs:
             echo "::error::prod_build_ref must be a hex commit SHA (7-40 chars)"
             exit 1
           fi
-          # The resolved REF is the strongest single check available: it is exactly
-          # what the locate step turns into a path and rm -rf's. Stage 1's output is
-          # a `git rev-parse` result, so only a supplied ref can fail this.
-          if ! printf '%s' "$REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
-            echo "::error::prod_build_ref must be a hex commit SHA (7-40 chars)"
-            exit 1
-          fi
           echo "sha=$REF" >> "$GITHUB_OUTPUT"
 
       - name: Locate persisted build (dist-only pnpm artifact)
@@ -951,7 +941,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "pnpm"
+          # No `cache: pnpm` here (D3): the pnpm store lives on ntfs, where the
+          # actions/cache tar walk always exits 2, so every run pays a doomed
+          # walk for a permanent cache MISS. The store is a persistent shared
+          # directory, so the cache buys nothing anyway. build-hydra and
+          # build-android already run without it.
 
       - name: Install PROD runtime deps (pnpm frozen, shared store)
         run: |
@@ -1037,7 +1031,253 @@ jobs:
           if [ "$HEALTH" = '{"status":"error"}' ]; then echo "::error::PROD health endpoint unreachable after deploy"; exit 1; fi
 
   # ═══════════════════════════════════════════════════════════════════════
-  # Stage 6 — Deploy freebuff-acp adapter (versioned release + `current` symlink)
+  # Stage 6 — Deploy BETA daemon
+  # ═══════════════════════════════════════════════════════════════════════
+  # Modelled on deploy-test, with two deliberate differences:
+  #  * it waits on deploy-test and requires that TEST passed (see the if below);
+  #  * its runtime deps come from deploy/paseo-test/, not a deploy/paseo-beta/.
+  #    There is no deploy/paseo-beta/ in this repo, and the test and prod
+  #    manifests are the same closure — their package.json files differ only in
+  #    `name`/`description` and their pnpm-lock.yaml files are byte-identical —
+  #    so reusing the TEST manifest installs the correct dependency set.
+  deploy-beta:
+    # Owner topology (D-4): build -> TEST -> BETA -> manual PROD.
+    #
+    # The deploy-test arm below is deliberately two-sided, and `always()` is
+    # what makes the second side reachable at all: without it, a *skipped*
+    # needs-dependency auto-skips this job, so a beta-only dispatch — the main
+    # way anyone will use a BETA stage — could never run.
+    #   * deploy-test ticked  -> result is 'success' or 'failure'. This job
+    #     waits for it and requires 'success'; a failed TEST blocks BETA.
+    #   * deploy-test not ticked -> result is 'skipped'. That is the operator's
+    #     explicit choice to deploy BETA on its own (the same class as today's
+    #     standalone TEST deploy against a past SHA), so it runs.
+    # 'cancelled' satisfies neither arm and blocks, which is the safe default.
+    if: |
+      always() &&
+      inputs.run_deploy_beta &&
+      (needs.build-hydra.result == 'success' || needs.build-hydra.result == 'skipped') &&
+      (needs.deploy-test.result == 'success' || needs.deploy-test.result == 'skipped')
+    needs: [build-hydra, deploy-test]
+    runs-on: [self-hosted, paseo-host]
+    steps:
+      - name: Resolve build ref
+        id: ref
+        # Inputs go through env, never interpolated into the script: a crafted
+        # value must not be able to run shell on the self-hosted runner, and REF
+        # becomes a path under $BUILDS_ROOT (review #53.4).
+        env:
+          INPUT_REF: ${{ inputs.beta_build_ref }}
+        run: |
+          set -euo pipefail
+          # Precedence stays input-first (an explicit ref means "deploy exactly this
+          # SHA"), but a disagreement with Stage 1 is a hard error instead of a
+          # silent precedence win: Stage 1 built one SHA while the operator named
+          # another, and quietly picking one of them is how a green run ships the
+          # wrong bytes (D2a/D2e).
+          STAGE1_SHA=""
+          if [ "${{ needs.build-hydra.result }}" = "success" ]; then
+            STAGE1_SHA="${{ needs.build-hydra.outputs.sha }}"
+          fi
+          # (INPUT_REF arrives via this step's env:, never interpolated into the script.)
+          if [ -n "$STAGE1_SHA" ] && [ -n "$INPUT_REF" ] && [ "$INPUT_REF" != "$STAGE1_SHA" ]; then
+            echo "::error::both Stage 1 ($STAGE1_SHA) and beta_build_ref ($INPUT_REF) set and they disagree — select one, or make them the same SHA"
+            exit 1
+          fi
+          REF="$INPUT_REF"
+          if [ -z "$REF" ]; then
+            REF="$STAGE1_SHA"
+          fi
+          if [ -z "$REF" ]; then
+            echo "::error::beta_build_ref is required — Stage 1 not selected or failed"
+            exit 1
+          fi
+          # The resolved REF is the strongest single check available: it is exactly
+          # what the locate step turns into a path and rm -rf's. Stage 1's output is
+          # a `git rev-parse` result, so only a supplied ref can fail this.
+          if ! printf '%s' "$REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            echo "::error::beta_build_ref must be a hex commit SHA (7-40 chars)"
+            exit 1
+          fi
+          echo "sha=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Locate persisted build (dist-only pnpm artifact)
+        id: locate
+        run: |
+          set -euo pipefail
+          BUILD_DIR="${{ env.BUILDS_ROOT }}/hydra/${{ steps.ref.outputs.sha }}"
+          ARTIFACT="${{ env.BUILDS_ROOT }}/artifacts/${{ steps.ref.outputs.sha }}.tar.zst"
+          STAMP="$BUILD_DIR/.paseo-build-complete"
+          if [ -d "$BUILD_DIR" ] && [ -f "$BUILD_DIR/package.json" ] && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "${{ steps.ref.outputs.sha }}" ]; then
+            echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+          elif [ -f "$ARTIFACT" ]; then
+            # Never overlay a stale dir: an extract that merges into leftovers
+            # from an older run can pass the checks below while still serving
+            # mixed-version bytes.
+            rm -rf "$BUILD_DIR"
+            mkdir -p "$BUILD_DIR"
+            tar -I zstd -xf "$ARTIFACT" -C "$BUILD_DIR"
+            git -C "$BUILD_DIR" init -q || true
+            if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "${{ steps.ref.outputs.sha }}" ]; then
+              echo "::error::Artifact $ARTIFACT did not yield a .paseo-build-complete stamp for ${{ steps.ref.outputs.sha }} — treating it as incomplete; re-run Stage 1 to rebuild"
+              exit 1
+            fi
+            echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT (or it has no .paseo-build-complete stamp for ${{ steps.ref.outputs.sha }})"
+            exit 1
+          fi
+          # Completeness pre-check: all 7 deployed packages need a
+          # package.json AND a dist that exists and is non-empty.
+          #
+          # * non-empty matters because an empty-but-present dist passes [ -d ], and
+          #   rsync --delete would then wipe the live dist to nothing (review #53.2).
+          # * package.json matters because the cp below used to be
+          #   `2>/dev/null || true`, which failed open (review #53.1).
+          #
+          # # Placed here, after the build is located but BEFORE the install step writes
+          # package.json + pnpm-lock.yaml and runs pnpm install into the live home.
+          # Running this in the deploy step instead let a partial build swap the live
+          # home's dependency closure on a red run (review #53.3). The invariant this
+          # establishes: on a red run, ZERO bytes of the live home are modified.
+          INCOMPLETE=""
+          for pkg in cli client highlight plugin protocol relay server; do
+            PKG_DIST="$BUILD_DIR/packages/$pkg/dist"
+            if [ ! -f "$BUILD_DIR/packages/$pkg/package.json" ]; then
+              INCOMPLETE="$INCOMPLETE $pkg(no package.json)"
+            elif [ ! -d "$PKG_DIST" ] || [ -z "$(ls -A "$PKG_DIST" 2>/dev/null)" ]; then
+              INCOMPLETE="$INCOMPLETE $pkg(empty or missing dist)"
+            fi
+          done
+          if [ -n "$INCOMPLETE" ]; then
+            echo "::error::Incomplete build at $BUILD_DIR -$INCOMPLETE - refusing to deploy a partial build to BETA_HOME (it would leave the previous SHA live under a green run). The live home is left untouched; re-run Stage 1 for this SHA."
+            exit 1
+          fi
+          echo "## Deploy BETA daemon — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.12.0
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          # No `cache: pnpm` — see the D3 note on the deploy-test stage.
+
+      - name: Install BETA runtime deps (pnpm frozen, shared store)
+        run: |
+          set -euo pipefail
+          BUILD_DIR="${{ steps.locate.outputs.dir }}"
+          BETA_HOME="${{ env.BETA_HOME }}"
+          echo "pnpm store: $(pnpm store path)"
+          # deploy/paseo-test/ is the manifest set BETA reuses — see the job
+          # header for why there is no deploy/paseo-beta/.
+          cp "$BUILD_DIR/deploy/paseo-test/package.json" "$BETA_HOME/package.json"
+          cp "$BUILD_DIR/deploy/paseo-test/pnpm-lock.yaml" "$BETA_HOME/pnpm-lock.yaml"
+          # --ignore-scripts: see the TEST install step — same proven no-scripts
+          # runtime state.
+          pnpm install --frozen-lockfile --prod --ignore-workspace --ignore-scripts --dir "$BETA_HOME"
+          echo "BETA runtime deps installed (frozen lockfile)"
+
+      - name: Deploy server to BETA (pnpm prod deploy)
+        run: |
+          set -euo pipefail
+          BUILD_DIR="${{ steps.locate.outputs.dir }}"
+          BETA_HOME="${{ env.BETA_HOME }}"
+          mkdir -p "$BETA_HOME/node_modules/@getpaseo"
+          # Completeness pre-check: all 7 deployed packages need a
+          # package.json AND a dist that exists and is non-empty.
+          #
+          # * non-empty matters because an empty-but-present dist passes [ -d ], and
+          #   rsync --delete would then wipe the live dist to nothing (review #53.2).
+          # * package.json matters because the cp below used to be
+          #   `2>/dev/null || true`, which failed open (review #53.1).
+          #
+          # # Cheap re-assert of the completeness pre-check the locate step already ran
+          # before any live write. Same predicate as that one, so the two cannot drift.
+          INCOMPLETE=""
+          for pkg in cli client highlight plugin protocol relay server; do
+            PKG_DIST="$BUILD_DIR/packages/$pkg/dist"
+            if [ ! -f "$BUILD_DIR/packages/$pkg/package.json" ]; then
+              INCOMPLETE="$INCOMPLETE $pkg(no package.json)"
+            elif [ ! -d "$PKG_DIST" ] || [ -z "$(ls -A "$PKG_DIST" 2>/dev/null)" ]; then
+              INCOMPLETE="$INCOMPLETE $pkg(empty or missing dist)"
+            fi
+          done
+          if [ -n "$INCOMPLETE" ]; then
+            echo "::error::Incomplete build at $BUILD_DIR -$INCOMPLETE - refusing to deploy a partial build to BETA_HOME (it would leave the previous SHA live under a green run). The live home is left untouched; re-run Stage 1 for this SHA."
+            exit 1
+          fi
+          for pkg in cli client highlight plugin protocol relay server; do
+            mkdir -p "$BETA_HOME/node_modules/@getpaseo/$pkg"
+            rsync -a --delete "$BUILD_DIR/packages/$pkg/dist/" "$BETA_HOME/node_modules/@getpaseo/$pkg/dist/"
+            cp "$BUILD_DIR/packages/$pkg/package.json" "$BETA_HOME/node_modules/@getpaseo/$pkg/package.json"
+          done
+          echo "Server + protocol/client deps deployed to BETA via pnpm-built dist"
+
+      - name: Put the daemon's bun on PATH for the closure check
+        run: |
+          set -euo pipefail
+          # Mirror of the TEST step — same host-bun rationale, same GITHUB_PATH
+          # mechanism (an Actions `run:` step gets no profile, so bun is absent).
+          BUN_BIN="$HOME/.bun/bin"
+          if [ ! -x "$BUN_BIN/bun" ]; then
+            echo "::error::bun not found at $BUN_BIN/bun — the daemon runtime is missing on this runner"
+            exit 1
+          fi
+          echo "$BUN_BIN" >> "$GITHUB_PATH"
+          echo "bun: $BUN_BIN/bun $("$BUN_BIN/bun" --version)"
+
+      - name: Verify runtime dep closure resolves (BETA)
+        run: |
+          set -euo pipefail
+          bun "${{ steps.locate.outputs.dir }}/deploy/verify-closure.bun.mjs" "${{ env.BETA_HOME }}"
+
+      - name: Restart BETA daemon
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          systemctl --user restart paseo-beta.service
+          echo "BETA daemon restarted"
+          sleep 3
+          systemctl --user status paseo-beta.service --no-pager | head -10
+
+      - name: Verify BETA health
+        run: |
+          sleep 2
+          HEALTH=$(curl -sf http://127.0.0.1:6768/api/health 2>/dev/null || echo '{"status":"error"}')
+          echo "BETA health: $HEALTH"
+          if [ "$HEALTH" = '{"status":"error"}' ]; then echo "::error::BETA health endpoint unreachable after deploy"; exit 1; fi
+
+      - name: Assert BETA unit identity
+        run: |
+          set -euo pipefail
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          # Identity-level guard, deliberately not a sha-level one: the daemon
+          # exposes no build SHA on an unauthenticated endpoint (/api/health
+          # returns only status+timestamp; /api/status carries a version but is
+          # behind bearer auth), so there is nothing to compare the SHA against.
+          # What this does catch is the realistic BETA failure — the unit not
+          # installed, crashed on boot, or left pointing at another env's
+          # PASEO_HOME — which would make :6768 serve TEST's or PROD's bytes.
+          ACTIVE=$(systemctl --user is-active paseo-beta.service || true)
+          if [ "$ACTIVE" != "active" ]; then
+            echo "::error::paseo-beta.service is '$ACTIVE' after restart — BETA did not come up"
+            exit 1
+          fi
+          UNIT_ENV=$(systemctl --user show paseo-beta.service -p Environment --value)
+          case "$UNIT_ENV" in
+            *"PASEO_HOME=/home/ddv/paseo/BETA"*)
+              echo "BETA unit is active and pinned to PASEO_HOME=/home/ddv/paseo/BETA"
+              ;;
+            *)
+              echo "::error::paseo-beta.service is not pinned to PASEO_HOME=/home/ddv/paseo/BETA (Environment: $UNIT_ENV) — refusing to treat :6768 as a healthy BETA"
+              exit 1
+              ;;
+          esac
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Stage 7 — Deploy freebuff-acp adapter (versioned release + `current` symlink)
   # Independent of the daemon: agents spawn the adapter as a child process, so a
   # new release is used by the next agent/session; running agents keep the old
   # one. Rollback = repoint the symlink.
