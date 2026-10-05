@@ -245,8 +245,21 @@ describe("detach stop vs normal stop with a real child", () => {
     const connection = internals.connection as NonNullable<DetachACPInternals["connection"]>;
 
     try {
+      // `detached: false` here, and deliberately so. The teardown IS skipped
+      // and the child IS still alive — those are asserted below — but this
+      // child was spawned with `stdio: ["pipe","pipe","pipe"]`, so its stdin is
+      // a pipe owned by this process. When the daemon exits that pipe reaches
+      // EOF and the child exits with it, exactly as every real ACP child does
+      // (`ACPAgentClient.spawnTransport` always pipes stdin). So no writer
+      // survives this close, and reporting `detached: true` would only make
+      // `AgentManager.snapshotForClosedAgent` persist `persistence: null` for a
+      // writer that is already gone — permanently stripping resumability from
+      // every ACP agent closed by a stop.
+      //
+      // The positive case (a child that genuinely outlives the daemon) is
+      // covered in acp-agent.test.ts, "ACPAgentSession detach reporting".
       await expect(session.close({ reason: DAEMON_STOP_CLOSE_REASON })).resolves.toEqual({
-        detached: true,
+        detached: false,
       });
 
       expect(connection.cancel).not.toHaveBeenCalled();
