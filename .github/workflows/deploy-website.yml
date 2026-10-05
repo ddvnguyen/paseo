@@ -9,7 +9,7 @@ on:
       - "packages/website/**"
       - "packages/protocol/**"
       - "package.json"
-      - "package-lock.json"
+      - "pnpm-lock.yaml"
       - "patches/**"
       - ".github/workflows/deploy-website.yml"
   release:
@@ -24,14 +24,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci --workspace=@getpaseo/website --workspace=@getpaseo/protocol --include-workspace-root
+        run: pnpm install --frozen-lockfile
 
+      # packages/protocol exports only ./dist/*, so the website typecheck below
+      # cannot resolve @getpaseo/protocol until protocol is built. pnpm does not
+      # build it on install either: protocol has no prepare/prepublishOnly.
       - name: Build protocol
         run: npm run build:protocol
 
