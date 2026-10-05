@@ -19,6 +19,8 @@ import {
   type Stream,
 } from "@agentclientprotocol/sdk";
 import { z } from "zod";
+import type { JsonValue } from "@getpaseo/protocol/agent-types";
+
 import type {
   AcpConfigAccess,
   AcpConfigChange,
@@ -53,6 +55,10 @@ const ADAPTER_CAPABILITIES = [
   "prompt.command",
   "session.configure",
   "permission",
+  // Conversation rewind (owner directive 2026-09-26): the adapter exposes
+  // freebuff/rewindToUserTurn over ACP extension methods; the bridge maps
+  // host session.revert requests onto it. Conversation-only (no files scope).
+  "session.revert.conversation",
 ] as const;
 
 interface AcpBoundarySession {
@@ -232,14 +238,57 @@ async function dispatch(input: ProviderInput, state: AcpConnectionState): Promis
       state.emit({ type: "request.completed", requestId: input.requestId });
       return;
     }
+    case "session.revert":
+      await revertSession(input, state);
+      return;
     case "session.archive":
     case "session.unarchive":
-    case "session.revert":
       state.emit({
         type: "request.failed",
         requestId: input.requestId,
         error: { message: `${input.type} is not supported by this ACP provider` },
       });
+  }
+}
+
+/**
+ * Conversation rewind: translate the host's revert token into the adapter's
+ * user-turn ordinal and drive freebuff/rewindToUserTurn. The adapter swaps
+ * the conversation state and replays the restored history through the normal
+ * session-update lane; the runtime resets its timeline bookkeeping first so the
+ * replay rebuilds a clean, post-rewind view for hydration.
+ */
+async function revertSession(
+  input: Extract<ProviderInput, { type: "session.revert" }>,
+  state: AcpConnectionState,
+): Promise<void> {
+  const session = requireSession(state, input.sessionId);
+  if (input.scope !== "conversation") {
+    state.emit({
+      type: "request.failed",
+      requestId: input.requestId,
+      error: { message: "freebuff-acp rewind supports the conversation scope only" },
+    });
+    return;
+  }
+  const turn = session.runtime.userTurnOrdinalForToken(input.token);
+  if (turn === null) {
+    state.emit({
+      type: "request.failed",
+      requestId: input.requestId,
+      error: { message: "No rewind point for the given message" },
+    });
+    return;
+  }
+  try {
+    await mutateSession(session, () => session.runtime.rewindToUserTurn(turn));
+    state.emit({ type: "request.completed", requestId: input.requestId });
+  } catch (error) {
+    state.emit({
+      type: "request.failed",
+      requestId: input.requestId,
+      error: { message: describeError(error) },
+    });
   }
 }
 
@@ -378,9 +427,24 @@ class AcpRuntime {
     "agent_message_chunk" | "agent_thought_chunk",
     string
   >();
+  /**
+   * Notifications that arrive while `session/new` is still in flight. The
+   * session id is only known once the response lands, and agents announce
+   * their commands right behind it, so these would otherwise be dropped as
+   * "another session" and the composer would never learn the slash commands.
+   */
+  private earlyUpdates: SessionNotification[] | null = null;
   private closing = false;
   private processFailed = false;
   private configTransaction = false;
+  /**
+   * Conversation rewind bookkeeping: the revert token the host hands back on
+   * session.revert, keyed by its stable JSON form → user-turn ordinal
+   * (1-based, counted over the user messages this session has shown). Reset
+   * on open so tokens from a previous adapter process never map wrong.
+   */
+  private readonly userTurnTokens = new Map<string, number>();
+  private userTurnCount = 0;
   private stagedTransformerConfig: ProviderConfigState | null = null;
   private readonly closeConnector: () => Promise<void>;
   private notificationLane: Promise<void> = Promise.resolve();
@@ -496,6 +560,12 @@ class AcpRuntime {
     };
     let response: Pick<NewSessionResponse, "modes" | "configOptions">;
     if (nativeSessionId) {
+      // Adopt the id BEFORE the load call: agents replay history notifications
+      // (session/update) before answering session/load, and sessionUpdate()
+      // drops notifications for any session other than nativeSessionId.
+      // Adopting late silently discarded the whole replayed history, which
+      // blanked the timeline on every resume after a daemon restart.
+      this.nativeSessionId = nativeSessionId;
       response = await this.call(
         this.connection.loadSession({
           sessionId: nativeSessionId,
@@ -504,17 +574,35 @@ class AcpRuntime {
           _meta: metadata,
         }),
       );
-      this.nativeSessionId = nativeSessionId;
+      // Rewind tokens from a previous adapter process are meaningless here.
+      this.userTurnTokens.clear();
+      this.userTurnCount = 0;
+      // `session/load` resumes replay notifications (history) BEFORE its
+      // response, but they travel through the serialized notification lane,
+      // not the response path. Drain the lane before signaling ready so the
+      // host sees the full replayed history when it starts reading the
+      // session — otherwise hydration can observe an empty history and
+      // render the conversation as blank.
+      await this.drainNotifications();
     } else {
-      const newSession = await this.call(
-        this.connection.newSession({
-          cwd: input.config.cwd,
-          mcpServers,
-          _meta: metadata,
-        }),
-      );
-      response = newSession;
-      this.nativeSessionId = newSession.sessionId;
+      this.earlyUpdates = [];
+      let newSession: NewSessionResponse;
+      try {
+        newSession = await this.call(
+          this.connection.newSession({
+            cwd: input.config.cwd,
+            mcpServers,
+            _meta: metadata,
+          }),
+        );
+        response = newSession;
+        this.nativeSessionId = newSession.sessionId;
+        const early = this.earlyUpdates;
+        this.earlyUpdates = null;
+        for (const notification of early) this.sessionUpdate(notification);
+      } finally {
+        this.earlyUpdates = null;
+      }
     }
     this.modes = response.modes;
     this.configOptions = response.configOptions ?? [];
@@ -569,6 +657,14 @@ class AcpRuntime {
     const prompt = toAcpPrompt(input.prompt);
     const turnId = `acp:${input.prompt.clientMessageId}`;
     this.fallbackChunkIds.clear();
+    // Rewind bookkeeping (owner directive 2026-09-26): every real user turn
+    // gets the next ordinal and a revert token the host can hand back on
+    // session.revert. Replays do not pass through here, so the ordinal count
+    // stays aligned with the adapter's checkpoint ordinals.
+    this.userTurnCount += 1;
+    const userTurnOrdinal = this.userTurnCount;
+    const revertToken = { kind: "freebuff-user-turn", turn: userTurnOrdinal };
+    this.userTurnTokens.set(JSON.stringify(revertToken), userTurnOrdinal);
     this.emit({
       type: "timeline.item",
       sessionId: this.options.boundarySessionId,
@@ -580,6 +676,7 @@ class AcpRuntime {
           .map((part) => part.text)
           .join("\n"),
         clientMessageId: input.prompt.clientMessageId,
+        revertToken,
       },
     });
     this.emit({
@@ -634,6 +731,40 @@ class AcpRuntime {
 
   listSessions(cwd?: string) {
     return this.call(this.connection.listSessions({ cwd }));
+  }
+
+  /**
+   * Map a host revert token to the adapter's 1-based user-turn ordinal.
+   * Tokens are attached to user_message timeline items when they are emitted;
+   * the parsed request token is a fresh object, so lookup goes through its
+   * stable JSON form. Unknown tokens map to null and the revert fails.
+   */
+  userTurnOrdinalForToken(token: JsonValue): number | null {
+    return this.userTurnTokens.get(JSON.stringify(token)) ?? null;
+  }
+
+  /**
+   * Rewind the conversation to the state BEFORE user turn `turn` (1-based):
+   * drives the adapter's extension method, then resets this runtime's
+   * timeline bookkeeping so the adapter's replay rebuilds the post-rewind
+   * view (chunk/tool maps would otherwise keep pre-rewind fragments alive).
+   */
+  async rewindToUserTurn(turn: number): Promise<void> {
+    await this.call(
+      this.connection.extMethod("freebuff/rewindToUserTurn", {
+        sessionId: this.nativeSessionId,
+        turn,
+      }),
+    );
+    for (const key of this.userTurnTokens.keys()) {
+      const known = this.userTurnTokens.get(key);
+      if (known !== undefined && known >= turn) this.userTurnTokens.delete(key);
+    }
+    this.userTurnCount = turn - 1;
+    this.messages.clear();
+    this.toolCalls.clear();
+    this.pendingCompactions.clear();
+    this.fallbackChunkIds.clear();
   }
 
   async drainNotifications(): Promise<void> {
@@ -885,6 +1016,10 @@ class AcpRuntime {
   }
 
   private sessionUpdate(notification: SessionNotification): void {
+    if (this.earlyUpdates && !this.nativeSessionId) {
+      this.earlyUpdates.push(notification);
+      return;
+    }
     if (notification.sessionId !== this.nativeSessionId) return;
     this.reduceUpdate(notification.update);
   }
@@ -1414,8 +1549,11 @@ function jsonValue(value: unknown) {
   return z.json().parse(value);
 }
 
+/** Tool input as a JSON object; absent or non-JSON input (e.g. an adapter permission request without `rawInput`) is `{}`. */
 function jsonRecord(value: unknown): Record<string, ReturnType<typeof jsonValue>> {
-  const parsed = jsonValue(value);
+  const result = z.json().safeParse(value);
+  if (!result.success) return {};
+  const parsed = result.data;
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
   return parsed;
 }
