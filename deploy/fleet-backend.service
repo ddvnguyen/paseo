@@ -1,0 +1,72 @@
+# fleet-backend systemd --user unit: TEMPLATE, NOT INSTALLED
+#
+# Runs the TypeScript fleet-backend daemon: ONE process that owns fleet.db and
+# serves both the REST table (backend.py parity) and streamable MCP at /mcp.
+#
+# WHY A DAEMON AND NOT A PER-SESSION STDIO SERVER:
+#   Turso 0.7.2 takes an EXCLUSIVE per-process lock on the database file. A
+#   second process opening the same fleet.db fails with
+#   "Locking error: Failed locking file". A stdio fleet-backend per harness
+#   session therefore works for exactly one session and is fatal for many.
+#   Harnesses must point at this daemon (B2c picks the transport; M3a repoints
+#   the configs and is owner-gated).
+#
+# THIS FILE IS A TEMPLATE. It is committed for review only. Installing,
+#   enabling, starting, stopping or replacing the live Python
+#   orchestration-backend.service is M3a and is OWNER-GATED — do not do it from
+#   this file. To install after that approval:
+#   cp deploy/fleet-backend.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now fleet-backend.service
+#
+# BEFORE FIRST START: `dist/` must exist. The daemon runs compiled output, so
+#   cd <repo> && pnpm --filter @getpaseo/fleet-backend build
+
+[Unit]
+Description=fleet-backend — TS orchestration backend (REST + streamable MCP on fleet.db)
+# Mirrors the live Python unit's After=default.target.
+After=default.target
+
+[Service]
+Type=simple
+# TODO(owner): set the checkout path and the node binary for the target host.
+ExecStart=/usr/bin/env node /path/to/paseo/packages/fleet-backend/dist/daemon.js
+WorkingDirectory=/path/to/paseo
+
+# --- state ------------------------------------------------------------------
+# State dir for fleet.json / timings.json / lessons / references, and the
+# rendered summary. Same meaning as in the Python unit.
+Environment=MCP_ORCH_STATE_DIR=/path/to/paseo/orchestration/state/mcp
+Environment=MCP_ORCH_SUMMARY_PATH=/path/to/paseo/orchestration.md
+
+# --- the database -----------------------------------------------------------
+# fleet.db ONLY. This daemon deliberately ignores MCP_ORCH_DB_PATH: the Python
+# service sets that to the live orchestration.sqlite, and honouring it would aim
+# the TypeScript backend at the authoritative ledger. The exclusive Turso lock
+# also means this must be the ONE process holding this file.
+Environment=FLEET_DB_PATH=/path/to/paseo/orchestration/state/mcp/fleet.db
+
+# --- listen address ---------------------------------------------------------
+# Defaults are 127.0.0.1:8099 even if unset. Keep it on loopback: /mcp is NOT
+# covered by the REST bearer token (backend.py's protected set is /schema,
+# /tools*, /resources* only), so a non-loopback bind exposes tool execution
+# without authentication. That asymmetry is inherited from the Python service,
+# not introduced here.
+Environment=ORCHESTRATION_BIND=127.0.0.1
+Environment=ORCHESTRATION_PORT=8099
+
+# --- auth -------------------------------------------------------------------
+# Optional: set a real token to enable REST auth on the protected routes.
+# Empty/absent disables auth entirely (backwards compatible). Note this does NOT
+# protect /mcp — see the bind note above.
+# Environment=MCP_ORCH_AUTH_TOKEN=
+
+Environment=NODE_ENV=production
+
+Restart=on-failure
+RestartSec=3
+MemoryMax=512M
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
