@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 
+import type { AgentCloseReason } from "./agent-sdk-types.js";
 import { readAgentProcessRegistry } from "./agent-process-registry.js";
 
 /**
@@ -16,47 +17,56 @@ import { readAgentProcessRegistry } from "./agent-process-registry.js";
  * (i.e. spawned inside an S2 systemd user scope) are spared. A child outside
  * the registry cannot outlive the daemon's cgroup under systemd and would
  * become an unadoptable orphan if left running, so it keeps today's teardown.
+ *
+ * ## Why this module holds no mutable state
+ *
+ * Detach intent is *call-scoped*, not ambient. An earlier revision kept a
+ * process-global `detachStopActive` flag set once at `stop()` entry, and every
+ * `session.close()` branched on it. `session.close()` is shared by the
+ * daemon-stop path and the user path (`archive_agent` RPC, delete, reload,
+ * draft-session probe closes), so for the whole stop window — up to
+ * AGENT_CLOSE_TIMEOUT_MS per agent plus teardown — a user closing one agent
+ * detached that agent's child instead of terminating it, leaking a live
+ * provider process with a registry record nobody would ever reap.
+ *
+ * The fix is to carry `AgentCloseReason` on the close call itself
+ * (`session.close({ reason: "daemon-stop" })`) and gate on THAT. Nothing here
+ * is mutated after import, so there is no window in which user-originated
+ * closes can observe detach intent.
  */
 export const DETACH_AGENTS_ON_STOP_ENV = "PASEO_DETACH_AGENTS_ON_STOP";
+
+/** The only close reason that may detach a provider child. */
+export const DAEMON_STOP_CLOSE_REASON: AgentCloseReason = "daemon-stop";
 
 export function isDetachAgentsOnStopEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[DETACH_AGENTS_ON_STOP_ENV]?.trim().toLowerCase();
   return raw === "1" || raw === "true";
 }
 
-let detachStopActive = false;
-
 /**
- * Engage detach for this daemon stop. Idempotent; call at stop() entry (and
- * anywhere a stop is first observed) before any agent closes. Returns true
- * only when the env var enabled detach — false means "stop as usual".
+ * True when THIS close call may leave the provider child running.
+ *
+ * Both conditions are required and neither is ambient:
+ *  1. the caller explicitly asked for a daemon-stop close, and
+ *  2. the env opt-in is on, and
+ *  3. `pid` has a live entry in the S2 scope registry.
+ *
+ * A close with any other reason (including no reason at all) always returns
+ * false, so user-initiated closes terminate exactly as they did before
+ * detach-on-stop existed — even mid-stop.
+ *
+ * The registry file is only read once conditions 1 and 2 hold, so normal
+ * closes and normal agent teardown do not touch the filesystem at all.
  */
-export function beginAgentDetachStop(logger?: Logger): boolean {
-  if (detachStopActive) {
-    return true;
-  }
-  if (!isDetachAgentsOnStopEnabled()) {
+export function shouldDetachAgentProcess(
+  pid: number | null | undefined,
+  reason: AgentCloseReason | undefined,
+): boolean {
+  if (reason !== DAEMON_STOP_CLOSE_REASON) {
     return false;
   }
-  detachStopActive = true;
-  logger?.info(
-    { env: DETACH_AGENTS_ON_STOP_ENV },
-    "Detach-on-stop enabled: scoped agent children will be left running",
-  );
-  return true;
-}
-
-export function isAgentDetachStopActive(): boolean {
-  return detachStopActive;
-}
-
-/**
- * True only while a detach-stop is running AND pid has an entry in the S2
- * scope registry. Fast path returns false without touching the registry file,
- * so normal stops and normal agent closes behave byte-for-byte as before.
- */
-export function shouldDetachAgentProcess(pid?: number | null): boolean {
-  if (!detachStopActive) {
+  if (!isDetachAgentsOnStopEnabled()) {
     return false;
   }
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
@@ -66,8 +76,15 @@ export function shouldDetachAgentProcess(pid?: number | null): boolean {
 }
 
 /**
- * Test-only: clear the in-process detach-stop state between tests.
+ * Log once per daemon that detach-on-stop is configured. Purely informational:
+ * the decision itself is made per close call, never from process state.
  */
-export function __resetAgentDetachForTests(): void {
-  detachStopActive = false;
+export function logDetachOnStopConfigured(logger: Logger): void {
+  if (!isDetachAgentsOnStopEnabled()) {
+    return;
+  }
+  logger.info(
+    { env: DETACH_AGENTS_ON_STOP_ENV },
+    "Detach-on-stop configured: a graceful daemon stop will leave scoped agent children running",
+  );
 }

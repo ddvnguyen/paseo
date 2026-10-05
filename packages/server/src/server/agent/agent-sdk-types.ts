@@ -660,6 +660,41 @@ export interface AgentPermissionResult {
   followUpPrompt?: AgentPromptInput;
 }
 
+/**
+ * Why a live runtime is being released.
+ *
+ * - "user": the owner (or an owner-initiated lifecycle action such as
+ *   archive / delete / reload / provider retirement) asked for this close.
+ *   The provider child MUST be torn down.
+ * - "daemon-stop": the daemon itself is shutting down. This is the only reason
+ *   that may be granted detach semantics.
+ */
+export type AgentCloseReason = "user" | "daemon-stop";
+
+/** Options for {@link AgentSession.close}. */
+export interface AgentCloseOptions {
+  /**
+   * Defaults to "user". Detach-on-stop is opt-in per call site, so a close
+   * that arrives without a reason — including every user-originated close that
+   * happens to race a daemon stop — can never take the detach branch.
+   */
+  reason?: AgentCloseReason;
+}
+
+/**
+ * What a close actually did. Providers that have no detach behaviour may keep
+ * returning `void`, which is why the return type is a union.
+ */
+export interface AgentCloseOutcome {
+  /**
+   * True when this close left the provider's native writer (child process /
+   * native session) running. The manager uses this to decide whether a resumable
+   * snapshot may be published: a live writer plus a resumable snapshot is how a
+   * later daemon ends up with two writers on one session.
+   */
+  detached?: boolean;
+}
+
 export interface AgentSession {
   readonly provider: AgentProvider;
   readonly id: string | null;
@@ -686,8 +721,16 @@ export interface AgentSession {
    * still uncertain.
    */
   interrupt(): Promise<void>;
-  /** Release live runtime resources without archiving or deleting the durable native session. */
-  close(): Promise<void>;
+  /**
+   * Release live runtime resources without archiving or deleting the durable native session.
+   *
+   * `options.reason` is the ONLY sanctioned way to request detach-on-stop: it
+   * travels with this call, so a user-initiated close can never inherit detach
+   * semantics from ambient process state, no matter when it happens to run.
+   *
+   * Providers that implement detach report it via {@link AgentCloseOutcome}.
+   */
+  close(options?: AgentCloseOptions): Promise<AgentCloseOutcome | void>;
   listCommands?(): Promise<AgentSlashCommand[]>;
   setModel?(modelId: string | null): Promise<void>;
   setThinkingOption?(thinkingOptionId: string | null): Promise<void | AgentProviderNotice>;

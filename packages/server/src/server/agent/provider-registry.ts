@@ -466,7 +466,9 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
     respondToPermission: (requestId, response) => inner.respondToPermission(requestId, response),
     describePersistence: () => mapPersistenceHandle(provider, inner.describePersistence()),
     interrupt: () => inner.interrupt(),
-    close: () => inner.close(),
+    // Forward the close options: a wrapper that dropped them would silently
+    // downgrade every daemon-stop close to an ordinary user close underneath.
+    close: (options) => inner.close(options),
     listCommands: inner.listCommands?.bind(inner),
     setModel: inner.setModel?.bind(inner),
     setThinkingOption: inner.setThinkingOption?.bind(inner),

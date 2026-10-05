@@ -63,6 +63,8 @@ import {
   getAgentStreamEventTurnId,
   type AgentCapabilityFlags,
   type AgentClient,
+  type AgentCloseOptions,
+  type AgentCloseOutcome,
   type AgentCreateConfigUnattendedInput,
   type AgentFeature,
   type AgentLaunchContext,
@@ -2423,7 +2425,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     }
   }
 
-  async close(): Promise<void> {
+  async close(options?: AgentCloseOptions): Promise<AgentCloseOutcome | void> {
     if (this.closed) {
       return;
     }
@@ -2435,7 +2437,11 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     // disposal (pending permissions, subscribers, buffered events) still runs
     // so the daemon can exit cleanly. Children outside the registry keep
     // today's teardown — they cannot outlive the daemon's cgroup anyway.
-    const detachChild = shouldDetachAgentProcess(this.child?.pid);
+    //
+    // The gate is call-scoped: `options.reason` is "daemon-stop" only when this
+    // very call came from the daemon stop path. An archive/delete/reload that
+    // races the stop window passes "user" and terminates as usual.
+    const detachChild = shouldDetachAgentProcess(this.child?.pid, options?.reason);
 
     this.deliverTranslatedEvents(this.flushPendingUserMessage());
     this.settleCommandsReady();
@@ -2478,6 +2484,10 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.connection = null;
     this.child = null;
     this.activeForegroundTurnId = null;
+
+    // Report the outcome so AgentManager can refuse to publish a resumable
+    // snapshot for a writer that is still running.
+    return { detached: detachChild };
   }
 
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {

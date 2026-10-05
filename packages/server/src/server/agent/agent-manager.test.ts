@@ -11244,3 +11244,227 @@ test("concurrent native restores run once before resuming the same agent", async
     rmSync(workdir, { recursive: true, force: true });
   }
 });
+
+/**
+ * Detach-on-stop: the close reason is call-scoped, and a detached close must
+ * not leave a resumable snapshot behind.
+ *
+ * These use a real AgentStorage on disk (not a mock) so the assertions are on
+ * the persisted state, which is the thing that decides whether a later daemon
+ * can resume the agent into a second writer.
+ */
+describe("detach-on-stop close semantics", () => {
+  interface CloseCall {
+    reason: string | undefined;
+    detached: boolean;
+  }
+
+  /**
+   * A session that behaves like a detaching provider: it reports `detached`
+   * when it is closed for a daemon stop and the caller asked for it. Records
+   * every close so the test can prove the reason actually arrived.
+   */
+  class RecordingDetachSession extends TestAgentSession {
+    readonly calls: CloseCall[] = [];
+
+    override async close(options?: {
+      reason?: "user" | "daemon-stop";
+    }): Promise<{ detached?: boolean } | void> {
+      this.calls.push({ reason: options?.reason, detached: options?.reason === "daemon-stop" });
+      return { detached: options?.reason === "daemon-stop" };
+    }
+  }
+
+  function createManagerWithSession(options: {
+    workdir: string;
+    session: RecordingDetachSession;
+    storage: AgentStorage;
+    agentId: string;
+  }): AgentManager {
+    const client = new (class extends TestAgentClient {
+      override async createSession(): Promise<AgentSession> {
+        return options.session;
+      }
+    })();
+    return new AgentManager({
+      clients: { codex: client },
+      registry: options.storage,
+      logger,
+      idFactory: () => options.agentId,
+    });
+  }
+
+  async function createStoredAgent(options: {
+    workdir: string;
+    session: RecordingDetachSession;
+    storage: AgentStorage;
+    agentId: string;
+  }): Promise<{ manager: AgentManager; agent: ManagedAgent }> {
+    const manager = createManagerWithSession(options);
+    const agent = await manager.createAgent(
+      { provider: "codex", cwd: options.workdir },
+      undefined,
+      {
+        workspaceId: undefined,
+      },
+    );
+    return { manager, agent };
+  }
+
+  test("a daemon-stop close passes reason:daemon-stop down to the provider session", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-detach-reason-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const session = new RecordingDetachSession({ provider: "codex", cwd: workdir });
+    const agentId = "00000000-0000-4000-8000-000000000201";
+    let manager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({ workdir, session, storage, agentId });
+      manager = created.manager;
+      expect(created.agent.persistence?.sessionId).toBe(session.id);
+
+      await manager.closeAgent(agentId, { reason: "daemon-stop" });
+
+      expect(session.calls.length).toBeGreaterThan(0);
+      expect(session.calls.every((call) => call.reason === "daemon-stop")).toBe(true);
+    } finally {
+      if (manager) await manager.closeAgent(agentId).catch(() => undefined);
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  test("an owner-initiated close carries reason:user, never daemon-stop", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-detach-user-reason-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const session = new RecordingDetachSession({ provider: "codex", cwd: workdir });
+    const agentId = "00000000-0000-4000-8000-000000000202";
+    let manager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({ workdir, session, storage, agentId });
+      manager = created.manager;
+
+      // No reason supplied — this is exactly the shape an archive_agent RPC or a
+      // draft-session probe close takes while a daemon stop is in progress.
+      await manager.closeAgent(agentId);
+
+      expect(session.calls.length).toBeGreaterThan(0);
+      expect(session.calls.every((call) => call.reason === "user")).toBe(true);
+      expect(session.calls.some((call) => call.detached)).toBe(false);
+    } finally {
+      if (manager) await manager.closeAgent(agentId).catch(() => undefined);
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  test("archiving during a detach-stop window still terminates (reason:user reaches the provider)", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-detach-archive-race-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const session = new RecordingDetachSession({ provider: "codex", cwd: workdir });
+    const agentId = "00000000-0000-4000-8000-000000000203";
+    let manager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({ workdir, session, storage, agentId });
+      manager = created.manager;
+
+      // A daemon stop is configured; the owner's archive lands inside its window.
+      // The provider must be closed as a user action, so nothing detaches.
+      await manager.archiveAgent(agentId);
+
+      expect(session.calls.length).toBeGreaterThan(0);
+      expect(session.calls.every((call) => call.reason === "user")).toBe(true);
+      expect(session.calls.some((call) => call.detached)).toBe(false);
+    } finally {
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  test("a detached close persists a NON-resumable snapshot; a normal close keeps one", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-detach-persistence-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+
+    // --- detached close ---
+    const detachedSession = new RecordingDetachSession({ provider: "codex", cwd: workdir });
+    const detachedId = "00000000-0000-4000-8000-000000000204";
+    let detachedManager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({
+        workdir,
+        session: detachedSession,
+        storage,
+        agentId: detachedId,
+      });
+      detachedManager = created.manager;
+      // Precondition: while live, the persisted record IS resumable.
+      const live = await storage.get(detachedId);
+      expect(live?.persistence?.sessionId).toBe(detachedSession.id);
+
+      await detachedManager.closeAgent(detachedId, { reason: "daemon-stop" });
+      await storage.flush();
+
+      // The writer is still running, so the persisted record must not be
+      // resumable. Assert on the PERSISTED state, not on a mock call: a later
+      // daemon reads exactly this.
+      const afterDetach = await storage.get(detachedId);
+      expect(afterDetach).not.toBeNull();
+      expect(afterDetach?.persistence).toBeNull();
+      expect(afterDetach?.persistence?.sessionId).toBeUndefined();
+      expect(afterDetach?.persistence?.nativeHandle).toBeUndefined();
+      expect(afterDetach?.lastStatus).toBe("closed");
+    } finally {
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+
+    // --- ordinary close, for contrast: the snapshot stays resumable ---
+    const normalWorkdir = mkdtempSync(join(tmpdir(), "agent-detach-persistence-normal-"));
+    const normalStorage = new AgentStorage(join(normalWorkdir, "agents"), logger);
+    const normalSession = new RecordingDetachSession({ provider: "codex", cwd: normalWorkdir });
+    const normalId = "00000000-0000-4000-8000-000000000205";
+    let normalManager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({
+        workdir: normalWorkdir,
+        session: normalSession,
+        storage: normalStorage,
+        agentId: normalId,
+      });
+      normalManager = created.manager;
+
+      await normalManager.closeAgent(normalId);
+      await normalStorage.flush();
+
+      const afterNormal = await normalStorage.get(normalId);
+      expect(afterNormal?.persistence?.sessionId).toBe(normalSession.id);
+    } finally {
+      await normalStorage.flush();
+      rmSync(normalWorkdir, { recursive: true, force: true });
+    }
+  });
+
+  test("a detached close overwrites the previous LIVE snapshot rather than leaving it resumable", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-detach-overwrite-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const session = new RecordingDetachSession({ provider: "codex", cwd: workdir });
+    const agentId = "00000000-0000-4000-8000-000000000206";
+    let manager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({ workdir, session, storage, agentId });
+      manager = created.manager;
+      await storage.flush();
+      expect((await storage.get(agentId))?.persistence?.sessionId).toBe(session.id);
+
+      await manager.closeAgent(agentId, { reason: "daemon-stop" });
+      await storage.flush();
+
+      // Persisting NOTHING would leave that live snapshot in place, still
+      // resumable. The record must have been overwritten.
+      const stored = await storage.get(agentId);
+      expect(stored?.persistence).toBeNull();
+    } finally {
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+});
