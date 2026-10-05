@@ -1,6 +1,9 @@
 import { type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   AgentSideConnection,
   ClientSideConnection,
@@ -55,6 +58,8 @@ import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { buildStringCommandShellInvocation } from "../../../utils/string-command-shell.js";
 import { asInternals } from "../../test-utils/class-mocks.js";
 import * as spawnUtils from "../../../utils/spawn.js";
+import { DAEMON_STOP_CLOSE_REASON } from "../agent-detach.js";
+import { recordAgentProcess, setAgentProcessRegistryHome } from "../agent-process-registry.js";
 
 describe("buildACPClientCapabilities", () => {
   test("enables terminal execution on the host while keeping filesystem operations with the agent by default", () => {
@@ -4310,5 +4315,146 @@ describe("ACP session/load invariant — cwd and mcpServers always passed", () =
       cwd: "/tmp/paseo-acp-test",
       mcpServers: [],
     });
+  });
+});
+
+/**
+ * The `detached` return value is a CLAIM about the future ("this writer is
+ * still running"), and `AgentManager.snapshotForClosedAgent` acts on it by
+ * persisting `persistence: null` — which permanently strips the agent's
+ * resumability. So the claim has to be true, not merely plausible.
+ *
+ * For ACP it is not. `ACPAgentClient.spawnTransport` starts every ACP child
+ * with `stdio: ["pipe", "pipe", "pipe"]`, so `child.stdin` is this daemon's own
+ * writable pipe carrying the NDJSON ACP stream. The daemon exiting closes that
+ * pipe, the child reads EOF and exits with it, and the skipped teardown leaves
+ * a doomed process rather than a live writer. Reporting `detached: true` anyway
+ * would make every ACP agent closed by a daemon stop permanently unresumable
+ * while its session directory is still perfectly resumable on disk.
+ */
+describe("ACPAgentSession detach reporting", () => {
+  let registryHome: string;
+  let previousDetachEnv: string | undefined;
+
+  beforeEach(() => {
+    registryHome = mkdtempSync(path.join(os.tmpdir(), "acp-detach-registry-"));
+    setAgentProcessRegistryHome(registryHome);
+    previousDetachEnv = process.env.PASEO_DETACH_AGENTS_ON_STOP;
+    delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
+  });
+
+  afterEach(() => {
+    setAgentProcessRegistryHome(null);
+    rmSync(registryHome, { recursive: true, force: true });
+    if (previousDetachEnv === undefined) {
+      delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
+    } else {
+      process.env.PASEO_DETACH_AGENTS_ON_STOP = previousDetachEnv;
+    }
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * An ACP child as `spawnTransport` really builds it: a daemon-owned writable
+   * stdin plus a pid. `withStdin: false` models a hypothetical child whose
+   * stdin is NOT owned by this daemon, which is the only shape that could
+   * outlive the stop.
+   */
+  function createAcpChildStub(pid: number, options: { withStdin: boolean }): ChildProcess {
+    const child = new EventEmitter() as ChildProcess;
+    child.pid = pid;
+    child.stdout = new EventEmitter() as ChildProcess["stdout"];
+    child.stderr = new EventEmitter() as ChildProcess["stderr"];
+    if (options.withStdin) {
+      child.stdin = new EventEmitter() as ChildProcess["stdin"];
+    }
+    child.kill = vi.fn(() => true) as ChildProcess["kill"];
+    return child;
+  }
+
+  function recordPid(pid: number): void {
+    expect(
+      recordAgentProcess(
+        {
+          scopeId: `paseo-acp-test-${pid}`,
+          unit: `paseo-acp-test-${pid}.scope`,
+          pid,
+          provider: "claude-acp",
+          startedAt: new Date().toISOString(),
+        },
+        { logger: createTestLogger() },
+      ),
+    ).toBe(true);
+  }
+
+  test("a registered scoped child with a daemon-owned stdin does NOT claim detachment", async () => {
+    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
+    const terminator = new FakeTerminator();
+    const session = createSession({ terminateProcess: terminator.terminate });
+    const internals = asInternals<ACPCloseInternals>(session);
+    const child = createAcpChildStub(424_001, { withStdin: true });
+    recordPid(child.pid as number);
+    internals.child = child;
+    internals.connection = null;
+    internals.sessionId = null;
+
+    // The teardown is still skipped for a registered scoped pid (that part is
+    // unchanged), but the child is going to die on stdin EOF, so the session
+    // must NOT claim its writer survived.
+    await expect(session.close({ reason: DAEMON_STOP_CLOSE_REASON })).resolves.toEqual({
+      detached: false,
+    });
+    expect(terminator.terminated).not.toContain(child);
+  });
+
+  test("a registered scoped child whose stdin the daemon does NOT own DOES claim detachment", async () => {
+    // The positive half of the same predicate. If ACP ever adopts a child that
+    // cannot be starved of stdin by this process exiting, the honest answer
+    // flips automatically and `persistence: null` becomes correct again.
+    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
+    const terminator = new FakeTerminator();
+    const session = createSession({ terminateProcess: terminator.terminate });
+    const internals = asInternals<ACPCloseInternals>(session);
+    const child = createAcpChildStub(424_002, { withStdin: false });
+    recordPid(child.pid as number);
+    internals.child = child;
+    internals.connection = null;
+    internals.sessionId = null;
+
+    await expect(session.close({ reason: DAEMON_STOP_CLOSE_REASON })).resolves.toEqual({
+      detached: true,
+    });
+    expect(terminator.terminated).not.toContain(child);
+  });
+
+  test("a USER close on a registered scoped child claims no detachment and still kills it", async () => {
+    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
+    const terminator = new FakeTerminator();
+    const session = createSession({ terminateProcess: terminator.terminate });
+    const internals = asInternals<ACPCloseInternals>(session);
+    const child = createAcpChildStub(424_003, { withStdin: false });
+    recordPid(child.pid as number);
+    internals.child = child;
+    internals.connection = null;
+    internals.sessionId = null;
+
+    await expect(session.close({ reason: "user" })).resolves.toEqual({ detached: false });
+    expect(terminator.terminated).toContain(child);
+  });
+
+  test("an UNREGISTERED child claims no detachment and is still killed on a daemon stop", async () => {
+    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
+    const terminator = new FakeTerminator();
+    const session = createSession({ terminateProcess: terminator.terminate });
+    const internals = asInternals<ACPCloseInternals>(session);
+    const child = createAcpChildStub(424_004, { withStdin: false });
+    internals.child = child;
+    internals.connection = null;
+    internals.sessionId = null;
+
+    await expect(session.close({ reason: DAEMON_STOP_CLOSE_REASON })).resolves.toEqual({
+      detached: false,
+    });
+    expect(terminator.terminated).toContain(child);
   });
 });

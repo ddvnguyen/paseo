@@ -23,6 +23,8 @@ import {
   getAgentStreamEventTurnId,
   type AgentCapabilityFlags,
   type AgentClient,
+  type AgentCloseOptions,
+  type AgentCloseOutcome,
   type AgentCreateSessionOptions,
   type AgentFeature,
   type AgentLaunchContext,
@@ -102,7 +104,7 @@ import { renderPromptAttachmentAsText } from "../prompt-attachments.js";
 import { composeSystemPromptParts } from "../system-prompt.js";
 import { normalizeProviderReplayTimestamp } from "../provider-history-timestamps.js";
 import { revertOpenCodeConversationAndFiles } from "./opencode/rewind.js";
-import { isAgentDetachStopActive } from "../agent-detach.js";
+import { shouldDetachAgentProcess } from "../agent-detach.js";
 import {
   claimOpenCodeSubagentFallbackTitle,
   foldOpenCodeSubagentPresentation,
@@ -1497,6 +1499,7 @@ export class OpenCodeAgentClient implements AgentClient {
         acquisition.release,
         options?.persistSession,
         launchContext?.agentId,
+        acquisition.server.pid,
         url,
         false,
         unbindBridge,
@@ -1552,6 +1555,7 @@ export class OpenCodeAgentClient implements AgentClient {
         acquisition.release,
         undefined,
         launchContext?.agentId,
+        acquisition.server.pid,
         url,
         registeredAcquisition !== null,
         unbindBridge,
@@ -3387,7 +3391,9 @@ class OpenCodeAgentSession implements AgentSession {
   private childHydrationCompleted = false;
   private readonly unrelatedSessionIds = new Set<string>();
   private selectedModelContextWindowMaxTokens: number | undefined;
-  private releaseServer: (() => Promise<void>) | null;
+  private releaseServer: ((options?: AgentCloseOptions) => Promise<void>) | null;
+  /** Pid of the opencode server generation backing this session, for the detach gate. */
+  private readonly serverPid: number | undefined;
   private releaseBridge: (() => void) | null;
   private ingress = Promise.resolve();
   private gapRepairRevision = 0;
@@ -3403,9 +3409,10 @@ class OpenCodeAgentSession implements AgentSession {
     logger: Logger,
     modelContextWindowsByModelKey: ReadonlyMap<string, number> = new Map(),
     private readonly events: OpenCodeEventSource = EMPTY_OPENCODE_EVENT_SOURCE,
-    releaseServer?: () => Promise<void>,
+    releaseServer?: (options?: AgentCloseOptions) => Promise<void>,
     persistSession = true,
     private readonly agentId?: string,
+    serverPid?: number,
     private readonly serverUrl?: string,
     private readonly externallyDriven = false,
     releaseBridge?: () => void,
@@ -3418,6 +3425,7 @@ class OpenCodeAgentSession implements AgentSession {
     this.currentMode = normalizeOpenCodeModeId(config.modeId);
     this.autoAcceptEnabled = !config.toolPolicy && isOpenCodeAutoAcceptEnabled(config);
     this.releaseServer = releaseServer ?? null;
+    this.serverPid = serverPid;
     this.releaseBridge = releaseBridge ?? null;
     this.persistSession = persistSession;
     this.selectedModelContextWindowMaxTokens = this.resolveConfiguredModelContextWindowMaxTokens(
@@ -4909,7 +4917,14 @@ class OpenCodeAgentSession implements AgentSession {
     };
   }
 
-  async close(): Promise<void> {
+  async close(options?: AgentCloseOptions): Promise<AgentCloseOutcome | void> {
+    // Detach-stop, per THIS call: a scoped server child recorded in the S2
+    // registry is left running, so neither the in-flight turn nor the ephemeral
+    // session may be torn down — otherwise a plain-spawned server (after a
+    // probe downgrade) would skip the abort and the delete yet still get killed,
+    // leaking the ephemeral session. Gating on the per-pid registry rather than
+    // on an ambient global also keeps this correct under a concurrent user close.
+    const detachChild = shouldDetachAgentProcess(this.serverPid, options?.reason);
     try {
       this.closed = true;
       this.abortController?.abort();
@@ -4918,11 +4933,7 @@ class OpenCodeAgentSession implements AgentSession {
       this.unsubscribeEvents = null;
       await this.ingress.catch(() => undefined);
       this.subscribers.clear();
-      // Detach-stop: the server child may be surviving in its scope, so do not
-      // abort its in-flight turn or delete its session. Daemon-side disposal
-      // above (aborts, unsubscribes, subscriber clear) still runs; whether the
-      // server process itself lives is decided by killServer()'s scope check.
-      if (!isAgentDetachStopActive()) {
+      if (!detachChild) {
         await abortOpenCodeSession({
           client: this.client,
           sessionId: this.sessionId,
@@ -4935,9 +4946,12 @@ class OpenCodeAgentSession implements AgentSession {
     } finally {
       this.releaseBridge?.();
       this.releaseBridge = null;
-      await this.releaseServer?.();
+      await this.releaseServer?.(options);
       this.releaseServer = null;
     }
+    // Whether the server process itself lives is decided by releaseServer ->
+    // killServer, which applies the same per-pid gate with this same reason.
+    return { detached: detachChild };
   }
 
   private async deleteProviderSessionIfEphemeral(): Promise<void> {

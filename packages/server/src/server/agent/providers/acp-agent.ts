@@ -63,6 +63,8 @@ import {
   getAgentStreamEventTurnId,
   type AgentCapabilityFlags,
   type AgentClient,
+  type AgentCloseOptions,
+  type AgentCloseOutcome,
   type AgentCreateConfigUnattendedInput,
   type AgentFeature,
   type AgentLaunchContext,
@@ -2454,7 +2456,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     }
   }
 
-  async close(): Promise<void> {
+  async close(options?: AgentCloseOptions): Promise<AgentCloseOutcome | void> {
     if (this.closed) {
       return;
     }
@@ -2466,7 +2468,39 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     // disposal (pending permissions, subscribers, buffered events) still runs
     // so the daemon can exit cleanly. Children outside the registry keep
     // today's teardown — they cannot outlive the daemon's cgroup anyway.
-    const detachChild = shouldDetachAgentProcess(this.child?.pid);
+    //
+    // The gate is call-scoped: `options.reason` is "daemon-stop" only when this
+    // very call came from the daemon stop path. An archive/delete/reload that
+    // races the stop window passes "user" and terminates as usual.
+    const detachChild = shouldDetachAgentProcess(this.child?.pid, options?.reason);
+
+    // `detachChild` decides whether we SKIP the teardown. It is not the same
+    // question as "will the writer still be running afterwards?", which is what
+    // the `detached` return value has to answer honestly.
+    //
+    // An ACP child's lifetime is bound to this daemon's: `spawnTransport`
+    // starts it with `stdio: ["pipe", "pipe", "pipe"]`, and `child.stdin` is
+    // this daemon's own writable pipe feeding the ACP NDJSON stream. When the
+    // daemon exits, that pipe reaches EOF and the child exits with it (see #46:
+    // "ACP children die on stdin EOF"). So skipping the teardown leaves a
+    // writer that is already doomed — it does NOT leave a live writer.
+    //
+    // Claiming `detached: true` anyway is not a harmless over-report:
+    // `AgentManager.snapshotForClosedAgent` persists `persistence: null`
+    // whenever it sees `detached`, which is precisely what stops a later daemon
+    // from resuming the agent. Every ACP agent closed by a stop would therefore
+    // become permanently unresumable even though its child is dead and its
+    // session directory is intact — so the next daemon resumes nothing and the
+    // conversation is simply gone.
+    //
+    // Report detachment only when the child holds no daemon-owned stdin, i.e.
+    // when its stdin cannot be closed from under it by this process exiting.
+    // Today `assertChildWithPipes` guarantees a piped stdin, so ACP never
+    // claims detachment — which is the honest answer. If ACP ever adopts a
+    // child whose liveness is not tied to this pipe, the predicate flips and
+    // the detach reporting starts working on its own.
+    const childOutlivesDaemon = !this.child?.stdin;
+    const detached = detachChild && childOutlivesDaemon;
 
     this.deliverTranslatedEvents(this.flushPendingUserMessage());
     this.settleCommandsReady();
@@ -2509,6 +2543,11 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.connection = null;
     this.child = null;
     this.activeForegroundTurnId = null;
+
+    // Report the outcome so AgentManager can refuse to publish a resumable
+    // snapshot for a writer that is still running — and, just as important,
+    // NOT strip resumability from one that has already gone.
+    return { detached };
   }
 
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
