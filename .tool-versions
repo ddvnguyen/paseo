@@ -1,4 +1,5 @@
 rust        1.85.1
 nodejs      22.20.0
+bun         1.4.2
 java        21
 android-sdk 21.0
