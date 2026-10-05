@@ -934,6 +934,11 @@ jobs:
     steps:
       - name: Resolve build ref
         id: ref
+        # Inputs go through env, never interpolated into the script: a crafted
+        # value must not be able to run shell on the self-hosted runner, and REF
+        # becomes a path under $BUILDS_ROOT (review #53.4).
+        env:
+          INPUT_REF: ${{ inputs.beta_build_ref }}
         run: |
           set -euo pipefail
           # Precedence stays input-first (an explicit ref means "deploy exactly this
@@ -945,7 +950,7 @@ jobs:
           if [ "${{ needs.build-hydra.result }}" = "success" ]; then
             STAGE1_SHA="${{ needs.build-hydra.outputs.sha }}"
           fi
-          INPUT_REF="${{ inputs.beta_build_ref }}"
+          # (INPUT_REF arrives via this step's env:, never interpolated into the script.)
           if [ -n "$STAGE1_SHA" ] && [ -n "$INPUT_REF" ] && [ "$INPUT_REF" != "$STAGE1_SHA" ]; then
             echo "::error::both Stage 1 ($STAGE1_SHA) and beta_build_ref ($INPUT_REF) set and they disagree — select one, or make them the same SHA"
             exit 1
@@ -956,6 +961,13 @@ jobs:
           fi
           if [ -z "$REF" ]; then
             echo "::error::beta_build_ref is required — Stage 1 not selected or failed"
+            exit 1
+          fi
+          # The resolved REF is the strongest single check available: it is exactly
+          # what the locate step turns into a path and rm -rf's. Stage 1's output is
+          # a `git rev-parse` result, so only a supplied ref can fail this.
+          if ! printf '%s' "$REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            echo "::error::beta_build_ref must be a hex commit SHA (7-40 chars)"
             exit 1
           fi
           echo "sha=$REF" >> "$GITHUB_OUTPUT"
@@ -984,6 +996,32 @@ jobs:
             echo "dir=$BUILD_DIR" >> "$GITHUB_OUTPUT"
           else
             echo "::error::No persisted build found at $BUILD_DIR nor $ARTIFACT (or it has no .paseo-build-complete stamp for ${{ steps.ref.outputs.sha }})"
+            exit 1
+          fi
+          # Completeness pre-check: all 7 deployed packages need a
+          # package.json AND a dist that exists and is non-empty.
+          #
+          # * non-empty matters because an empty-but-present dist passes [ -d ], and
+          #   rsync --delete would then wipe the live dist to nothing (review #53.2).
+          # * package.json matters because the cp below used to be
+          #   `2>/dev/null || true`, which failed open (review #53.1).
+          #
+          # # Placed here, after the build is located but BEFORE the install step writes
+          # package.json + pnpm-lock.yaml and runs pnpm install into the live home.
+          # Running this in the deploy step instead let a partial build swap the live
+          # home's dependency closure on a red run (review #53.3). The invariant this
+          # establishes: on a red run, ZERO bytes of the live home are modified.
+          INCOMPLETE=""
+          for pkg in cli client highlight plugin protocol relay server; do
+            PKG_DIST="$BUILD_DIR/packages/$pkg/dist"
+            if [ ! -f "$BUILD_DIR/packages/$pkg/package.json" ]; then
+              INCOMPLETE="$INCOMPLETE $pkg(no package.json)"
+            elif [ ! -d "$PKG_DIST" ] || [ -z "$(ls -A "$PKG_DIST" 2>/dev/null)" ]; then
+              INCOMPLETE="$INCOMPLETE $pkg(empty or missing dist)"
+            fi
+          done
+          if [ -n "$INCOMPLETE" ]; then
+            echo "::error::Incomplete build at $BUILD_DIR -$INCOMPLETE - refusing to deploy a partial build to BETA_HOME (it would leave the previous SHA live under a green run). The live home is left untouched; re-run Stage 1 for this SHA."
             exit 1
           fi
           echo "## Deploy BETA daemon — SHA ${{ steps.ref.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
@@ -1019,23 +1057,33 @@ jobs:
           BUILD_DIR="${{ steps.locate.outputs.dir }}"
           BETA_HOME="${{ env.BETA_HOME }}"
           mkdir -p "$BETA_HOME/node_modules/@getpaseo"
-          # Fail closed on a partial build (D2b, reproduced): rsyncing only the dists
-          # that happen to exist leaves the previous SHA's bytes live inside the
-          # packages that were missing, under a fully green run. Name them, stop.
-          MISSING_DISTS=""
+          # Completeness pre-check: all 7 deployed packages need a
+          # package.json AND a dist that exists and is non-empty.
+          #
+          # * non-empty matters because an empty-but-present dist passes [ -d ], and
+          #   rsync --delete would then wipe the live dist to nothing (review #53.2).
+          # * package.json matters because the cp below used to be
+          #   `2>/dev/null || true`, which failed open (review #53.1).
+          #
+          # # Cheap re-assert of the completeness pre-check the locate step already ran
+          # before any live write. Same predicate as that one, so the two cannot drift.
+          INCOMPLETE=""
           for pkg in cli client highlight plugin protocol relay server; do
-            if [ ! -d "$BUILD_DIR/packages/$pkg/dist" ]; then
-              MISSING_DISTS="$MISSING_DISTS $pkg"
+            PKG_DIST="$BUILD_DIR/packages/$pkg/dist"
+            if [ ! -f "$BUILD_DIR/packages/$pkg/package.json" ]; then
+              INCOMPLETE="$INCOMPLETE $pkg(no package.json)"
+            elif [ ! -d "$PKG_DIST" ] || [ -z "$(ls -A "$PKG_DIST" 2>/dev/null)" ]; then
+              INCOMPLETE="$INCOMPLETE $pkg(empty or missing dist)"
             fi
           done
-          if [ -n "$MISSING_DISTS" ]; then
-            echo "::error::Missing packages/<pkg>/dist for:$MISSING_DISTS under $BUILD_DIR — refusing to deploy a partial build to BETA (it would leave the previous SHA live under a green run). Re-run Stage 1 for this SHA."
+          if [ -n "$INCOMPLETE" ]; then
+            echo "::error::Incomplete build at $BUILD_DIR -$INCOMPLETE - refusing to deploy a partial build to BETA_HOME (it would leave the previous SHA live under a green run). The live home is left untouched; re-run Stage 1 for this SHA."
             exit 1
           fi
           for pkg in cli client highlight plugin protocol relay server; do
             mkdir -p "$BETA_HOME/node_modules/@getpaseo/$pkg"
             rsync -a --delete "$BUILD_DIR/packages/$pkg/dist/" "$BETA_HOME/node_modules/@getpaseo/$pkg/dist/"
-            cp "$BUILD_DIR/packages/$pkg/package.json" "$BETA_HOME/node_modules/@getpaseo/$pkg/package.json" 2>/dev/null || true
+            cp "$BUILD_DIR/packages/$pkg/package.json" "$BETA_HOME/node_modules/@getpaseo/$pkg/package.json"
           done
           echo "Server + protocol/client deps deployed to BETA via pnpm-built dist"
 
