@@ -136,7 +136,7 @@ import {
   reapStaleAgentProcesses,
   setAgentProcessRegistryHome,
 } from "./agent/agent-process-registry.js";
-import { beginAgentDetachStop, isDetachAgentsOnStopEnabled } from "./agent/agent-detach.js";
+import { isDetachAgentsOnStopEnabled, logDetachOnStopConfigured } from "./agent/agent-detach.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
 import {
@@ -178,7 +178,7 @@ import { createRelayRuntime, type RelayRuntime } from "./relay-runtime.js";
 import type { PushNotificationSender } from "./push/index.js";
 import { getOrCreateServerId } from "./server-id.js";
 import { resolveDaemonVersion } from "./daemon-version.js";
-import type { AgentClient, AgentProvider } from "./agent/agent-sdk-types.js";
+import type { AgentClient, AgentCloseOptions, AgentProvider } from "./agent/agent-sdk-types.js";
 import type {
   AgentProfile,
   AgentSkillSelection,
@@ -634,12 +634,7 @@ export async function createPaseoDaemon(
   // reaping agree even when config.paseoHome came from an explicit test harness.
   setAgentProcessRegistryHome(config.paseoHome);
   reapStaleAgentProcesses({ logger });
-  if (isDetachAgentsOnStopEnabled()) {
-    logger.info(
-      { env: "PASEO_DETACH_AGENTS_ON_STOP" },
-      "Detach-on-stop configured: graceful stop will leave scoped agent children running",
-    );
-  }
+  logDetachOnStopConfigured(logger);
   let relayRuntime: RelayRuntime | null = null;
 
   const staticDir = config.staticDir;
@@ -1797,11 +1792,13 @@ export async function createPaseoDaemon(
   };
 
   const stop = async () => {
-    // Detach-on-stop is decided once, here: with PASEO_DETACH_AGENTS_ON_STOP
-    // set, scoped provider children survive this stop (no cancel/closeSession/
-    // tree-kill) and their registry entries are flushed for the next daemon.
-    // Without it, every step below behaves exactly as before.
-    const detach = beginAgentDetachStop(logger);
+    // Detach-on-stop is decided once, here, and then carried EXPLICITLY on each
+    // close call as reason:"daemon-stop". It is deliberately not ambient process
+    // state: `session.close()` is shared with the user path, so a process-global
+    // flag would make an archive_agent RPC (or a draft-session probe close) that
+    // lands inside the stop window detach that agent's child instead of
+    // terminating it. Every other close keeps reason "user".
+    const detach = isDetachAgentsOnStopEnabled();
     // Stop tracking plugin provider registrations before anything tears plugins
     // down, so plugin shutdown cannot withdraw a provider from under an agent
     // that is still open. Plugins themselves are stopped once every session
@@ -1813,7 +1810,11 @@ export async function createPaseoDaemon(
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
-    await closeAllAgents(logger, agentManager);
+    await closeAllAgents(logger, agentManager, {
+      // The close reason is the carrier. It is set only here, on the daemon-stop
+      // path, and defaults to "user" everywhere else.
+      reason: detach ? "daemon-stop" : "user",
+    });
     if (detach) {
       // Detach-stop flush: entries for surviving scoped children stay on disk
       // for the next daemon; entries whose pid died during the stop are
@@ -1873,13 +1874,17 @@ export async function createPaseoDaemon(
  */
 const AGENT_CLOSE_TIMEOUT_MS = 5_000;
 
-async function closeAllAgents(logger: Logger, agentManager: AgentManager): Promise<void> {
+async function closeAllAgents(
+  logger: Logger,
+  agentManager: AgentManager,
+  closeOptions: AgentCloseOptions,
+): Promise<void> {
   const agents = agentManager.listAgents();
   await Promise.all(
     agents.map(async (agent) => {
       try {
         await withTimeout({
-          promise: agentManager.closeAgent(agent.id),
+          promise: agentManager.closeAgent(agent.id, closeOptions),
           timeoutMs: AGENT_CLOSE_TIMEOUT_MS,
           label: `close agent ${agent.id}`,
         });

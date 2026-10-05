@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { createTestLogger } from "../../../../test-utils/test-logger.js";
 import { spawnProcess } from "../../../../utils/spawn.js";
-import { __resetAgentDetachForTests, beginAgentDetachStop } from "../../agent-detach.js";
+import { DAEMON_STOP_CLOSE_REASON } from "../../agent-detach.js";
 import {
   isPidAlive,
   recordAgentProcess,
@@ -78,7 +78,6 @@ describe("OpenCodeServerManager detach-stop shutdown gate", () => {
     setAgentProcessRegistryHome(path.join(tmpDir, "registry-home"));
     previousDetachEnv = process.env.PASEO_DETACH_AGENTS_ON_STOP;
     delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
-    __resetAgentDetachForTests();
     spawnedChildren = [];
     eventSourceFactory = createFakeEventSourceFactory();
   });
@@ -88,7 +87,6 @@ describe("OpenCodeServerManager detach-stop shutdown gate", () => {
       await killAndWait(child);
     }
     spawnedChildren = [];
-    __resetAgentDetachForTests();
     setAgentProcessRegistryHome(null);
     if (previousDetachEnv === undefined) {
       delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
@@ -133,6 +131,7 @@ describe("OpenCodeServerManager detach-stop shutdown gate", () => {
     await manager.acquireCurrent();
     const serverChild = child();
 
+    // No reason: an ordinary shutdown must terminate exactly as before.
     await manager.shutdown();
 
     expect(hasExited(serverChild)).toBe(true);
@@ -140,9 +139,36 @@ describe("OpenCodeServerManager detach-stop shutdown gate", () => {
     expect(eventSourceFactory.closeCount()).toBe(1);
   });
 
+  test("shutdown terminates a registry-recorded server when the caller is a user close", async () => {
+    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
+    const { manager, child } = createManager();
+
+    await manager.acquireCurrent();
+    const serverChild = child();
+    const pid = requirePid(serverChild);
+    expect(
+      recordAgentProcess(
+        {
+          scopeId: "paseo-agent-test",
+          unit: "paseo-agent-test.scope",
+          pid,
+          provider: "opencode",
+          startedAt: new Date().toISOString(),
+        },
+        { logger },
+      ),
+    ).toBe(true);
+
+    // Detach is configured AND the pid is registered, but this close is not a
+    // daemon stop. The gate is call-scoped, so the server must still die.
+    await manager.shutdown({ reason: "user" });
+
+    expect(isPidAlive(pid)).toBe(false);
+    expect(hasExited(serverChild)).toBe(true);
+  });
+
   test("shutdown leaves a registry-recorded server running during a detach stop", async () => {
     process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
-    expect(beginAgentDetachStop(logger)).toBe(true);
     const { manager, child } = createManager();
 
     await manager.acquireCurrent();
@@ -162,7 +188,7 @@ describe("OpenCodeServerManager detach-stop shutdown gate", () => {
     ).toBe(true);
 
     try {
-      await manager.shutdown();
+      await manager.shutdown({ reason: DAEMON_STOP_CLOSE_REASON });
 
       expect(eventSourceFactory.closeCount()).toBe(1);
       expect(isPidAlive(pid)).toBe(true);
@@ -172,15 +198,14 @@ describe("OpenCodeServerManager detach-stop shutdown gate", () => {
     }
   });
 
-  test("shutdown terminates the server when detach is engaged but the pid is unregistered", async () => {
+  test("shutdown terminates the server when detach is configured but the pid is unregistered", async () => {
     process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
-    expect(beginAgentDetachStop(logger)).toBe(true);
     const { manager, child } = createManager();
 
     await manager.acquireCurrent();
     const serverChild = child();
 
-    await manager.shutdown();
+    await manager.shutdown({ reason: DAEMON_STOP_CLOSE_REASON });
 
     expect(hasExited(serverChild)).toBe(true);
     expect(isPidAlive(requirePid(serverChild))).toBe(false);
