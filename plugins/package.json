@@ -8,7 +8,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@getpaseo/plugin": "*",
+    "@getpaseo/plugin": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

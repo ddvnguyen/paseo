@@ -39,8 +39,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@getpaseo/protocol": "0.11.0-beta.3",
-    "@getpaseo/relay": "0.11.0-beta.3",
+    "@getpaseo/protocol": "workspace:*",
+    "@getpaseo/relay": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {
