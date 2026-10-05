@@ -21,7 +21,7 @@ import { usePluginHostNavigation } from "./host-navigation";
 import { createPluginClientStateSource } from "./client-state/source";
 import { toPluginTheme } from "./theme";
 import { useInstalledPlugin } from "./registry";
-import { PluginRuntimeBoundary } from "./runtime-boundary";
+import { PluginInstallationProvider } from "./installation-provider";
 import { SurfaceErrorBoundary } from "./surface-error-boundary";
 import {
   closePluginPanelDialog,
@@ -130,7 +130,7 @@ function PluginPanelDialogBody({ theme }: { theme: PluginTheme }) {
   if (!resolved) {
     return null;
   }
-  const { dialog, serverId, workspaceId, plugin, contribution, client } = resolved;
+  const { dialog, serverId, workspaceId, plugin, contribution } = resolved;
   const { agentExists, host, layout, navigation, stateSource } = resolved;
 
   let panel;
@@ -174,9 +174,9 @@ function PluginPanelDialogBody({ theme }: { theme: PluginTheme }) {
         Surface={Surface}
         key={`${serverId}/${dialog.pluginId}/${dialog.panelId}/${dialog.context}/${dialog.agentId ?? ""}`}
       >
-        <PluginRuntimeBoundary plugin={plugin} client={client}>
+        <PluginInstallationProvider plugin={plugin}>
           <PluginClientStateProvider source={stateSource}>{panel}</PluginClientStateProvider>
-        </PluginRuntimeBoundary>
+        </PluginInstallationProvider>
       </SurfaceErrorBoundary>
     </PluginPanelSheet>
   );

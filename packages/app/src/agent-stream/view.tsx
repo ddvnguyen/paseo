@@ -61,6 +61,7 @@ import { returnToTimelineTail } from "./timeline-tail-navigation";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ToolCallDetailsContent } from "@/components/tool-call-details";
 import { QuestionFormCard } from "@/components/question-form-card";
+import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
 import { createStreamPresentation, getStreamItemMessageId } from "./presentation";
 import { OverviewToolCallGroupView } from "@/tool-calls/detail-level/overview/view";
@@ -1401,6 +1402,61 @@ function PermissionActionButton({
   );
 }
 
+/**
+ * The ask-question form in a bottom sheet, for compact widths.
+ *
+ * Inline, the card is pushed off-screen when the keyboard opens for its "other"
+ * text input. A sheet stays visible regardless of keyboard state or scroll
+ * position, so compact gets one and desktop keeps rendering inline.
+ */
+function QuestionFormSheet({
+  permission,
+  onRespond,
+  isResponding,
+}: {
+  permission: PendingPermission;
+  onRespond: (response: AgentPermissionResponse) => void;
+  isResponding: boolean;
+}) {
+  const { t } = useTranslation();
+  const [visible, setVisible] = useState(true);
+
+  const handleClose = useCallback(() => {
+    setVisible(false);
+    onRespond({ behavior: "deny", message: "Dismissed by user" });
+  }, [onRespond]);
+
+  const handleFormRespond = useCallback(
+    (response: AgentPermissionResponse) => {
+      setVisible(false);
+      onRespond(response);
+    },
+    [onRespond],
+  );
+
+  const header = useMemo(() => ({ title: t("agentStream.permission.required") }), [t]);
+
+  if (!visible) {
+    return null;
+  }
+
+  return (
+    <AdaptiveModalSheet
+      header={header}
+      visible
+      onClose={handleClose}
+      snapPoints={["75%", "90%"]}
+      testID="question-form-sheet"
+    >
+      <QuestionFormCard
+        permission={permission}
+        onRespond={handleFormRespond}
+        isResponding={isResponding}
+      />
+    </AdaptiveModalSheet>
+  );
+}
+
 function PermissionRequestCard({
   permission,
   client,
@@ -1537,6 +1593,15 @@ function PermissionRequestCard({
   );
 
   if (request.kind === "question") {
+    if (isMobile) {
+      return (
+        <QuestionFormSheet
+          permission={permission}
+          onRespond={handleResponse}
+          isResponding={isResponding}
+        />
+      );
+    }
     return (
       <QuestionFormCard
         permission={permission}
