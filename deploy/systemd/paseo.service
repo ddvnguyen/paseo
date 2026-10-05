@@ -10,15 +10,33 @@
 # under $HOME/paseo/PROD. The runtime node_modules are installed by the
 # "deploy-prod" pipeline stage (PROD_HOME=/home/ddv/paseo/PROD).
 #
-# ExecStart below is load-bearing against whatever CLI this runtime tree has
-# installed, which is not necessarily a build of this checkout: as of 2026-10 it
-# is 0.6.x, which has no `daemon run`. Do not rewrite these flags to
-# `daemon run` until ~/paseo/PROD actually ships a CLI that has it, or the unit
-# will fail to start and take every agent in the cgroup with it. The current
-# source CLI keeps accepting them for this reason — see
-# packages/cli/src/commands/daemon/local-daemon.ts (COMPAT(daemon-start-flags)).
-# The supported modern equivalent is `daemon run` with PASEO_LISTEN /
-# PASEO_WEB_UI_ENABLED in the environment; this unit already sets the latter.
+# ExecStart below was migrated off `daemon start --foreground --listen ...` on
+# 2026-10-06, which superseded the older guard comment on this file. That
+# comment said the runtime tree shipped a 0.6.x CLI with no `daemon run`, so
+# rewriting the flags would break the unit and take every agent in the cgroup
+# with it. That precondition no longer holds: ~/paseo/PROD installs
+# 0.9.2-hub-7d30525687, which ships `daemon run`, verified in
+# dist/commands/daemon/{index,start}.js. Re-check that before assuming it.
+#
+# `--listen` and `--no-web-ui` were removed from the daemon CLI and moved into
+# daemon config; `daemon start --foreground` was replaced by `daemon run`. The
+# old form only survived on a compat shim that hard-rejects it after 2027-02-01
+# (packages/cli/src/commands/daemon/local-daemon.ts, COMPAT(daemon-start-flags)).
+# Kept here, the unit starts today but crash-loops the moment that shim is
+# dropped.
+#
+# The listen address and web-UI state now come from the environment below, not
+# from flags: the daemon resolves cli > env.PASEO_LISTEN > config daemon.listen
+# (packages/server/src/server/config.ts, resolveListenAddress). PASEO_LISTEN and
+# PASEO_WEB_UI_ENABLED are stated explicitly so this unit does not inherit them
+# from paseo-bun's defaults or from whatever a fresh PASEO_HOME's config.json
+# happens to say — PROD's config.json does carry daemon.listen 0.0.0.0:6767, but
+# a runtime tree with no config.json yet would fall back to loopback.
+#
+# NOTE: the live ~/.config/systemd/user/paseo.service still carries the legacy
+# form. This repo file has no runtime effect until it is installed; migrating
+# the live PROD unit is a separate operator action, because PROD owns every
+# agent in its cgroup.
 [Unit]
 Description=Paseo coding-agent orchestrator daemon (hydra fork, PROD)
 After=network-online.target
@@ -36,6 +54,7 @@ Type=simple
 Environment="PASEO_HOME=%h/paseo/PROD"
 Environment="PASEO_PID_FILE=%h/paseo/PROD/paseo.pid"
 Environment="PASEO_PRESTART_PORT=6767"
+Environment="PASEO_LISTEN=0.0.0.0:6767"
 # Detach-on-stop is deliberately NOT enabled here. It is an opt-in operator
 # decision: it depends on adoption (which does not exist yet) to be useful, it
 # only survives for the opencode HTTP server path, and with it on, any deploy
@@ -50,7 +69,7 @@ Environment="PASEO_RELAY_USE_TLS=true"
 Environment=PATH=%h/.bun/bin:%h/.nvm/versions/node/v24.15.0/bin:%h/.local/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=%h/paseo/PROD
 ExecStartPre=%h/.config/systemd/user/paseo-prestart.sh
-ExecStart=%h/paseo/PROD/paseo-bun daemon start --foreground --listen 0.0.0.0:6767 --no-web-ui
+ExecStart=%h/paseo/PROD/paseo-bun daemon run --home %h/paseo/PROD
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30

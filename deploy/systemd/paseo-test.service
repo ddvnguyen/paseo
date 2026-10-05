@@ -13,12 +13,27 @@
 # TEST is isolated from PROD via a dedicated PASEO_HOME, port 6868, and its own
 # cgroup, so restarting paseo.service can never take TEST down with it.
 #
-# ExecStart below is load-bearing against whatever CLI ~/paseo/TEST has
-# installed, which is not necessarily a build of this checkout: as of 2026-10 it
-# is 0.6.x, which has no `daemon run`. Do not rewrite these flags to
-# `daemon run` until that tree actually ships a CLI that has it. See
-# deploy/systemd/paseo.service and packages/cli/src/commands/daemon/local-daemon.ts
-# (COMPAT(daemon-start-flags)).
+# ExecStart below was migrated off `daemon start --foreground --listen ...` on
+# 2026-10-06, which superseded the older guard comment on this file. That
+# comment said the runtime tree shipped a 0.6.x CLI with no `daemon run`, so
+# rewriting the flags would break the unit. That precondition no longer holds:
+# ~/paseo/TEST installs 0.9.2-hub-764caf1f19, which ships `daemon run`, verified
+# in dist/commands/daemon/{index,start}.js. Re-check that before assuming it.
+#
+# `--listen` and `--no-web-ui` were removed from the daemon CLI and moved into
+# daemon config; `daemon start --foreground` was replaced by `daemon run`. The
+# old form only survived on a compat shim that hard-rejects it after 2027-02-01
+# (packages/cli/src/commands/daemon/local-daemon.ts, COMPAT(daemon-start-flags)).
+# Kept here, the unit starts today but crash-loops the moment that shim is
+# dropped.
+#
+# The listen address and web-UI state now come from the environment below, not
+# from flags: the daemon resolves cli > env.PASEO_LISTEN > config daemon.listen
+# (packages/server/src/server/config.ts, resolveListenAddress).
+#
+# PASEO_LISTEN=0.0.0.0:6868 is load-bearing, not redundant. ~/paseo/TEST/paseo-bun
+# defaults PASEO_LISTEN to 127.0.0.1:6868, so dropping this line would silently
+# bind loopback-only and take paseo-test.ddvnguyen.com offline.
 [Unit]
 Description=Paseo TEST instance (bun 1.4 build, isolated PASEO_HOME)
 After=network-online.target
@@ -47,13 +62,15 @@ Environment="OPENCODE_PURE=1"
 Environment="OPENCODE_CONFIG=/home/ddv/.opencode-bun-rust/opencode.jsonc"
 Environment="OPENCODE_DISABLE_PROJECT_CONFIG=1"
 Environment="LD_LIBRARY_PATH=%h/paseo/TEST/node_modules/sherpa-onnx-linux-x64"
-# Prepend our persistent, Bun-1.4-built OpenCode (opencode-bun-rust, built
-# from upstream v1.18.22) so Paseo TEST resolves it ahead of the shared
-# /home/ddv/.opencode/bin (which embeds Bun 1.3.14).
-Environment=PATH=%h/.opencode-bun-rust/bin:%h/.bun/bin:%h/.nvm/versions/node/v24.15.0/bin:%h/.local/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin:/bin
+# Prepend the shared /home/ddv/.opencode/bin (1.18.31, proper semver) ahead of
+# the Bun-1.4-built opencode-bun-rust (built from upstream v1.18.22 but reports
+# version "0.0.0--202608250557"). Zen free tier parses the REPORTED version and
+# returns 426 "OpenCode 1.18.0 or newer is required" for 0.0.0 (decision
+# d-9c59b5fbcf; 2026-09-27). bun-rust stays as PATH fallback.
+Environment=PATH=%h/.opencode/bin:%h/.opencode-bun-rust/bin:%h/.bun/bin:%h/.nvm/versions/node/v24.15.0/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=%h/paseo/TEST
 ExecStartPre=%h/.config/systemd/user/paseo-prestart.sh
-ExecStart=%h/paseo/TEST/paseo-bun daemon start --foreground --listen 0.0.0.0:6868 --no-web-ui
+ExecStart=%h/paseo/TEST/paseo-bun daemon run --home %h/paseo/TEST
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
