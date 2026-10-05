@@ -8,9 +8,14 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 const PKG_DIR = path.resolve(__dirname, "..", "..");
 // Allowlist MUST stay identical to scripts/fleet-merge-safety.mjs checkTursoImport().
-// The fixture-regen script is a MANUAL op (never CI/tests); it opens a
-// disposable sqlite copy, so it holds a narrow exception to the confinement rule.
-const ALLOWED = new Set(["src/store/turso-repository.ts", "scripts/regenerate-fixture.mjs"]);
+// The two allowlisted scripts are MANUAL operator ops (never CI/tests): they open
+// the driver on a disposable or one-shot copy, so each holds a narrow exception to
+// the confinement rule. Nothing the daemon serves may join this set.
+const ALLOWED = new Set([
+  "src/store/turso-repository.ts",
+  "scripts/regenerate-fixture.mjs",
+  "scripts/migrate-ledger.mjs",
+]);
 
 // Collector MUST stay identical to scripts/fleet-merge-safety.mjs collectFiles():
 // extensions ts|mts|js|mjs|cjs, skipping node_modules/dist/.tmp/.fixture-tmp

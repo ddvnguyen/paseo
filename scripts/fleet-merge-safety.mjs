@@ -71,11 +71,18 @@ function checkTursoImport() {
   const pkg = path.join(ROOT, "packages", "fleet-backend");
   if (!existsSync(pkg)) return { ok: true, skipped: true };
   // Allowlist MUST stay identical to tests/gates/turso-import.test.ts. The
-  // fixture-regen script is a MANUAL op (never CI/tests); it opens a
-  // disposable sqlite copy, so it holds a narrow exception to the rule.
+  // The two allowlisted scripts are MANUAL operator ops (never CI/tests, never
+  // imported by the server): regenerate-fixture opens a DISPOSABLE sqlite copy,
+  // and migrate-ledger copies the live Python ledger into a fresh fleet.db once
+  // during M3a. Both must open the driver to do their job, so both hold a narrow
+  // exception. Nothing the daemon serves may join this set.
+  //
+  // migrate-ledger.mjs earned its place by being CAUGHT: this gate failed PR #58
+  // on it, which is the rule working as intended.
   const allowed = new Set([
     path.join(pkg, "src", "store", "turso-repository.ts"),
     path.join(pkg, "scripts", "regenerate-fixture.mjs"),
+    path.join(pkg, "scripts", "migrate-ledger.mjs"),
   ]);
   const offenders = [];
   for (const file of collectFiles(pkg)) {
