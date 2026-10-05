@@ -1,0 +1,74 @@
+# Paseo systemd --user unit: paseo-beta.service (BETA daemon, :6768)
+#
+# Install:
+#   cp deploy/systemd/paseo-beta.service   ~/.config/systemd/user/
+#   cp deploy/systemd/paseo-prestart.sh    ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now paseo-beta.service
+#
+# Consolidation (2026-09): PASEO_HOME and the runtime tree now live together
+# under $HOME/paseo/BETA. The runtime node_modules are installed by the
+# "deploy-beta" pipeline stage (BETA_HOME=/home/ddv/paseo/BETA).
+#
+# BETA is isolated from PROD and from TEST via a dedicated PASEO_HOME, port
+# 6768, and its own cgroup, so restarting paseo.service or paseo-test.service
+# can never take BETA down with it.
+#
+# Modelled EXACTLY on paseo-test.service. The only deltas from that unit are
+# identity values: port (6868 -> 6768), PASEO_HOME/PASEO_PID_FILE/workdir
+# (TEST -> BETA), and the advertised hostname. Every ExecStartPre/ExecStart/
+# Restart/hardening line is byte-identical.
+[Unit]
+Description=Paseo BETA instance (bun 1.4 build, isolated PASEO_HOME)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment="PASEO_HOME=%h/paseo/BETA"
+Environment="PASEO_PID_FILE=%h/paseo/BETA/paseo.pid"
+Environment="PASEO_PRESTART_PORT=6768"
+Environment="PASEO_LISTEN=0.0.0.0:6768"
+Environment="PASEO_HOSTNAMES=paseo-beta.ddvnguyen.com"
+Environment="PASEO_WEB_UI_ENABLED=false"
+Environment="PASEO_RELAY_ENABLED=true"
+Environment="PASEO_RELAY_ENDPOINT=relay.paseo.sh:443"
+Environment="PASEO_RELAY_USE_TLS=true"
+Environment="PASEO_APP_BASE_URL=https://paseo.ddvnguyen.com"
+# Run the `pi` agent provider under Bun 1.4 via a wrapper (PI_COMMAND is
+# exec'd as a single binary by the pi provider client). Scoped to this unit
+# only — the prod paseo.service is unaffected.
+Environment="PI_COMMAND=%h/.local/bin/pi-bun"
+# --- Lean OpenCode for BETA: headless, low-RAM, node-free, isolated config ---
+# OPENCODE_PURE disables external plugins; OPENCODE_CONFIG is merged last and
+# authoritative (lsp:false, mcp:{} -> no Node/Python MCP children); project
+# opencode.json (PROD's) is ignored so BETA never inherits PROD tooling.
+Environment="OPENCODE_PURE=1"
+Environment="OPENCODE_CONFIG=/home/ddv/.opencode-bun-rust/opencode.jsonc"
+Environment="OPENCODE_DISABLE_PROJECT_CONFIG=1"
+Environment="LD_LIBRARY_PATH=%h/paseo/BETA/node_modules/sherpa-onnx-linux-x64"
+# Prepend the shared /home/ddv/.opencode/bin (1.18.31, proper semver) ahead of
+# the Bun-1.4-built opencode-bun-rust (built from upstream v1.18.22 but reports
+# version "0.0.0--202608250557"). Zen free tier parses the REPORTED version and
+# returns 426 "OpenCode 1.18.0 or newer is required" for 0.0.0 (decision
+# d-9c59b5fbcf; 2026-09-27). bun-rust stays as PATH fallback.
+Environment=PATH=%h/.opencode/bin:%h/.opencode-bun-rust/bin:%h/.bun/bin:%h/.nvm/versions/node/v24.15.0/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/paseo/BETA
+ExecStartPre=%h/.config/systemd/user/paseo-prestart.sh
+# 2026-10-05: `--listen` was removed from the daemon CLI; the listen address now
+# comes from daemon config (`daemon.listen`, set to 0.0.0.0:6768 in this
+# PASEO_HOME). Passing it here made the daemon exit 1 on every start, which the
+# unit then retried forever.
+# 2026-10-05: `daemon start --foreground` was replaced by `daemon run`; every
+# deployment flag moved into daemon config (see daemon.listen and
+# features.webUi.enabled in this PASEO_HOME's config.json).
+ExecStart=%h/paseo/BETA/paseo-bun daemon run --home %h/paseo/BETA
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=paseo-beta
+
+[Install]
+WantedBy=default.target
