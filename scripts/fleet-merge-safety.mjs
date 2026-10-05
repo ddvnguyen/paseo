@@ -57,7 +57,12 @@ function collectFiles(dir, out = []) {
       continue;
     const full = path.join(dir, entry);
     if (statSync(full).isDirectory()) collectFiles(full, out);
-    else if (/\.(ts|mts|js|mjs|cjs)$/.test(entry) && !entry.endsWith(".d.ts") && !entry.endsWith(".d.ts.map")) out.push(full);
+    else if (
+      /\.(ts|mts|js|mjs|cjs)$/.test(entry) &&
+      !entry.endsWith(".d.ts") &&
+      !entry.endsWith(".d.ts.map")
+    )
+      out.push(full);
   }
   return out;
 }
@@ -78,7 +83,11 @@ function checkTursoImport() {
     // SUBSTRING match on the forbidden package name: also fires on
     // node_modules-prefixed specifiers (../node_modules/@tursodatabase/...).
     // Keep in sync with tests/gates/turso-import.test.ts.
-    if (/(?:from\s+['"]|import\s*\(\s*['"]|require\s*\(\s*['"])[^'"]*@tursodatabase\/database(?:\/[^'"]*)?['"]/.test(text)) {
+    if (
+      /(?:from\s+['"]|import\s*\(\s*['"]|require\s*\(\s*['"])[^'"]*@tursodatabase\/database(?:\/[^'"]*)?['"]/.test(
+        text,
+      )
+    ) {
       if (!allowed.has(file)) offenders.push(path.relative(ROOT, file));
     }
   }
@@ -119,6 +128,24 @@ if (allowMixedTree) {
       "  and say so in the PR body.",
   );
 }
+function reportTursoImport() {
+  const r = checkTursoImport();
+  console.log(
+    r.ok
+      ? `turso-import: PASS${r.skipped ? " (package absent)" : ""}`
+      : `turso-import: FAIL\n${r.message}`,
+  );
+  return r.ok;
+}
+
+// --check-turso-only is documented in the usage header above but was never
+// read: the invocation fell through to the "no changeset to check" branch and
+// exited 1 while printing PASS. Honour it, as the ONLY rule evaluated, and
+// decide it before rule 1 so the missing changeset is not also counted.
+if (flag("--check-turso-only") !== null) {
+  process.exit(reportTursoImport() ? 0 : 1);
+}
+
 const hasFiles = flag("--files") !== null;
 const hasBase = flag("--base") !== null;
 if (!hasFiles && !hasBase) {
@@ -146,13 +173,9 @@ if (!hasFiles && !hasBase) {
   }
   if (!r.ok) failures++;
 }
-if (flag("--files") === null) {
-  const r = checkTursoImport();
-  console.log(
-    r.ok
-      ? `turso-import: PASS${r.skipped ? " (package absent)" : ""}`
-      : `turso-import: FAIL\n${r.message}`,
-  );
-  if (!r.ok) failures++;
-}
+// Rule 2 scans the WORKING TREE, not the changeset, so nothing about --files
+// should suppress it. The old `if (flag("--files") === null)` guard made
+// `--files <list>` print "PASS" and exit 0 with a live
+// @tursodatabase/database import still in the tree (measured, seeded probe).
+if (!reportTursoImport()) failures++;
 process.exit(failures ? 1 : 0);
