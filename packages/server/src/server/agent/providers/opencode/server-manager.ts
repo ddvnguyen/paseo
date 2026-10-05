@@ -63,6 +63,19 @@ export interface OpenCodeServerGeneration {
   events: OpenCodeEventConsumer;
   managedProcessId?: string;
   managedProcessRecord?: Promise<{ id: string } | null>;
+  /**
+   * Set once any holder's release was a detach-eligible daemon stop, i.e. some
+   * session was told (`detached: true`) that this generation is outliving it.
+   *
+   * The kill decision is made by whichever holder happens to drop `refCount`
+   * to zero, and that holder is often an unrelated draft/probe close carrying
+   * no reason. Pure last-releaser-wins would then kill a server a daemon-stop
+   * close already reported as surviving — so the agents that close left with
+   * neither a writer nor a resumable snapshot. Any-detached-holder-wins is the
+   * safe direction: a leaked server generation is reclaimable on the next
+   * daemon via the scope registry, whereas killing one destroys live work.
+   */
+  sawDetachedHolder: boolean;
 }
 
 export type OpenCodePortAllocator = () => Promise<number>;
@@ -248,6 +261,27 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
     server: OpenCodeServerGeneration,
     reason: AgentCloseReason | undefined,
   ): Promise<void> {
+    // A detach-eligible release means the holder closing right now is a session
+    // that has just been told (`detached: true`) that this generation outlives
+    // it. Remember that, because the generation's kill decision is made by
+    // whichever holder happens to drop the refcount to zero — and that holder
+    // is routinely an unrelated draft/probe close with no reason at all.
+    //
+    // Last-releaser-wins would then kill a server a daemon-stop close already
+    // reported as surviving, and the agents that close would be left with
+    // neither a running writer nor a resumable snapshot. Preferring the detach
+    // whenever ANY holder detached keeps the two decisions consistent; a
+    // surviving server generation stays reclaimable by the next daemon through
+    // the scope registry, whereas killing one destroys live work.
+    //
+    // This is the same gate `killServer` applies, evaluated per release, so an
+    // ordinary user close never sets the flag (and never reads the registry
+    // file: the gate returns before any I/O unless the reason is a daemon stop
+    // and the env opt-in is set).
+    if (shouldDetachAgentProcess(server.process.pid, reason)) {
+      server.sawDetachedHolder = true;
+    }
+
     server.refCount = Math.max(0, server.refCount - 1);
     if (server.refCount > 0) {
       return;
@@ -263,7 +297,7 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
 
     this.retiredServers.delete(server);
     this.logger.info(generationLogContext(server), "OpenCode server generation released");
-    await this.killServer(server, reason);
+    await this.killServer(server, server.sawDetachedHolder ? DAEMON_STOP_CLOSE_REASON : reason);
   }
 
   private async getNewServer(): Promise<OpenCodeServerGeneration> {
@@ -387,6 +421,7 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
       ready: Promise.resolve(),
       events: this.createEventSource({ serverUrl: url, processExit, logger: this.logger }),
       managedProcessRecord,
+      sawDetachedHolder: false,
     };
     this.logger.info(
       { ...generationLogContext(server), dedicated: launchEnv !== undefined },
