@@ -37,10 +37,10 @@ is detectable and the UI can degrade rather than break.
 
 ### Which of our commits compose it
 
-| Commit | Date | Role |
-| --- | --- | --- |
-| `01ab14e01` | 2026-07-20 | the feature: protocol, client, server, app store and track UI |
-| `01b888d06` | 2026-07-22 | moves the surface from a panel row to a composer icon button |
+| Commit      | Date       | Role                                                                |
+| ----------- | ---------- | ------------------------------------------------------------------- |
+| `01ab14e01` | 2026-07-20 | the feature: protocol, client, server, app store and track UI       |
+| `01b888d06` | 2026-07-22 | moves the surface from a panel row to a composer icon button        |
 | `4e33e7b2d` | 2026-08-26 | one-line brace fix in the agent-manager intercept, from a bad merge |
 
 All three are among the 147 at-risk commits and are classified **RE-APPLIED**.
@@ -51,31 +51,31 @@ to the same file and hunks, so it travels with the feature.
 
 `01ab14e01` — 15 files, +942/−4:
 
-| File | Δ | Role |
-| --- | --- | --- |
-| `packages/protocol/src/messages.ts` | +61 | the `agent.background_tasks.list` request/response pair |
-| `packages/protocol/src/client-capabilities.ts` | +3 | advertises the capability |
-| `packages/client/src/daemon-client.ts` | +32 | client method for the list RPC |
-| `packages/server/src/server/agent/agent-manager.ts` | +205 | tracks background operations, `listBackgroundTasks` |
-| `packages/server/src/server/session.ts` | +28 | routes the RPC |
-| `packages/server/src/server/websocket-server.ts` | +2 | dispatch registration |
-| `packages/server/src/server/pid-lock.ts` | +10 | background ops must not hold the pid lock |
-| `packages/app/src/background-tasks/store.ts` | +105 | client-side cache |
-| `packages/app/src/background-tasks/store.test.ts` | +167 | store tests |
-| `packages/app/src/background-tasks/select.ts` | +38 | selector over the store |
-| `packages/app/src/background-tasks/track.tsx` | +227 | the row/track renderer |
-| `packages/app/src/background-tasks/index.ts` | +6 | module surface |
-| `packages/app/src/components/agent-status-dot.tsx` | +37 | indicates work in flight |
-| `packages/app/src/contexts/session-context.tsx` | +7 | wires the store into session scope |
-| `packages/app/src/panels/agent-panel.tsx` | +18 | hosts the first presentation |
+| File                                                | Δ    | Role                                                    |
+| --------------------------------------------------- | ---- | ------------------------------------------------------- |
+| `packages/protocol/src/messages.ts`                 | +61  | the `agent.background_tasks.list` request/response pair |
+| `packages/protocol/src/client-capabilities.ts`      | +3   | advertises the capability                               |
+| `packages/client/src/daemon-client.ts`              | +32  | client method for the list RPC                          |
+| `packages/server/src/server/agent/agent-manager.ts` | +205 | tracks background operations, `listBackgroundTasks`     |
+| `packages/server/src/server/session.ts`             | +28  | routes the RPC                                          |
+| `packages/server/src/server/websocket-server.ts`    | +2   | dispatch registration                                   |
+| `packages/server/src/server/pid-lock.ts`            | +10  | background ops must not hold the pid lock               |
+| `packages/app/src/background-tasks/store.ts`        | +105 | client-side cache                                       |
+| `packages/app/src/background-tasks/store.test.ts`   | +167 | store tests                                             |
+| `packages/app/src/background-tasks/select.ts`       | +38  | selector over the store                                 |
+| `packages/app/src/background-tasks/track.tsx`       | +227 | the row/track renderer                                  |
+| `packages/app/src/background-tasks/index.ts`        | +6   | module surface                                          |
+| `packages/app/src/components/agent-status-dot.tsx`  | +37  | indicates work in flight                                |
+| `packages/app/src/contexts/session-context.tsx`     | +7   | wires the store into session scope                      |
+| `packages/app/src/panels/agent-panel.tsx`           | +18  | hosts the first presentation                            |
 
 `01b888d06` — 3 files, +249/−8:
 
-| File | Δ | Role |
-| --- | --- | --- |
-| `packages/app/src/background-tasks/icon-button.tsx` | +204 | the composer icon button |
-| `packages/app/src/composer/index.tsx` | +44 | mounts it in the composer toolbar |
-| `packages/app/src/panels/agent-panel.tsx` | +9 | removes the superseded row |
+| File                                                | Δ    | Role                              |
+| --------------------------------------------------- | ---- | --------------------------------- |
+| `packages/app/src/background-tasks/icon-button.tsx` | +204 | the composer icon button          |
+| `packages/app/src/composer/index.tsx`               | +44  | mounts it in the composer toolbar |
+| `packages/app/src/panels/agent-panel.tsx`           | +9   | removes the superseded row        |
 
 `4e33e7b2d` — 1 file, +1: the missing brace in the `agent-manager.ts` intercept.
 
@@ -116,7 +116,7 @@ already uses for comparable per-agent state.
   and synonyms are forbidden, so the state needs one name agreed before the doc
   is written.
 - **Naming.** `agent.background_tasks.list` follows the dotted-namespacing rule
-  with a direction suffix, so it should already be acceptable, but the *state*
+  with a direction suffix, so it should already be acceptable, but the _state_
   name needs checking against upstream's existing vocabulary — this fork may have
   called it something upstream spells differently, and the UI label is what has
   to match.
@@ -144,5 +144,5 @@ already uses for comparable per-agent state.
 - **Version stamping** (`-hub` identifier, `scripts/sync-workspace-versions.mjs`) —
   kept, and explicitly a fork-maintenance concern. `delta.md` records how it is
   verified. Not a candidate.
-- **pnpm CI scoping and lockfile rulings** — these are decisions about *this*
+- **pnpm CI scoping and lockfile rulings** — these are decisions about _this_
   fork's release flow, not a feature upstream would want. Not candidates.

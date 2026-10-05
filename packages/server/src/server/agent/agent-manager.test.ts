@@ -11667,6 +11667,7 @@ describe("detach-on-stop close semantics", () => {
       }
     }
   });
+});
 
 test("commits startup notices once on create and after restored history", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-startup-notice-"));

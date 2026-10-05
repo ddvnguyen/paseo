@@ -30,28 +30,28 @@ the authoritative lockfile; `package-lock.json` and `bun.lock` are deleted. See
 
 ## Numbers
 
-| | Count |
-| --- | --- |
-| Conflicted paths resolved to upstream | 119 |
-| Fork-changed paths now byte-identical to upstream | 184 |
-| — of those, behavioural (not `package.json` churn, not tests) | 123 |
-| Fork-only commits with work lost | 147 |
-| Commits that upstream had already taken | 5 |
+|                                                               | Count |
+| ------------------------------------------------------------- | ----- |
+| Conflicted paths resolved to upstream                         | 119   |
+| Fork-changed paths now byte-identical to upstream             | 184   |
+| — of those, behavioural (not `package.json` churn, not tests) | 123   |
+| Fork-only commits with work lost                              | 147   |
+| Commits that upstream had already taken                       | 5     |
 
 ## What is broken right now
 
 `npm run build:server` fails with **19 TypeScript errors in 7 files**, all in
 `packages/server`. This is not stale build output — the declarations were
 rebuilt first. Four independent causes, all the same shape: a conflicted file
-went to upstream, and a fork file that was *not* in conflict still depends on
+went to upstream, and a fork file that was _not_ in conflict still depends on
 what the fork had put there.
 
-| Cause | Errors | Mechanism |
-| --- | --- | --- |
-| A | 14 | `protocol/src/messages.ts` went to upstream, so the fork's `agent.background_tasks.list.{request,response}` and `AgentManager.listBackgroundTasks` are gone. `session.ts`, `authorization/operation-permissions.ts` and `session/owned-subscriptions/replies.ts` still reference them. |
-| B | 2 | Upstream deleted `quota-fetcher/manifest.ts` and split the `providers/` directory rename. The fork-only `quota-fetcher/providers/freebuff.ts` still imports `../provider.js` and `../usage.js`. |
-| C | 1 | `acp-agent.ts` went to upstream, which narrowed `GenericACPAgentClientOptions` and dropped `providerParams` that `freebuff-acp-agent.ts` passes. |
-| D | 2 | Upstream is npm, the fork is pnpm; `semver/functions/compare.js` has no declaration file in this tree. |
+| Cause | Errors | Mechanism                                                                                                                                                                                                                                                                              |
+| ----- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A     | 14     | `protocol/src/messages.ts` went to upstream, so the fork's `agent.background_tasks.list.{request,response}` and `AgentManager.listBackgroundTasks` are gone. `session.ts`, `authorization/operation-permissions.ts` and `session/owned-subscriptions/replies.ts` still reference them. |
+| B     | 2      | Upstream deleted `quota-fetcher/manifest.ts` and split the `providers/` directory rename. The fork-only `quota-fetcher/providers/freebuff.ts` still imports `../provider.js` and `../usage.js`.                                                                                        |
+| C     | 1      | `acp-agent.ts` went to upstream, which narrowed `GenericACPAgentClientOptions` and dropped `providerParams` that `freebuff-acp-agent.ts` passes.                                                                                                                                       |
+| D     | 2      | Upstream is npm, the fork is pnpm; `semver/functions/compare.js` has no declaration file in this tree.                                                                                                                                                                                 |
 
 Cause A traces to fork commits `01ab14e01` and `01b888d06`, which introduced the
 background-task RPC. Both are RE-APPLIED in the commit ledger. **These 19 errors
@@ -174,11 +174,11 @@ own documentation had already settled it — `docs/fork-maintenance.md` says "th
 only lockfile is `pnpm-lock.yaml`; there is no `package-lock.json`" — so the tree
 was contradicting itself.
 
-| File | Decision | Why |
-| --- | --- | --- |
-| `pnpm-lock.yaml` | authoritative | the package manager this fork actually runs |
-| `package-lock.json` | deleted | upstream's; restored by the merge resolving a modify/delete conflict to upstream |
-| `bun.lock` | deleted | fork-only, nothing consumes it |
+| File                | Decision      | Why                                                                              |
+| ------------------- | ------------- | -------------------------------------------------------------------------------- |
+| `pnpm-lock.yaml`    | authoritative | the package manager this fork actually runs                                      |
+| `package-lock.json` | deleted       | upstream's; restored by the merge resolving a modify/delete conflict to upstream |
+| `bun.lock`          | deleted       | fork-only, nothing consumes it                                                   |
 
 **`bun.lock`** was added by fork commit `0a0566870` to align with Bun 1.4.
 `package.json` declares no `packageManager` field and no script invokes bun.
@@ -276,12 +276,12 @@ differ, all of them pnpm override semantics rather than defects. When an
 override-applied specifier, so it legitimately differs from the manifest's
 requested range:
 
-| Package | manifest | lockfile | why |
-| --- | --- | --- | --- |
-| `packages/website` `react` | `^19.1.4` | `19.1.0` | override pins `19.1.0` |
-| `packages/website` `react-dom` | `^19.1.4` | `19.1.0` | same |
-| `packages/app` `react-native-reanimated` | `~4.3.1` | `4.3.1` | override pins `4.3.1` |
-| `packages/app` `react-native-worklets` | `~0.8.3` | `0.8.3` | override pins `0.8.3` |
+| Package                                  | manifest  | lockfile | why                    |
+| ---------------------------------------- | --------- | -------- | ---------------------- |
+| `packages/website` `react`               | `^19.1.4` | `19.1.0` | override pins `19.1.0` |
+| `packages/website` `react-dom`           | `^19.1.4` | `19.1.0` | same                   |
+| `packages/app` `react-native-reanimated` | `~4.3.1`  | `4.3.1`  | override pins `4.3.1`  |
+| `packages/app` `react-native-worklets`   | `~0.8.3`  | `0.8.3`  | override pins `0.8.3`  |
 
 The `react` pair is upstream's own arrangement, not a fork delta: `packages/
 website` asks `^19.1.4` on the fork base, on upstream and at HEAD alike, while
@@ -292,7 +292,7 @@ override reproduces that root pin in pnpm's idiom. Nothing to reconcile.
 moved it from `0.x` to `1.x` in `d3c76be9c` ("Unify Explorer tabs and refine
 launch controls", #5942). The fork base had `^0.546.0`; HEAD has `^1.50.0`,
 which is what upstream carries and what the lockfile records. Taking upstream was
-correct. The `^0.546.0` figure is what this fork *used* to declare, not what the
+correct. The `^0.546.0` figure is what this fork _used_ to declare, not what the
 lockfile says.
 
 **Two categories that are not mismatches at all**, recorded so the next person
@@ -339,7 +339,7 @@ root `package.json`. It:
 4. rewrites internal `@getpaseo/*` dependency ranges to exactly `workspace:*`;
 5. writes each file it changed and logs either `Synced to <version>:` with the
    file list, or `Workspace versions and internal deps already synced to
-   <version>` when it had nothing to do.
+<version>` when it had nothing to do.
 
 Point 4 matters beyond stamping: it means the `workspace:*` convention discussed
 under [Open decisions](#open-decisions) comes back **by running the script**,
@@ -414,5 +414,5 @@ git log --cherry-pick --right-only --no-merges --format=%H 97083dd73...HEAD
 ```
 
 Treat absence as a value. A plain `git rev-parse` that fails on a path the fork
-*deleted* silently undercounts — that is exactly how `package-lock.json` gets
+_deleted_ silently undercounts — that is exactly how `package-lock.json` gets
 missed, and it is the single most consequential entry in this ledger.
