@@ -1,9 +1,9 @@
-import { existsSync } from "node:fs";
-import { open, readFile, unlink, utimes } from "node:fs/promises";
+import { open, readFile, stat, unlink, utimes } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { ensurePrivateDirectory } from "./private-files.js";
 import { join } from "node:path";
-import { hostname, uptime } from "node:os";
+import { uptime } from "node:os";
+import { getHostName } from "./host-name.js";
 import { z } from "zod";
 
 export const pidLockInfoSchema = z.object({
@@ -159,6 +159,14 @@ async function clearExistingPidLock(
   return "cleared";
 }
 
+async function removeEmptyPidLock(pidPath: string): Promise<void> {
+  try {
+    if ((await stat(pidPath)).size === 0) await unlink(pidPath);
+  } catch (error) {
+    if (!isErrnoException(error) || error.code !== "ENOENT") throw error;
+  }
+}
+
 async function writeNewPidLock(pidPath: string, lockInfo: PidLockInfo): Promise<void> {
   let fd;
   try {
@@ -176,10 +184,7 @@ async function writeNewPidLock(pidPath: string, lockInfo: PidLockInfo): Promise<
         raceLock,
       );
     }
-    // File exists but is empty or invalid (e.g., from a crashed process) — treat as stale and retry.
-    await unlink(pidPath).catch(() => {});
-    await writeNewPidLock(pidPath, lockInfo);
-    return;
+    throw new PidLockError("Failed to acquire PID lock due to race condition");
   } finally {
     await fd?.close();
   }
@@ -197,23 +202,22 @@ export async function acquirePidLock(
   // Try to read existing lock
   const existingLock = await readPidLock(pidPath);
 
-  // Check if existing lock is stale or invalid (empty/corrupted file)
+  // Check if existing lock is stale
   const lockOwnerPid = resolveOwnerPid(options?.ownerPid);
   if (existingLock) {
     const result = await clearExistingPidLock(pidPath, existingLock, lockOwnerPid);
     if (result === "already_owned") {
       return;
     }
-  } else if (existsSync(pidPath)) {
-    // File exists but is invalid — remove stale lock file
-    await unlink(pidPath).catch(() => {});
+  } else {
+    await removeEmptyPidLock(pidPath);
   }
 
   // Create new lock with exclusive flag
   const lockInfo: PidLockInfo = {
     pid: lockOwnerPid,
     startedAt: new Date().toISOString(),
-    hostname: hostname(),
+    hostname: getHostName(),
     uid: process.getuid?.() ?? 0,
     listen,
     heartbeat: true,

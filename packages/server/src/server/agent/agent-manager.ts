@@ -9,7 +9,6 @@ import {
   AGENT_LIFECYCLE_STATUSES,
   type AgentLifecycleStatus,
 } from "@getpaseo/protocol/agent-lifecycle";
-import type { BackgroundTaskDescriptorPayload } from "@getpaseo/protocol/messages";
 import {
   getParentAgentIdFromLabels,
   hasOpenAgentTab,
@@ -18,7 +17,7 @@ import {
   PARENT_AGENT_ID_LABEL,
 } from "@getpaseo/protocol/agent-labels";
 import type { Logger } from "pino";
-import type { ProviderOptions, ToolPolicy } from "@getpaseo/protocol/agent-types";
+import type { ToolPolicy } from "@getpaseo/protocol/agent-types";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 import { z } from "zod";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
@@ -191,10 +190,13 @@ function buildStoredAgentConfig(record: StoredAgentRecord): AgentSessionConfig {
     provider: record.provider,
     cwd: record.cwd,
   };
+  // lastModeId is the last live mode — it also covers provider-side switches
+  // that never reach record.config.modeId.
+  const modeId = record.lastModeId ?? record.config?.modeId;
+  if (modeId != null) config.modeId = modeId;
   if (!record.config) {
     return config;
   }
-  if (record.config.modeId != null) config.modeId = record.config.modeId;
   if (record.config.model != null) config.model = record.config.model;
   if (record.config.thinkingOptionId != null) {
     config.thinkingOptionId = record.config.thinkingOptionId;
@@ -293,11 +295,6 @@ interface AgentManagerRescueTimeouts {
 interface ProviderEnabledFlag {
   enabled: boolean;
   derivedFromProviderId?: string | null;
-  validateOptions?: (options: ProviderOptions | undefined) => ProviderOptions | undefined;
-  applyOptions?: (
-    config: AgentSessionConfig,
-    options: ProviderOptions | undefined,
-  ) => AgentSessionConfig;
   applyToolPolicy?: (
     config: AgentSessionConfig,
     toolPolicy: ToolPolicy | undefined,
@@ -442,10 +439,6 @@ interface ManagedAgentBase {
    * User-defined labels for categorizing agents (e.g., { surface: "workspace" }).
    */
   labels: Record<string, string>;
-  /**
-   * Tracked background bash tasks (bg-bash MCP + Claude native run_in_background).
-   */
-  backgroundTasks: Map<string, BackgroundTaskDescriptorPayload>;
 }
 
 type ManagedAgentWithSession = ManagedAgentBase & {
@@ -1167,6 +1160,11 @@ export class AgentManager {
     }
   }
 
+  usageSession(id: string) {
+    const agent = this.agents.get(id);
+    return agent?.session?.usageSession?.() ?? null;
+  }
+
   getAgent(id: string): ManagedAgent | null {
     const agent = this.agents.get(id);
     return agent ? { ...agent } : null;
@@ -1230,194 +1228,6 @@ export class AgentManager {
   ): AgentTimelineFetchResult {
     this.requirePublicAgent(parentAgentId);
     return this.providerSubagents.fetchTimeline(parentAgentId, subagentId, options);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Background task management
-  // ---------------------------------------------------------------------------
-
-  listBackgroundTasks(agentId: string): BackgroundTaskDescriptorPayload[] {
-    const agent = this.requireAgent(agentId);
-    return [...agent.backgroundTasks.values()].sort((a, b) =>
-      a.startedAt.localeCompare(b.startedAt),
-    );
-  }
-
-  upsertBackgroundTask(agentId: string, task: BackgroundTaskDescriptorPayload): void {
-    const agent = this.requireAgent(agentId);
-    agent.backgroundTasks.set(task.id, task);
-    this.dispatch({
-      type: "agent_state",
-      agent,
-    });
-  }
-
-  removeBackgroundTask(agentId: string, taskId: string): void {
-    const agent = this.requireAgent(agentId);
-    if (agent.backgroundTasks.delete(taskId)) {
-      this.dispatch({
-        type: "agent_state",
-        agent,
-      });
-    }
-  }
-
-  private interceptBackgroundTaskFromToolCall(
-    agent: ActiveManagedAgent,
-    item: Extract<AgentTimelineItem, { type: "tool_call" }>,
-  ): void {
-    const toolName = item.name;
-    const input = item.input as Record<string, unknown> | null | undefined;
-
-    // Detect bg-bash MCP tools (mcp__bg_bash__background_bash, etc.)
-    if (toolName.includes("bg_bash") || toolName.includes("background_bash")) {
-      this.handleBgBashToolCall(agent, item, input);
-      return;
-    }
-
-    // Detect Claude native Bash with run_in_background: true
-    if (toolName === "Bash" && input && typeof input === "object") {
-      const runInBackground = (input as Record<string, unknown>).run_in_background;
-      if (runInBackground === true || runInBackground === "true") {
-        const command = typeof input.command === "string" ? input.command : null;
-        const task: BackgroundTaskDescriptorPayload = {
-          id: item.callId ?? `bg-${Date.now()}`,
-          agentId: agent.id,
-          toolName: "Bash",
-          command,
-          status: "running",
-          startedAt: new Date().toISOString(),
-          finishedAt: null,
-          exitCode: null,
-          outputPreview: null,
-        };
-        this.upsertBackgroundTask(agent.id, task);
-      }
-    }
-  }
-
-  private handleBgBashToolCall(
-    agent: ActiveManagedAgent,
-    item: Extract<AgentTimelineItem, { type: "tool_call" }>,
-    input: Record<string, unknown> | null | undefined,
-  ): void {
-    if (!input || typeof input !== "object") {
-      return;
-    }
-
-    const toolName = item.name;
-
-    // background_bash tool - start mode (has command) or re-invoke mode (has job_id)
-    if (toolName.includes("background_bash")) {
-      const jobId = typeof input.job_id === "string" ? input.job_id : null;
-      const command = typeof input.command === "string" ? input.command : null;
-
-      if (command && !jobId) {
-        // Start mode - create a new background task
-        const task: BackgroundTaskDescriptorPayload = {
-          id: `bg-bash-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          agentId: agent.id,
-          toolName: "background_bash",
-          command,
-          status: "running",
-          startedAt: new Date().toISOString(),
-          finishedAt: null,
-          exitCode: null,
-          outputPreview: null,
-        };
-        this.upsertBackgroundTask(agent.id, task);
-      } else if (jobId) {
-        // Re-invoke mode - check result in tool output
-        const existingTask = this.findBackgroundTaskByCommand(agent.id, null, jobId);
-        if (existingTask && item.output) {
-          this.updateBackgroundTaskFromOutput(agent.id, existingTask.id, item.output);
-        }
-      }
-    }
-
-    // bash_status tool - update task status
-    if (toolName.includes("bash_status") && typeof input.job_id === "string") {
-      const existingTask = agent.backgroundTasks.get(input.job_id);
-      if (existingTask && item.output != null) {
-        this.updateBackgroundTaskFromOutput(agent.id, existingTask.id, item.output);
-      }
-    }
-
-    // bash_cancel tool - mark task as cancelled
-    if (toolName.includes("bash_cancel") && typeof input.job_id === "string") {
-      const existingTask = agent.backgroundTasks.get(input.job_id);
-      if (existingTask && existingTask.status === "running") {
-        const updated: BackgroundTaskDescriptorPayload = {
-          ...existingTask,
-          status: "cancelled",
-          finishedAt: new Date().toISOString(),
-        };
-        this.upsertBackgroundTask(agent.id, updated);
-      }
-    }
-  }
-
-  private findBackgroundTaskByCommand(
-    agentId: string,
-    command: string | null,
-    jobId?: string,
-  ): BackgroundTaskDescriptorPayload | undefined {
-    const agent = this.agents.get(agentId);
-    if (!agent) return undefined;
-
-    for (const task of agent.backgroundTasks.values()) {
-      if (task.status !== "running") continue;
-      if (jobId && task.id.includes(jobId)) return task;
-      if (command && task.command === command) return task;
-    }
-    return undefined;
-  }
-
-  private updateBackgroundTaskFromOutput(agentId: string, taskId: string, output: unknown): void {
-    const agent = this.agents.get(agentId);
-    if (!agent) return;
-
-    const task = agent.backgroundTasks.get(taskId);
-    if (!task || task.status !== "running") return;
-
-    const outputText = typeof output === "string" ? output : JSON.stringify(output);
-
-    // Parse output for status information
-    let status: BackgroundTaskDescriptorPayload["status"] = task.status;
-    let exitCode: number | null = null;
-    let finishedAt: string | null = null;
-
-    if (outputText.includes('"status":') || outputText.includes("'status':")) {
-      // JSON-like output from bg-bash
-      if (outputText.includes('"completed"') || outputText.includes("'completed'")) {
-        status = "completed";
-        finishedAt = new Date().toISOString();
-      } else if (outputText.includes('"failed"') || outputText.includes("'failed'")) {
-        status = "failed";
-        finishedAt = new Date().toISOString();
-      } else if (outputText.includes('"cancelled"') || outputText.includes("'cancelled'")) {
-        status = "cancelled";
-        finishedAt = new Date().toISOString();
-      }
-    }
-
-    // Try to extract exit code
-    const exitCodeMatch = outputText.match(/"exit_code"\s*:\s*(\d+)/);
-    if (exitCodeMatch) {
-      exitCode = parseInt(exitCodeMatch[1], 10);
-    }
-
-    // Extract output preview (first 200 chars)
-    const outputPreview = outputText.slice(0, 200);
-
-    const updated: BackgroundTaskDescriptorPayload = {
-      ...task,
-      status,
-      exitCode,
-      finishedAt,
-      outputPreview,
-    };
-    this.upsertBackgroundTask(agentId, updated);
   }
 
   createAgent(
@@ -1903,17 +1713,6 @@ export class AgentManager {
     await agent.session.close();
     this.cancelRunningProviderSubagents(agentId);
     const closedAgent = this.prepareAgentForClosure(agent, "agent closed");
-    let closeError: unknown;
-    try {
-      await agent.session.close();
-    } catch (error) {
-      closeError = error;
-    }
-    this.timelineStore.delete(agentId);
-    agent.backgroundTasks.clear();
-    for (const event of this.providerSubagents.deleteParent(agentId)) {
-      this.dispatch({ type: "provider_subagent", event });
-    }
 
     let persistError: unknown;
     try {
@@ -1931,9 +1730,6 @@ export class AgentManager {
       "agent.manager.close.complete",
     );
 
-    if (closeError !== undefined) {
-      throw closeError;
-    }
     if (persistError !== undefined) {
       throw persistError;
     }
@@ -2116,7 +1912,6 @@ export class AgentManager {
         attention,
         internal: record.internal,
         labels: record.labels,
-        backgroundTasks: new Map(),
       },
     });
   }
@@ -2151,6 +1946,7 @@ export class AgentManager {
     if (agent.runtimeInfo) {
       agent.runtimeInfo = { ...agent.runtimeInfo, model: normalizedModelId };
     }
+    this.refreshSessionPersistence(agent);
     this.touchUpdatedAt(agent);
     this.emitState(agent);
   }
@@ -3696,11 +3492,31 @@ export class AgentManager {
         options,
       });
 
+      // Read history before publishing the agent: a provider failure must leave the
+      // session unregistered so the registration catch closes it.
+      const startupHistory: AgentStreamEvent[] = [];
+      if (session.initialTimeline?.length && !managed.historyPrimed) {
+        for await (const event of session.streamHistory()) {
+          startupHistory.push(limitAgentStreamEventContent(event));
+        }
+      }
+
       this.assertAcceptingAgentRegistrations();
       this.agents.set(resolvedAgentId, managed);
       registered = true;
       // Initialize previousStatus to track transitions
       this.previousStatuses.set(resolvedAgentId, managed.lifecycle);
+      if (session.initialTimeline?.length) {
+        if (!managed.historyPrimed) {
+          // Legacy/imported chats need their existing history before startup rows.
+          await this.primeTimelineFromLegacyProviderHistory(managed, false, startupHistory);
+        } else {
+          for (const entry of session.initialTimeline) {
+            this.recordTimeline(managed.id, entry.item, { timestamp: entry.timestamp });
+          }
+        }
+        this.refreshSessionPersistence(managed);
+      }
       await this.refreshRuntimeInfo(managed, { emit: false });
       this.assertAgentRegistrationActive(managed);
       await this.persistSnapshot(managed, {
@@ -3861,7 +3677,6 @@ export class AgentManager {
       attention: resolveInitialAttention(options?.attention),
       internal: config.internal ?? false,
       labels: options?.labels ?? {},
-      backgroundTasks: new Map(),
     } as ActiveManagedAgent;
   }
 
@@ -3923,6 +3738,11 @@ export class AgentManager {
 
   private emitClosedAgent(agent: ManagedAgentClosed, options?: { persist?: boolean }): void {
     this.emitState(agent, options);
+    if (!agent.internal) {
+      this.pluginLifecycle?.emit("agent.closed", {
+        agent: describeHookAgent({ ...agent, title: agent.config.title }),
+      });
+    }
   }
   private subscribeToSession(agent: ActiveManagedAgent): void {
     if (agent.unsubscribeSession) {
@@ -4097,6 +3917,19 @@ export class AgentManager {
     return this.registry;
   }
 
+  /**
+   * Provider-side mode switches (ACP current_mode_update, in-session
+   * commands, permission-driven transitions) must land in config.modeId too —
+   * reloadAgentSession and the persisted record derive the resumed session's
+   * mode from it, so leaving it stale silently downgrades the mode on resume.
+   */
+  private applyObservedMode(agent: ActiveManagedAgent, modeId: string | null): void {
+    agent.currentModeId = modeId;
+    if (modeId != null) {
+      agent.config.modeId = modeId;
+    }
+  }
+
   private async refreshSessionState(
     agent: ActiveManagedAgent,
     options?: { emit?: boolean },
@@ -4109,7 +3942,7 @@ export class AgentManager {
     }
 
     try {
-      agent.currentModeId = await agent.session.getCurrentMode();
+      this.applyObservedMode(agent, await agent.session.getCurrentMode());
     } catch {
       agent.currentModeId = null;
     }
@@ -4229,21 +4062,12 @@ export class AgentManager {
     this.emitState(agent);
   }
 
-  /**
-   * Fail-soft hydration guard: a replay with no events must never wipe a
-   * non-empty committed timeline (owner rule: history is always shown).
-   */
-  private isEmptyReplayAgainstCommittedTimeline(agentId: string, replayedEvents: number): boolean {
-    return (
-      replayedEvents === 0 &&
-      this.timelineStore.has(agentId) &&
-      this.timelineStore.getRows(agentId).length > 0
-    );
-  }
-
   private async primeTimelineFromLegacyProviderHistory(
     agent: ActiveManagedAgent,
     broadcast: boolean | (() => boolean),
+    history:
+      | AsyncIterable<AgentStreamEvent>
+      | Iterable<AgentStreamEvent> = agent.session.streamHistory(),
   ): Promise<void> {
     const deferredBroadcast = typeof broadcast === "function";
     const historyEvents: Extract<AgentStreamEvent, { type: "timeline" }>[] = [];
@@ -4253,7 +4077,7 @@ export class AgentManager {
       // Collect the whole replay before touching either store. A stream that fails
       // halfway then leaves the committed timeline as it was, instead of a partial
       // copy the next attempt would append to.
-      for await (const rawEvent of agent.session.streamHistory()) {
+      for await (const rawEvent of history) {
         const event = limitAgentStreamEventContent(rawEvent);
         if (event.type === "provider_subagent") {
           historySubagentEvents.push(event);
@@ -4270,19 +4094,6 @@ export class AgentManager {
     } catch (error) {
       this.logger.warn({ err: error, agentId: agent.id }, "Failed to hydrate provider history");
       throw error;
-    }
-
-    // Fail-soft: a replay that yields nothing against an agent whose committed
-    // timeline is non-empty is a broken replay (e.g. a plugin provider race),
-    // not an empty conversation. Deleting the rows here would blank the chat
-    // while the provider still holds the history. Keep the committed timeline,
-    // leave historyPrimed false so the next open retries hydration, and warn.
-    if (this.isEmptyReplayAgainstCommittedTimeline(agent.id, historyEvents.length)) {
-      this.logger.warn(
-        { agentId: agent.id, provider: agent.provider },
-        "Provider history replay returned no events for an agent with a committed timeline; keeping the existing timeline",
-      );
-      return;
     }
 
     // The replay is the timeline, so drop the rows a previous hydration committed.
@@ -4511,7 +4322,7 @@ export class AgentManager {
         this.emitState(agent);
         return undefined;
       case "mode_changed":
-        agent.currentModeId = event.currentModeId;
+        this.applyObservedMode(agent, event.currentModeId);
         agent.availableModes = event.availableModes;
         if (agent.runtimeInfo) {
           agent.runtimeInfo = { ...agent.runtimeInfo, modeId: event.currentModeId };
@@ -4527,7 +4338,7 @@ export class AgentManager {
             agent.cwd,
           );
         }
-        agent.currentModeId = event.runtimeInfo.modeId ?? agent.currentModeId;
+        this.applyObservedMode(agent, event.runtimeInfo.modeId ?? agent.currentModeId);
         flags.shouldDispatchEvent = false;
         this.emitState(agent);
         return undefined;
@@ -4616,10 +4427,6 @@ export class AgentManager {
       return;
     }
 
-    // Intercept bg-bash MCP tool calls for background task tracking
-    if (event.item.type === "tool_call") {
-      this.interceptBackgroundTaskFromToolCall(agent, event.item);
-    }
     if (
       event.item.type === "user_message" &&
       event.item.clientMessageId &&
@@ -5308,22 +5115,15 @@ export class AgentManager {
 
   private applyProviderConfiguration(config: AgentSessionConfig): AgentSessionConfig {
     const definition = this.providerDefinitions.get(config.provider);
-    if (config.providerOptions !== undefined && !definition?.validateOptions) {
-      throw new Error(`Provider '${config.provider}' does not accept providerOptions`);
-    }
-    const validatedOptions = definition?.validateOptions?.(config.providerOptions);
-    const withOptions = definition?.applyOptions
-      ? definition.applyOptions(config, validatedOptions)
-      : config;
-    this.validateToolPolicyServers(withOptions);
-    if (withOptions.toolPolicy && !definition?.applyToolPolicy) {
+    this.validateToolPolicyServers(config);
+    if (config.toolPolicy && !definition?.applyToolPolicy) {
       throw new Error(
         `Provider '${config.provider}' cannot preapprove exact MCP tools for unattended execution`,
       );
     }
     return definition?.applyToolPolicy
-      ? definition.applyToolPolicy(withOptions, withOptions.toolPolicy)
-      : withOptions;
+      ? definition.applyToolPolicy(config, config.toolPolicy)
+      : config;
   }
 
   private validateToolPolicyServers(config: AgentSessionConfig): void {

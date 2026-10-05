@@ -1,13 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { darkHighlightColors, resolveSyntaxColors } from "@getpaseo/highlight";
-import {
-  BORDER_RADIUS,
-  BORDER_WIDTH,
-  DEFAULT_UI_FONT_STACK,
-  ICON_SIZE,
-  REGISTERED_THEMES,
-  SPACING,
-} from "@/styles/theme";
+import { DEFAULT_UI_FONT_STACK, REGISTERED_THEMES } from "@/styles/theme";
 import { applyAppearance, type AppearanceInput } from "./apply";
 
 // Override the global react-native-unistyles mock (vitest.setup.ts) so that
@@ -43,11 +36,8 @@ interface FakeTheme {
     "3xl": number;
     "4xl": number;
   };
-  lineHeight: { content: number; diff: number };
-  spacing: Record<keyof typeof SPACING, number>;
-  iconSize: Record<keyof typeof ICON_SIZE, number>;
-  borderRadius: Record<keyof typeof BORDER_RADIUS, number>;
-  borderWidth: Record<keyof typeof BORDER_WIDTH, number>;
+  lineHeight: { diff: number };
+  contentMaxWidth: number;
   colors: { foreground: string; syntax: Record<string, string> };
 }
 
@@ -66,11 +56,8 @@ function makeFakeTheme(): FakeTheme {
       "3xl": 22,
       "4xl": 26,
     },
-    lineHeight: { content: 20, diff: 22 },
-    spacing: { ...SPACING },
-    iconSize: { ...ICON_SIZE },
-    borderRadius: { ...BORDER_RADIUS },
-    borderWidth: { ...BORDER_WIDTH },
+    lineHeight: { diff: 22 },
+    contentMaxWidth: 820,
     colors: { foreground: "#fff", syntax: {} },
   };
 }
@@ -82,11 +69,7 @@ function makeInput(overrides: Partial<AppearanceInput> = {}): AppearanceInput {
     uiBaseFontSize: 14,
     contentFontSize: 15,
     codeFontSize: 12,
-    uiScale: 1,
-    iconScale: 1,
-    spacingScale: 1,
-    contentSpacingScale: 0.75,
-    lineHeightScale: 1.3,
+    contentMaxWidth: 820,
     syntaxTheme: "one",
     ...overrides,
   };
@@ -120,6 +103,12 @@ describe("applyAppearance", () => {
       "darkPureBlack",
       ...ALL_THEME_KEYS.filter((key) => key !== "darkPureBlack"),
     ]);
+  });
+
+  it("patches the content max width into the theme", () => {
+    applyAppearance(makeInput({ contentMaxWidth: 1600 }));
+
+    expect(runCapturedUpdater().contentMaxWidth).toBe(1600);
   });
 
   it("resolves an empty UI font family to the default stack", () => {
@@ -213,103 +202,5 @@ describe("applyAppearance", () => {
     // makeFakeTheme().colorScheme === "dark" -> github resolves to the dark palette.
     expect(runCapturedUpdater().colors.syntax).toEqual(darkHighlightColors);
     expect(runCapturedUpdater().colors.syntax).toEqual(resolveSyntaxColors("github", "dark"));
-  });
-
-  it("scales borders by uiScale but NOT spacing or icons", () => {
-    applyAppearance(makeInput({ uiScale: 1.2 }));
-
-    const result = runCapturedUpdater();
-    expect(result.spacing[4]).toBe(SPACING[4]); // unchanged
-    expect(result.iconSize.md).toBe(ICON_SIZE.md); // unchanged, driven by iconScale instead
-    expect(result.borderRadius.lg).toBe(Math.round(BORDER_RADIUS.lg * 1.2)); // 10
-    expect(result.borderWidth[1]).toBe(Math.round(BORDER_WIDTH[1] * 1.2)); // 1
-  });
-
-  it("scales icons by iconScale only, independent of uiScale", () => {
-    applyAppearance(makeInput({ uiScale: 1.2, iconScale: 1.5 }));
-
-    const result = runCapturedUpdater();
-    expect(result.iconSize.md).toBe(Math.round(ICON_SIZE.md * 1.5));
-    expect(result.borderRadius.lg).toBe(Math.round(BORDER_RADIUS.lg * 1.2)); // unaffected by iconScale
-  });
-
-  it("iconScale 1.0 leaves icon sizes at authored values", () => {
-    applyAppearance(makeInput({ iconScale: 1.0 }));
-
-    expect(runCapturedUpdater().iconSize.md).toBe(ICON_SIZE.md);
-  });
-
-  it("scales spacing by spacingScale only", () => {
-    applyAppearance(makeInput({ spacingScale: 1.5 }));
-
-    const result = runCapturedUpdater();
-    expect(result.spacing[4]).toBe(Math.round(SPACING[4] * 1.5)); // 24
-    expect(result.spacing[8]).toBe(Math.round(SPACING[8] * 1.5)); // 12
-    expect(result.iconSize.md).toBe(ICON_SIZE.md); // unchanged
-  });
-
-  it("spacingScale 1.0 leaves spacing at authored values", () => {
-    applyAppearance(makeInput({ spacingScale: 1.0 }));
-
-    const result = runCapturedUpdater();
-    expect(result.spacing[4]).toBe(SPACING[4]);
-  });
-
-  it("leaves borderRadius.full at 9999 regardless of uiScale", () => {
-    applyAppearance(makeInput({ uiScale: 0.5 }));
-
-    expect(runCapturedUpdater().borderRadius.full).toBe(9999);
-  });
-
-  it("leaves spacing[0] and borderWidth[0] at 0 regardless of uiScale", () => {
-    applyAppearance(makeInput({ uiScale: 1.5 }));
-
-    const result = runCapturedUpdater();
-    expect(result.spacing[0]).toBe(0);
-    expect(result.borderWidth[0]).toBe(0);
-  });
-
-  it("uiScale 1.0 leaves all tokens at authored values", () => {
-    applyAppearance(makeInput({ uiScale: 1.0 }));
-
-    const result = runCapturedUpdater();
-    expect(result.spacing[4]).toBe(SPACING[4]);
-    expect(result.iconSize.md).toBe(ICON_SIZE.md);
-    expect(result.borderRadius.lg).toBe(BORDER_RADIUS.lg);
-    expect(result.borderWidth[1]).toBe(BORDER_WIDTH[1]);
-  });
-
-  it("uiScale multiplies UI font ramp but leaves content and code untouched", () => {
-    applyAppearance(makeInput({ uiBaseFontSize: 14, uiScale: 1.2 }));
-
-    const result = runCapturedUpdater();
-    expect(result.fontSize.base).toBe(Math.round(14 * 1.2)); // 17
-    expect(result.fontSize.sm).toBe(Math.round(12 * 1.2)); // 14
-    expect(result.fontSize.lg).toBe(Math.round(16 * 1.2)); // 19
-    expect(result.fontSize["4xl"]).toBe(Math.round(26 * 1.2)); // 31
-    expect(result.fontSize.content).toBe(15); // unchanged
-    expect(result.fontSize.code).toBe(12); // unchanged
-  });
-
-  it("derives lineHeight.content from contentFontSize * lineHeightScale", () => {
-    applyAppearance(makeInput({ contentFontSize: 15, lineHeightScale: 1.4 }));
-
-    expect(runCapturedUpdater().lineHeight.content).toBe(Math.round(15 * 1.4)); // 21
-  });
-
-  it("lineHeight.diff is unchanged by lineHeightScale (still codeFontSize * 1.5)", () => {
-    applyAppearance(makeInput({ codeFontSize: 18, lineHeightScale: 1.1 }));
-
-    expect(runCapturedUpdater().lineHeight.diff).toBe(Math.round(18 * 1.5)); // 27
-  });
-
-  it("applyAppearance is idempotent for uiScale (no compounding)", () => {
-    applyAppearance(makeInput({ uiScale: 1.2 }));
-    const first = runCapturedUpdater(0);
-    applyAppearance(makeInput({ uiScale: 1.2 }));
-    const second = runCapturedUpdater(ALL_THEME_KEYS.length);
-
-    expect(second.spacing[4]).toBe(first.spacing[4]);
-    expect(second.iconSize.md).toBe(first.iconSize.md);
   });
 });

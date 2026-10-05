@@ -20,7 +20,6 @@ import {
   reserveKeyboardLayoutShift,
   shouldReconcileHiddenKeyboardEnd,
 } from "./policy";
-import { isWeb } from "@/constants/platform";
 import { KeyboardShiftContext, SettledKeyboardShiftContext, useKeyboardShift } from "./context";
 
 type KeyboardShiftMode = "translate" | "padding";
@@ -40,38 +39,6 @@ export function KeyboardShiftProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     bottomInset.value = insets.bottom;
   }, [bottomInset, insets.bottom]);
-
-  // Web fallback: react-native-keyboard-controller's
-  // `useReanimatedKeyboardAnimation` returns height: 0 on web because the
-  // library has no DOM soft-keyboard observation. Drive the same shared
-  // value from `window.visualViewport`, which shrinks when the soft
-  // keyboard (Android Chrome, mobile Safari, iPadOS) covers the bottom of
-  // the screen. The diff between the layout viewport and the visual
-  // viewport is exactly the keyboard inset.
-  useEffect(() => {
-    if (!isWeb) return;
-    if (typeof window === "undefined") return;
-    const vv = window.visualViewport;
-    if (!vv) return;
-
-    const update = () => {
-      const layout = window.innerHeight;
-      const visual = vv.height;
-      const inset = Math.max(0, layout - visual - vv.offsetTop);
-      keyboardHeight.value = -inset;
-      const progress = inset > 0 ? Math.min(1, inset / 200) : 0;
-      keyboardProgress.value = progress;
-    };
-    update();
-    vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
-    window.addEventListener("resize", update);
-    return () => {
-      vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
-      window.removeEventListener("resize", update);
-    };
-  }, [keyboardHeight, keyboardProgress]);
 
   const shift = useDerivedValue(() => {
     "worklet";

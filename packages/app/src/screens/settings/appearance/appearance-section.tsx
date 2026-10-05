@@ -1,9 +1,9 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
+import { Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, Monitor, Moon, Sun } from "lucide-react-native";
+import { Monitor, Moon, Sun } from "lucide-react-native";
 import {
   SYNTAX_THEME_OPTIONS,
   type SyntaxThemeId,
@@ -14,48 +14,29 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { SettingsCard, SettingsSwitch } from "@/components/settings";
+import { DropdownTrigger } from "@/components/ui/dropdown-trigger";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { useContributedThemes } from "@/appearance/provider";
-import { EditingTextInput as TextInput } from "@/components/ui/text-input";
+import { Button } from "@/components/ui/button";
 import {
-  LINE_HEIGHT_SCALE_STEP,
+  EditingTextInput as TextInput,
+  type EditingTextInputHandle,
+} from "@/components/ui/text-input";
+import {
   MAX_CODE_FONT_SIZE,
   MAX_CONTENT_FONT_SIZE,
-  MAX_ICON_SCALE,
-  MAX_LINE_HEIGHT_SCALE,
-  MAX_SPACING_SCALE,
   MAX_UI_BASE_FONT_SIZE,
-  MAX_UI_SCALE,
   MIN_CODE_FONT_SIZE,
   MIN_CONTENT_FONT_SIZE,
-  MIN_ICON_SCALE,
-  MIN_LINE_HEIGHT_SCALE,
-  MIN_SPACING_SCALE,
   MIN_UI_BASE_FONT_SIZE,
-  MIN_UI_SCALE,
-  DEFAULT_UI_BASE_FONT_SIZE,
-  DEFAULT_CONTENT_FONT_SIZE,
-  DEFAULT_CODE_FONT_SIZE,
-  DEFAULT_ICON_SCALE,
-  DEFAULT_UI_SCALE,
-  DEFAULT_SPACING_SCALE,
-  DEFAULT_CONTENT_SPACING_SCALE,
-  DEFAULT_DEBUG_CONVERSATION_SPACING,
-  DEFAULT_LINE_HEIGHT_SCALE,
-  MIN_CONTENT_SPACING_SCALE,
-  MAX_CONTENT_SPACING_SCALE,
-  CONTENT_SPACING_SCALE_STEP,
-  ICON_SCALE_STEP,
   parseClampedFontSize,
+  parseContentMaxWidth,
+  resolveContentMaxWidth,
   sanitizeFontFamily,
   useAppSettings,
   type AppSettings,
   DEFAULT_THEME_PREFERENCE,
-  SPACING_SCALE_STEP,
-  UI_SCALE_STEP,
 } from "@/hooks/use-settings";
 import {
   DEFAULT_MONO_FONT_STACK,
@@ -70,7 +51,6 @@ import { isNative } from "@/constants/platform";
 import type { PluginThemeOption } from "@/plugins/themes";
 import { settingsStyles } from "@/styles/settings";
 import { AppearancePreview } from "./appearance-preview";
-import { SidebarNavSection } from "./sidebar-nav-section";
 
 // ---------------------------------------------------------------------------
 // Theme-reactive leaf icons (withUnistyles + uniProps color mapping — no
@@ -81,7 +61,6 @@ import { SidebarNavSection } from "./sidebar-nav-section";
 const ThemedSun = withUnistyles(Sun);
 const ThemedMoon = withUnistyles(Moon);
 const ThemedMonitor = withUnistyles(Monitor);
-const ThemedChevronDown = withUnistyles(ChevronDown);
 
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
@@ -99,21 +78,12 @@ function resolveDefaultStackPlaceholder(t: TFunction, stack: string): string {
   return BARE_DEFAULT_STACKS.has(stack) ? t("settings.appearance.fonts.systemDefault") : stack;
 }
 
-// Local size string (digits + optional decimal point) -> preview override
-// number. Empty/invalid yields undefined so the preview falls back to the
-// committed theme value.
+// Local size string (digits only) -> preview override number. Empty/invalid
+// yields undefined so the preview falls back to the committed theme value.
 function sizeDraftToOverride(value: string): number | undefined {
   if (value.length === 0) return undefined;
-  const parsed = Number.parseFloat(value);
+  const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function dropdownTriggerStyle({ pressed }: PressableStateCallbackType) {
-  return [styles.trigger, pressed ? styles.triggerPressed : null];
-}
-
-function resetDefaultsRowStyle({ pressed }: PressableStateCallbackType) {
-  return [settingsStyles.row, { opacity: pressed ? 0.6 : 1 }];
 }
 
 // ---------------------------------------------------------------------------
@@ -204,27 +174,30 @@ function ThemeRow({
   const selectedLabel = selectedPluginTheme
     ? selectedPluginTheme.name
     : getThemeLabel(t, builtInValue);
+  const leading = useMemo(
+    () =>
+      selectedPluginTheme ? (
+        <ThemeSwatch color={selectedPluginTheme.swatch} />
+      ) : (
+        <ThemeLeading themeValue={builtInValue} />
+      ),
+    [builtInValue, selectedPluginTheme],
+  );
   return (
     <View style={settingsStyles.row}>
       <View style={settingsStyles.rowContent}>
         <Text style={settingsStyles.rowTitle}>{t("settings.appearance.theme.title")}</Text>
       </View>
       <DropdownMenu>
-        <DropdownMenuTrigger
-          style={dropdownTriggerStyle}
+        <DropdownTrigger
           accessibilityLabel={t("settings.appearance.theme.accessibilityLabel", {
             value: selectedLabel,
           })}
+          leading={leading}
         >
-          {selectedPluginTheme ? (
-            <ThemeSwatch color={selectedPluginTheme.swatch} />
-          ) : (
-            <ThemeLeading themeValue={builtInValue} />
-          )}
-          <Text style={styles.triggerText}>{selectedLabel}</Text>
-          <ThemedChevronDown size={ICON_SIZE.sm} uniProps={mutedColorMapping} />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent side="bottom" align="end" width={200}>
+          {selectedLabel}
+        </DropdownTrigger>
+        <DropdownMenuContent side="bottom" align="end" width={200} scrollable>
           {THEME_OPTIONS.map((option, index) => {
             const previousOption = THEME_OPTIONS[index - 1];
             return (
@@ -247,109 +220,6 @@ function ThemeRow({
               option={option}
               selected={selectedPluginTheme?.id === option.id}
               onSelect={onSelectPluginTheme}
-            />
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </View>
-  );
-}
-
-interface AutoExpandReasoningRowProps {
-  value: boolean;
-  onChange: (value: boolean) => void;
-}
-
-function AutoExpandReasoningRow({ value, onChange }: AutoExpandReasoningRowProps) {
-  const { t } = useTranslation();
-  return (
-    <SettingsSwitch
-      label={t("settings.general.autoExpandReasoning.label")}
-      hint={t("settings.general.autoExpandReasoning.description")}
-      value={value}
-      onValueChange={onChange}
-    />
-  );
-}
-
-interface ChatOutlineRowProps {
-  value: boolean;
-  onChange: (value: boolean) => void;
-}
-
-function ChatOutlineRow({ value, onChange }: ChatOutlineRowProps) {
-  const { t } = useTranslation();
-  return (
-    <SettingsSwitch
-      label={t("settings.appearance.chatOutline.title")}
-      hint={t("settings.appearance.chatOutline.description")}
-      value={value}
-      onValueChange={onChange}
-    />
-  );
-}
-
-const TOOL_CALL_DETAIL_LEVELS: readonly AppSettings["toolCallDetailLevel"][] = [
-  "detailed",
-  "overview",
-];
-
-function getToolCallDetailLevelLabel(
-  t: TFunction,
-  value: AppSettings["toolCallDetailLevel"],
-): string {
-  return t(`settings.general.toolCallDetail.options.${value}`);
-}
-
-interface ToolCallDetailMenuItemProps {
-  value: AppSettings["toolCallDetailLevel"];
-  selected: boolean;
-  onChange: (value: AppSettings["toolCallDetailLevel"]) => void;
-}
-
-function ToolCallDetailMenuItem({ value, selected, onChange }: ToolCallDetailMenuItemProps) {
-  const { t } = useTranslation();
-  const handleSelect = useCallback(() => onChange(value), [onChange, value]);
-  return (
-    <DropdownMenuItem selected={selected} onSelect={handleSelect}>
-      {getToolCallDetailLevelLabel(t, value)}
-    </DropdownMenuItem>
-  );
-}
-
-interface ToolCallDetailRowProps {
-  value: AppSettings["toolCallDetailLevel"];
-  onChange: (value: AppSettings["toolCallDetailLevel"]) => void;
-}
-
-function ToolCallDetailRow({ value, onChange }: ToolCallDetailRowProps) {
-  const { t } = useTranslation();
-  const selectedLabel = getToolCallDetailLevelLabel(t, value);
-  return (
-    <View style={settingsStyles.row}>
-      <View style={settingsStyles.rowContent}>
-        <Text style={settingsStyles.rowTitle}>{t("settings.general.toolCallDetail.label")}</Text>
-        <Text style={settingsStyles.rowHint}>
-          {t("settings.general.toolCallDetail.description")}
-        </Text>
-      </View>
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          style={dropdownTriggerStyle}
-          accessibilityLabel={t("settings.general.toolCallDetail.accessibilityLabel", {
-            value: selectedLabel,
-          })}
-        >
-          <Text style={styles.triggerText}>{selectedLabel}</Text>
-          <ThemedChevronDown size={ICON_SIZE.sm} uniProps={mutedColorMapping} />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent side="bottom" align="end" width={200}>
-          {TOOL_CALL_DETAIL_LEVELS.map((option) => (
-            <ToolCallDetailMenuItem
-              key={option}
-              value={option}
-              selected={value === option}
-              onChange={onChange}
             />
           ))}
         </DropdownMenuContent>
@@ -419,15 +289,6 @@ function FontFamilyRow({
   );
 }
 
-// Keeps digits and at most one decimal point, so a size draft like "14.5" can
-// be typed without a second "." or letters leaking into the numeric parse.
-function sanitizeSizeDraft(value: string): string {
-  const digitsAndDot = value.replace(/[^\d.]/g, "");
-  const firstDot = digitsAndDot.indexOf(".");
-  if (firstDot === -1) return digitsAndDot;
-  return digitsAndDot.slice(0, firstDot + 1) + digitsAndDot.slice(firstDot + 1).replace(/\./g, "");
-}
-
 interface FontSizeRowProps {
   title: string;
   hint: string;
@@ -459,8 +320,8 @@ function FontSizeRow({
           onChangeText={onChangeDraft}
           onBlur={onCommit}
           onSubmitEditing={onCommit}
-          keyboardType="decimal-pad"
-          inputMode="decimal"
+          keyboardType="number-pad"
+          inputMode="numeric"
           selectTextOnFocus
           style={styles.sizeInput}
           accessibilityLabel={accessibilityLabel}
@@ -472,68 +333,68 @@ function FontSizeRow({
 }
 
 // ---------------------------------------------------------------------------
-// Stepper rows (UI zoom, line-height scale)
+// Content width: numeric field (commit on blur/submit) + reset to the default
 // ---------------------------------------------------------------------------
 
-interface StepperRowProps {
-  title: string;
-  hint: string;
-  accessibilityLabel: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  format: "percent" | "multiplier";
-  onChange: (value: number) => void;
+interface ContentWidthRowProps {
+  value: AppSettings["contentMaxWidth"];
+  onChange: (value: AppSettings["contentMaxWidth"]) => void;
 }
 
-function StepperRow({
-  title,
-  hint,
-  accessibilityLabel,
-  value,
-  min,
-  max,
-  step,
-  format,
-  onChange,
-}: StepperRowProps) {
-  const canDecrement = value - step >= min - step * 0.5;
-  const canIncrement = value + step <= max + step * 0.5;
-  const handleDecrement = useCallback(() => {
-    const next = Math.round((value - step) * 100) / 100;
-    if (next >= min - step * 0.5) onChange(next);
-  }, [value, step, min, onChange]);
-  const handleIncrement = useCallback(() => {
-    const next = Math.round((value + step) * 100) / 100;
-    if (next <= max + step * 0.5) onChange(next);
-  }, [value, step, max, onChange]);
-  const displayValue =
-    format === "percent" ? `${Math.round(value * 100)}%` : `${parseFloat(value.toFixed(2))}×`;
+function ContentWidthRow({ value, onChange }: ContentWidthRowProps) {
+  const { t } = useTranslation();
+  const width = resolveContentMaxWidth({ contentMaxWidth: value });
+  // The field is uncontrolled, so a saved or reset width is written into it directly.
+  const input = useRef<EditingTextInputHandle>(null);
+
+  useEffect(() => {
+    input.current?.replaceText(String(width));
+  }, [width]);
+
+  const commit = useCallback(() => {
+    const next = parseContentMaxWidth(input.current?.getText()) ?? width;
+    input.current?.replaceText(String(next));
+    // Typing the width already in effect keeps following the default.
+    if (next !== width) {
+      onChange(next);
+    }
+  }, [onChange, width]);
+
+  const reset = useCallback(() => {
+    onChange(null);
+  }, [onChange]);
+
   return (
     <View style={settingsStyles.row}>
       <View style={settingsStyles.rowContent}>
-        <Text style={settingsStyles.rowTitle}>{title}</Text>
-        <Text style={settingsStyles.rowHint}>{hint}</Text>
+        <Text style={settingsStyles.rowTitle}>{t("settings.appearance.layout.contentWidth")}</Text>
+        <Text style={settingsStyles.rowHint}>
+          {t("settings.appearance.layout.contentWidthHint")}
+        </Text>
       </View>
-      <View style={styles.stepper}>
-        <Text
-          style={[styles.stepperButton, !canDecrement && styles.stepperButtonDisabled]}
-          accessibilityLabel={`${accessibilityLabel} decrease`}
-          accessibilityRole="button"
-          onPress={canDecrement ? handleDecrement : undefined}
-        >
-          −
-        </Text>
-        <Text style={styles.stepperValue}>{displayValue}</Text>
-        <Text
-          style={[styles.stepperButton, !canIncrement && styles.stepperButtonDisabled]}
-          accessibilityLabel={`${accessibilityLabel} increase`}
-          accessibilityRole="button"
-          onPress={canIncrement ? handleIncrement : undefined}
-        >
-          +
-        </Text>
+      <View style={styles.sizeField}>
+        {value === null ? null : (
+          <Button
+            variant="ghost"
+            size="sm"
+            onPress={reset}
+            accessibilityLabel={t("settings.appearance.layout.resetAccessibility")}
+          >
+            {t("settings.appearance.layout.reset")}
+          </Button>
+        )}
+        <TextInput
+          ref={input}
+          initialValue={String(width)}
+          onBlur={commit}
+          onSubmitEditing={commit}
+          keyboardType="number-pad"
+          inputMode="numeric"
+          selectTextOnFocus
+          style={styles.widthInput}
+          accessibilityLabel={t("settings.appearance.layout.contentWidthAccessibility")}
+        />
+        <Text style={styles.unit}>px</Text>
       </View>
     </View>
   );
@@ -584,15 +445,13 @@ function SyntaxRow({ value, onChange }: SyntaxRowProps) {
         </Text>
       </View>
       <DropdownMenu>
-        <DropdownMenuTrigger
-          style={dropdownTriggerStyle}
+        <DropdownTrigger
           accessibilityLabel={t("settings.appearance.syntax.highlightThemeAccessibility", {
             value: selectedLabel,
           })}
         >
-          <Text style={styles.triggerText}>{selectedLabel}</Text>
-          <ThemedChevronDown size={ICON_SIZE.sm} uniProps={mutedColorMapping} />
-        </DropdownMenuTrigger>
+          {selectedLabel}
+        </DropdownTrigger>
         <DropdownMenuContent side="bottom" align="end" width={200}>
           {SYNTAX_THEME_OPTIONS.map((option) => (
             <SyntaxMenuItem
@@ -655,85 +514,19 @@ export function AppearanceSection() {
     [selectPluginTheme],
   );
 
+  const handleContentMaxWidthChange = useCallback(
+    (contentMaxWidth: AppSettings["contentMaxWidth"]) => {
+      void updateSettings({ contentMaxWidth });
+    },
+    [updateSettings],
+  );
+
   const handleSyntaxThemeChange = useCallback(
     (syntaxTheme: SyntaxThemeId) => {
       void updateSettings({ syntaxTheme });
     },
     [updateSettings],
   );
-
-  const handleAutoExpandReasoningChange = useCallback(
-    (autoExpandReasoning: boolean) => {
-      void updateSettings({ autoExpandReasoning });
-    },
-    [updateSettings],
-  );
-
-  const handleToolCallDetailLevelChange = useCallback(
-    (toolCallDetailLevel: AppSettings["toolCallDetailLevel"]) => {
-      void updateSettings({ toolCallDetailLevel });
-    },
-    [updateSettings],
-  );
-
-  const handleChatOutlineChange = useCallback(
-    (chatOutlineEnabled: boolean) => {
-      void updateSettings({ chatOutlineEnabled });
-    },
-    [updateSettings],
-  );
-
-  const handleUiScaleChange = useCallback(
-    (uiScale: number) => {
-      void updateSettings({ uiScale });
-    },
-    [updateSettings],
-  );
-
-  const handleIconScaleChange = useCallback(
-    (iconScale: number) => {
-      void updateSettings({ iconScale });
-    },
-    [updateSettings],
-  );
-
-  const handleSpacingScaleChange = useCallback(
-    (spacingScale: number) => {
-      void updateSettings({ spacingScale });
-    },
-    [updateSettings],
-  );
-
-  const handleContentSpacingScaleChange = useCallback(
-    (contentSpacingScale: number) => {
-      void updateSettings({ contentSpacingScale });
-    },
-    [updateSettings],
-  );
-
-  const handleLineHeightScaleChange = useCallback(
-    (lineHeightScale: number) => {
-      void updateSettings({ lineHeightScale });
-    },
-    [updateSettings],
-  );
-
-  const handleResetDefaults = useCallback(() => {
-    setUiBaseSizeDraft(String(DEFAULT_UI_BASE_FONT_SIZE));
-    setContentSizeDraft(String(DEFAULT_CONTENT_FONT_SIZE));
-    setCodeSizeDraft(String(DEFAULT_CODE_FONT_SIZE));
-    void updateSettings({
-      uiBaseFontSize: DEFAULT_UI_BASE_FONT_SIZE,
-      contentFontSize: DEFAULT_CONTENT_FONT_SIZE,
-      codeFontSize: DEFAULT_CODE_FONT_SIZE,
-      uiScale: DEFAULT_UI_SCALE,
-      iconScale: DEFAULT_ICON_SCALE,
-      spacingScale: DEFAULT_SPACING_SCALE,
-      contentSpacingScale: DEFAULT_CONTENT_SPACING_SCALE,
-      debugConversationSpacing: DEFAULT_DEBUG_CONVERSATION_SPACING,
-      lineHeightScale: DEFAULT_LINE_HEIGHT_SCALE,
-    });
-  }, [updateSettings]);
 
   const commitUiFontFamily = useCallback(
     (value: string) => {
@@ -766,15 +559,15 @@ export function AppearanceSection() {
   );
 
   const handleUiBaseSizeChange = useCallback((value: string) => {
-    setUiBaseSizeDraft(sanitizeSizeDraft(value));
+    setUiBaseSizeDraft(value.replace(/[^\d]/g, ""));
   }, []);
 
   const handleCodeSizeChange = useCallback((value: string) => {
-    setCodeSizeDraft(sanitizeSizeDraft(value));
+    setCodeSizeDraft(value.replace(/[^\d]/g, ""));
   }, []);
 
   const handleContentSizeChange = useCallback((value: string) => {
-    setContentSizeDraft(sanitizeSizeDraft(value));
+    setContentSizeDraft(value.replace(/[^\d]/g, ""));
   }, []);
 
   const commitUiBaseSize = useCallback(() => {
@@ -838,25 +631,6 @@ export function AppearanceSection() {
           />
         </View>
       </SettingsSection>
-      <SettingsSection title={t("settings.appearance.detailLevel.title")}>
-        <SettingsCard>
-          <AutoExpandReasoningRow
-            value={settings.autoExpandReasoning}
-            onChange={handleAutoExpandReasoningChange}
-          />
-          <ToolCallDetailRow
-            value={settings.toolCallDetailLevel}
-            onChange={handleToolCallDetailLevelChange}
-          />
-          {!isNative ? (
-            <ChatOutlineRow
-              value={settings.chatOutlineEnabled}
-              onChange={handleChatOutlineChange}
-            />
-          ) : null}
-        </SettingsCard>
-      </SettingsSection>
-      <SidebarNavSection />
       <SettingsSection title={t("settings.appearance.fonts.title")}>
         <View style={settingsStyles.card}>
           {showInterfaceFontFamilyRow ? (
@@ -880,61 +654,6 @@ export function AppearanceSection() {
             withBorder={showInterfaceFontFamilyRow}
             onChangeDraft={handleUiBaseSizeChange}
             onCommit={commitUiBaseSize}
-          />
-          <StepperRow
-            title={t("settings.appearance.fonts.uiScale")}
-            hint={t("settings.appearance.fonts.uiScaleHint")}
-            accessibilityLabel={t("settings.appearance.fonts.uiScaleAccessibility")}
-            value={settings.uiScale}
-            min={MIN_UI_SCALE}
-            max={MAX_UI_SCALE}
-            step={UI_SCALE_STEP}
-            format="percent"
-            onChange={handleUiScaleChange}
-          />
-          <StepperRow
-            title={t("settings.appearance.fonts.iconScale")}
-            hint={t("settings.appearance.fonts.iconScaleHint")}
-            accessibilityLabel={t("settings.appearance.fonts.iconScaleAccessibility")}
-            value={settings.iconScale}
-            min={MIN_ICON_SCALE}
-            max={MAX_ICON_SCALE}
-            step={ICON_SCALE_STEP}
-            format="percent"
-            onChange={handleIconScaleChange}
-          />
-          <StepperRow
-            title={t("settings.appearance.fonts.spacingScale")}
-            hint={t("settings.appearance.fonts.spacingScaleHint")}
-            accessibilityLabel={t("settings.appearance.fonts.spacingScaleAccessibility")}
-            value={settings.spacingScale}
-            min={MIN_SPACING_SCALE}
-            max={MAX_SPACING_SCALE}
-            step={SPACING_SCALE_STEP}
-            format="percent"
-            onChange={handleSpacingScaleChange}
-          />
-          <StepperRow
-            title={t("settings.appearance.fonts.contentSpacingScale")}
-            hint={t("settings.appearance.fonts.contentSpacingScaleHint")}
-            accessibilityLabel={t("settings.appearance.fonts.contentSpacingScaleAccessibility")}
-            value={settings.contentSpacingScale}
-            min={MIN_CONTENT_SPACING_SCALE}
-            max={MAX_CONTENT_SPACING_SCALE}
-            step={CONTENT_SPACING_SCALE_STEP}
-            format="percent"
-            onChange={handleContentSpacingScaleChange}
-          />
-          <StepperRow
-            title={t("settings.appearance.fonts.lineHeightScale")}
-            hint={t("settings.appearance.fonts.lineHeightScaleHint")}
-            accessibilityLabel={t("settings.appearance.fonts.lineHeightScaleAccessibility")}
-            value={settings.lineHeightScale}
-            min={MIN_LINE_HEIGHT_SCALE}
-            max={MAX_LINE_HEIGHT_SCALE}
-            step={LINE_HEIGHT_SCALE_STEP}
-            format="multiplier"
-            onChange={handleLineHeightScaleChange}
           />
           <FontSizeRow
             title={t("settings.appearance.fonts.contentSize")}
@@ -963,16 +682,14 @@ export function AppearanceSection() {
             onChangeDraft={handleCodeSizeChange}
             onCommit={commitCodeSize}
           />
-          <Pressable onPress={handleResetDefaults} style={resetDefaultsRowStyle}>
-            <View style={settingsStyles.rowContent}>
-              <Text style={settingsStyles.rowTitle}>
-                {t("settings.appearance.fonts.resetDefaults")}
-              </Text>
-              <Text style={settingsStyles.rowHint}>
-                {t("settings.appearance.fonts.resetDefaultsHint")}
-              </Text>
-            </View>
-          </Pressable>
+        </View>
+      </SettingsSection>
+      <SettingsSection title={t("settings.appearance.layout.title")}>
+        <View style={settingsStyles.card}>
+          <ContentWidthRow
+            value={settings.contentMaxWidth}
+            onChange={handleContentMaxWidthChange}
+          />
         </View>
       </SettingsSection>
       <SettingsSection title={t("settings.appearance.syntax.title")}>
@@ -999,23 +716,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[4],
     borderTopWidth: theme.borderWidth[1],
     borderTopColor: theme.colors.border,
-  },
-  trigger: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1],
-    paddingVertical: theme.spacing[1],
-    paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius.md,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.border,
-  },
-  triggerPressed: {
-    opacity: 0.85,
-  },
-  triggerText: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.base,
   },
   swatch: {
     width: ICON_SIZE.md,
@@ -1057,38 +757,24 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     textAlign: "right",
   },
+  widthInput: {
+    width: 80,
+    minHeight: 36,
+    paddingVertical: theme.spacing[2],
+    paddingHorizontal: theme.spacing[3],
+    borderRadius: theme.borderRadius.md,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface2,
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.base,
+    textAlign: "right",
+  },
   unit: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
   },
   placeholderColor: {
     color: theme.colors.foregroundMuted,
-  },
-  stepper: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-  },
-  stepperButton: {
-    width: 32,
-    height: 32,
-    textAlign: "center",
-    lineHeight: 32,
-    fontSize: theme.fontSize.lg,
-    color: theme.colors.foreground,
-    backgroundColor: theme.colors.surface2,
-    borderRadius: theme.borderRadius.md,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.border,
-    overflow: "hidden",
-  },
-  stepperButtonDisabled: {
-    opacity: 0.4,
-  },
-  stepperValue: {
-    minWidth: 48,
-    textAlign: "center",
-    fontSize: theme.fontSize.base,
-    color: theme.colors.foreground,
   },
 }));

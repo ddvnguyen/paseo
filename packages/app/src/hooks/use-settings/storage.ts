@@ -5,6 +5,11 @@ import type { DesktopSettings } from "@/desktop/settings/desktop-settings";
 import type { AppLanguage } from "@/i18n/locales";
 import type { SidebarNavPreference } from "@/sidebar-nav/model";
 import {
+  DEFAULT_USAGE_PREFERENCES,
+  UsagePreferencesSchema,
+  type UsagePreferences,
+} from "@/usage/preferences";
+import {
   DEFAULT_SIDEBAR_CHECKS_DISPLAY,
   type SidebarChecksDisplay,
 } from "@/components/sidebar/display-preferences/checks-display";
@@ -15,6 +20,7 @@ import {
 } from "@/components/sidebar/display-preferences/row-items";
 import { isNative } from "@/constants/platform";
 import {
+  DEFAULT_CONTENT_MAX_WIDTH,
   FONT_SIZE,
   PLUGIN_THEME_PREFERENCE,
   THEME_OPTIONS,
@@ -35,7 +41,6 @@ export type PullRequestOpenLocation = "main" | "side" | "explorer";
 /** What a sidebar workspace row shows in the space to the right of its title. */
 export type SidebarWorkspaceTrailing = "diff" | "timestamp" | "none";
 export type ToolCallDetailLevel = "overview" | "detailed";
-export type DebugConversationSpacing = "compact" | "comfortable" | "spacious";
 
 const ThemePreferenceSchema = z.enum([
   ...THEME_OPTIONS.map((option) => option.name),
@@ -63,44 +68,10 @@ export const MAX_CONTENT_FONT_SIZE = 21;
 export const DEFAULT_CODE_FONT_SIZE = 12; // == FONT_SIZE.code
 export const MIN_CODE_FONT_SIZE = 9;
 export const MAX_CODE_FONT_SIZE = 22; // line-height 1.5×22=33 stays safe
-export const FONT_SIZE_STEP = 0.5;
 export const MAX_FONT_FAMILY_LENGTH = 200;
-// UI zoom: scales the whole interface (text, controls, spacing, borders).
-// 1.0 is the authored design; <1.0 is denser, >1.0 is larger. Icons are
-// scaled independently by iconScale, not by this.
-export const DEFAULT_UI_SCALE = 1;
-export const MIN_UI_SCALE = 0.75;
-export const MAX_UI_SCALE = 1.5;
-export const UI_SCALE_STEP = 0.01;
-// Icon size: multiplier on icon glyphs only, independent of uiScale so icons
-// can be resized without affecting fonts, borders, or spacing.
-export const DEFAULT_ICON_SCALE = 1;
-export const MIN_ICON_SCALE = 0.5;
-export const MAX_ICON_SCALE = 2;
-export const ICON_SCALE_STEP = 0.05;
-// Text line height: multiplier on the body content font size. Independent of zoom
-// so the user can tighten/loosen text without resizing the rest of the UI.
-export const DEFAULT_LINE_HEIGHT_SCALE = 1.3;
-export const MIN_LINE_HEIGHT_SCALE = 0.5;
-export const MAX_LINE_HEIGHT_SCALE = 2;
-export const LINE_HEIGHT_SCALE_STEP = 0.05;
-// Global spacing: multiplier for spacing tokens only (padding, margin, gap).
-// Independent from uiScale so the user can control spacing density without
-// affecting font sizes, icons, or borders.
-export const DEFAULT_SPACING_SCALE = 1;
-export const MIN_SPACING_SCALE = 0.5;
-export const MAX_SPACING_SCALE = 2;
-export const SPACING_SCALE_STEP = 0.05;
-// Content spacing: multiplier for markdown/HTML element spacing (hr, br,
-// headings, paragraphs, code blocks, tables, lists, blockquotes, images).
-// Applies on top of spacingScale — this controls content density independently
-// from layout spacing. Range 0.5–2.0, default 0.75 (compact).
-export const DEFAULT_CONTENT_SPACING_SCALE = 0.75;
-export const MIN_CONTENT_SPACING_SCALE = 0.5;
-export const MAX_CONTENT_SPACING_SCALE = 2;
-export const CONTENT_SPACING_SCALE_STEP = 0.05;
-
-export const DEFAULT_DEBUG_CONVERSATION_SPACING: DebugConversationSpacing = "comfortable";
+export { DEFAULT_CONTENT_MAX_WIDTH };
+export const MIN_CONTENT_MAX_WIDTH = 600;
+export const MAX_CONTENT_MAX_WIDTH = 4000;
 
 export interface AppSettings {
   theme: ThemePreference;
@@ -116,17 +87,8 @@ export interface AppSettings {
   uiBaseFontSize: number; // clamped px, platform default 14 or 15
   contentFontSize: number; // clamped px, platform default 15 or 16
   codeFontSize: number; // clamped px, default 12
-  /** Multiplier on the whole design token ramp (text, borders). */
-  uiScale: number; // clamped, default 1
-  /** Multiplier on icon glyph sizes only, independent of uiScale. */
-  iconScale: number; // clamped, default 1
-  /** Multiplier on spacing tokens only (padding, margin, gap). */
-  spacingScale: number; // clamped, default 1
-  /** Multiplier for markdown/HTML element spacing (hr, br, headings, etc). */
-  contentSpacingScale: number; // clamped, default 0.75
-  debugConversationSpacing: DebugConversationSpacing;
-  /** Multiplier on the body text font size to derive `lineHeight.content`. */
-  lineHeightScale: number; // clamped, default 1.3
+  /** Max width of chat and markdown content in px; null follows the current default. */
+  contentMaxWidth: number | null;
   syntaxTheme: SyntaxThemeId; // default "one"
   workspaceTitleSource: WorkspaceTitleSource;
   sidebarWorkspaceTrailing: SidebarWorkspaceTrailing;
@@ -134,6 +96,10 @@ export interface AppSettings {
   sidebarChecksDisplay: SidebarChecksDisplay;
   /** Top-level sidebar rows in display order; empty means the default order, all visible. */
   sidebarNavItems: SidebarNavPreference[];
+  /** Sidebar footer items in display order; empty means the default order, all visible. */
+  sidebarFooterItems: SidebarNavPreference[];
+  /** How usage reads and which windows the sidebar summary shows. */
+  usage: UsagePreferences;
   autoExpandReasoning: boolean;
   toolCallDetailLevel: ToolCallDetailLevel;
   chatOutlineEnabled: boolean;
@@ -181,18 +147,15 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   uiBaseFontSize: DEFAULT_UI_BASE_FONT_SIZE,
   contentFontSize: DEFAULT_CONTENT_FONT_SIZE,
   codeFontSize: DEFAULT_CODE_FONT_SIZE,
-  uiScale: DEFAULT_UI_SCALE,
-  iconScale: DEFAULT_ICON_SCALE,
-  spacingScale: DEFAULT_SPACING_SCALE,
-  contentSpacingScale: DEFAULT_CONTENT_SPACING_SCALE,
-  debugConversationSpacing: DEFAULT_DEBUG_CONVERSATION_SPACING,
-  lineHeightScale: DEFAULT_LINE_HEIGHT_SCALE,
+  contentMaxWidth: null,
   syntaxTheme: "one",
   workspaceTitleSource: "title",
   sidebarWorkspaceTrailing: "diff",
   sidebarRowItems: DEFAULT_SIDEBAR_ROW_ITEMS,
   sidebarChecksDisplay: DEFAULT_SIDEBAR_CHECKS_DISPLAY,
   sidebarNavItems: [],
+  sidebarFooterItems: [],
+  usage: DEFAULT_USAGE_PREFERENCES,
   autoExpandReasoning: false,
   toolCallDetailLevel: "detailed",
   chatOutlineEnabled: true,
@@ -211,13 +174,6 @@ function clampedNumber(min: number, max: number) {
   return z
     .unknown()
     .transform((value) => parseClampedFontSize(value, { min, max }))
-    .pipe(z.number());
-}
-
-function clampedScale(min: number, max: number) {
-  return z
-    .unknown()
-    .transform((value) => parseClampedScale(value, { min, max }))
     .pipe(z.number());
 }
 
@@ -253,10 +209,6 @@ const DEFAULT_STORED_APP_SETTINGS = {
   needsWrite: false,
 } satisfies StoredAppSettingsFallback;
 
-function legacyChecksDisplay(rowItems: unknown): typeof DEFAULT_SIDEBAR_CHECKS_DISPLAY {
-  return isChecksHiddenByLegacyRowItem(rowItems) ? "none" : DEFAULT_SIDEBAR_CHECKS_DISPLAY;
-}
-
 const StoredAppSettingsSchema = z
   .looseObject({
     theme: ThemePreferenceSchema.catch(DEFAULT_THEME_PREFERENCE),
@@ -284,16 +236,10 @@ const StoredAppSettingsSchema = z
     codeFontSize: clampedNumber(MIN_CODE_FONT_SIZE, MAX_CODE_FONT_SIZE).catch(
       DEFAULT_CODE_FONT_SIZE,
     ),
-    uiScale: clampedScale(MIN_UI_SCALE, MAX_UI_SCALE).optional().catch(undefined),
-    iconScale: clampedScale(MIN_ICON_SCALE, MAX_ICON_SCALE).optional().catch(undefined),
-    spacingScale: clampedScale(MIN_SPACING_SCALE, MAX_SPACING_SCALE).optional().catch(undefined),
-    contentSpacingScale: clampedScale(MIN_CONTENT_SPACING_SCALE, MAX_CONTENT_SPACING_SCALE)
-      .optional()
-      .catch(undefined),
-    debugConversationSpacing: z.enum(["compact", "comfortable", "spacious"]).catch("comfortable"),
-    lineHeightScale: clampedScale(MIN_LINE_HEIGHT_SCALE, MAX_LINE_HEIGHT_SCALE)
-      .optional()
-      .catch(undefined),
+    contentMaxWidth: z
+      .null()
+      .or(clampedNumber(MIN_CONTENT_MAX_WIDTH, MAX_CONTENT_MAX_WIDTH))
+      .catch(null),
     syntaxTheme: z.string().refine(isSyntaxThemeId).catch("one"),
     workspaceTitleSource: z.enum(["title", "branch"]).catch("title"),
     sidebarWorkspaceTrailing: z.enum(["diff", "timestamp", "none"]).catch("diff"),
@@ -303,6 +249,8 @@ const StoredAppSettingsSchema = z
       .optional()
       .catch(DEFAULT_SIDEBAR_CHECKS_DISPLAY),
     sidebarNavItems: z.array(z.object({ key: z.string(), visible: z.boolean() })).catch([]),
+    sidebarFooterItems: z.array(z.object({ key: z.string(), visible: z.boolean() })).catch([]),
+    usage: UsagePreferencesSchema,
     autoExpandReasoning: z.boolean().catch(false),
     toolCallDetailLevel: z
       .enum(["overview", "detailed"])
@@ -344,18 +292,19 @@ const StoredAppSettingsSchema = z
   })
   .transform((stored) => {
     const { legacyPullRequestsInSidePane, ...openInSidePane } = stored.openInSidePane;
-    // Both fallbacks are one-way migrations from an older stored shape; keep the
-    // predicates named so the transform's branch count stays readable.
-    const adoptsLegacyFontSize =
-      stored.uiBaseFontSize === undefined && stored.uiFontSize !== undefined;
-    const needsWrite = adoptsLegacyFontSize || stored.contentFontSize === undefined;
+    const needsWrite =
+      (stored.uiBaseFontSize === undefined && stored.uiFontSize !== undefined) ||
+      stored.contentFontSize === undefined;
     const uiBaseFontSize =
       stored.uiBaseFontSize ??
       (stored.uiFontSize === undefined
         ? DEFAULT_UI_BASE_FONT_SIZE
         : Math.round((FONT_SIZE.base * stored.uiFontSize) / 16));
     const sidebarChecksDisplay =
-      stored.sidebarChecksDisplay ?? legacyChecksDisplay(stored.sidebarRowItems);
+      stored.sidebarChecksDisplay ??
+      (isChecksHiddenByLegacyRowItem(stored.sidebarRowItems)
+        ? "none"
+        : DEFAULT_SIDEBAR_CHECKS_DISPLAY);
     const toolCallDetailLevel =
       stored.toolCallDetailLevel ?? (stored.compactToolCalls ? "overview" : "detailed");
     return {
@@ -365,15 +314,7 @@ const StoredAppSettingsSchema = z
         stored.pullRequestOpenLocation ?? (legacyPullRequestsInSidePane ? "side" : "explorer"),
       uiBaseFontSize,
       contentFontSize: stored.contentFontSize ?? uiBaseFontSize,
-      uiScale: stored.uiScale ?? DEFAULT_UI_SCALE,
-      iconScale: stored.iconScale ?? DEFAULT_ICON_SCALE,
-      spacingScale: stored.spacingScale ?? DEFAULT_SPACING_SCALE,
-      contentSpacingScale: stored.contentSpacingScale ?? DEFAULT_CONTENT_SPACING_SCALE,
-      debugConversationSpacing:
-        stored.debugConversationSpacing ?? DEFAULT_DEBUG_CONVERSATION_SPACING,
-      lineHeightScale: stored.lineHeightScale ?? DEFAULT_LINE_HEIGHT_SCALE,
       sidebarChecksDisplay,
-      sidebarNavItems: stored.sidebarNavItems ?? [],
       sidebarRowItems: {
         ...stored.sidebarRowItems,
         services:
@@ -540,6 +481,14 @@ export function parseTerminalScrollbackLines(value: unknown): number | null {
   );
 }
 
+export function parseContentMaxWidth(value: unknown): number | null {
+  return parseClampedFontSize(value, { min: MIN_CONTENT_MAX_WIDTH, max: MAX_CONTENT_MAX_WIDTH });
+}
+
+export function resolveContentMaxWidth(settings: Pick<AppSettings, "contentMaxWidth">): number {
+  return settings.contentMaxWidth ?? DEFAULT_CONTENT_MAX_WIDTH;
+}
+
 export function parseClampedFontSize(
   value: unknown,
   bounds: { min: number; max: number },
@@ -553,23 +502,7 @@ export function parseClampedFontSize(
   if (!Number.isFinite(numericValue)) {
     return null;
   }
-  // Round to the nearest half-pixel rather than flooring to an integer, so
-  // fractional sizes (e.g. 14.5px) survive round-tripping through storage.
-  const stepped = Math.round(numericValue / FONT_SIZE_STEP) * FONT_SIZE_STEP;
-  return Math.min(bounds.max, Math.max(bounds.min, stepped));
-}
-
-function parseClampedScale(value: unknown, bounds: { min: number; max: number }): number | null {
-  let numericValue = NaN;
-  if (typeof value === "number") {
-    numericValue = value;
-  } else if (typeof value === "string" && value.trim().length > 0) {
-    numericValue = Number(value);
-  }
-  if (!Number.isFinite(numericValue)) {
-    return null;
-  }
-  return Math.min(bounds.max, Math.max(bounds.min, Math.round(numericValue * 100) / 100));
+  return Math.min(bounds.max, Math.max(bounds.min, Math.floor(numericValue)));
 }
 
 export function sanitizeFontFamily(value: unknown): string | null {

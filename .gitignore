@@ -8,18 +8,6 @@ dist/
 out/
 result
 
-# fleet-backend runtime + fixture-scratch databases (never commit DBs;
-# the parity fixture is the checked-in tests/fixtures/seed.sql)
-packages/fleet-backend/*.db
-packages/fleet-backend/*.db-wal
-packages/fleet-backend/*.db-shm
-packages/fleet-backend/.fixture-tmp/
-packages/fleet-backend/.tmp/
-# pinned Python baseline extract for parity (reproducible via
-# `git -C <lao-checkout> archive <LAO_PIN_SHA> | tar -x -C <this dir>`;
-# never commit the extract — the SHA in tests/parity/setup.ts is the pin)
-packages/fleet-backend/.parity-pin/
-
 # Environment variables
 .env
 .env.test
@@ -105,9 +93,3 @@ app.json
 
 # Heap snapshots dumped by --heapsnapshot-near-heap-limit; keep them for debugging.
 *.heapsnapshot
-
-# temporary local vitest harnesses (leader/worker test runs)
-vt.tmp.config.mts
-vt2.tmp.mts
-/.mcp.json
-/.deploy-production.lock

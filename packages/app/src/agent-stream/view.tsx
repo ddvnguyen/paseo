@@ -23,7 +23,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import { useMutation } from "@tanstack/react-query";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { Check, ChevronDown, X } from "lucide-react-native";
@@ -55,13 +55,12 @@ import { useSessionStore } from "@/stores/session-store";
 import { useRevealedText } from "@/hooks/use-revealed-text";
 import { useFileExplorerActions } from "@/hooks/use-file-explorer-actions";
 import { useLoadOlderAgentHistory } from "@/hooks/use-load-older-agent-history";
-import { useSettings } from "@/hooks/use-settings";
+import { resolveContentMaxWidth, useSettings } from "@/hooks/use-settings";
 import type { ToastApi } from "@/components/toast-host";
 import { returnToTimelineTail } from "./timeline-tail-navigation";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ToolCallDetailsContent } from "@/components/tool-call-details";
 import { QuestionFormCard } from "@/components/question-form-card";
-import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
 import { createStreamPresentation, getStreamItemMessageId } from "./presentation";
 import { OverviewToolCallGroupView } from "@/tool-calls/detail-level/overview/view";
@@ -350,6 +349,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const autoExpandReasoning = useSettings((settings) => settings.autoExpandReasoning);
     const toolCallDetailLevel = useSettings((settings) => settings.toolCallDetailLevel);
     const chatOutlineEnabled = useSettings((settings) => settings.chatOutlineEnabled);
+    const contentMaxWidth = useSettings(resolveContentMaxWidth);
     const viewportRef = useRef<StreamViewportHandle | null>(null);
     const pendingClientMessageIds = useMemo(
       () => new Set(pendingMessageSubmissions.map((submission) => submission.clientMessageId)),
@@ -1130,6 +1130,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
                 listStyle: stylesheet.list,
                 baseListContentContainerStyle: stylesheet.listContentContainer,
                 forwardListContentContainerStyle: stylesheet.forwardListContentContainer,
+                contentMaxWidth,
+                imageContext: { serverId: resolvedServerId, workspaceRoot },
               })}
             </MessageOuterSpacingProvider>
             <ChatOutlineRail
@@ -1399,54 +1401,6 @@ function PermissionActionButton({
   );
 }
 
-function QuestionFormSheet({
-  permission,
-  onRespond,
-  isResponding,
-}: {
-  permission: PendingPermission;
-  onRespond: (response: AgentPermissionResponse) => void;
-  isResponding: boolean;
-}) {
-  const { t } = useTranslation();
-  const [visible, setVisible] = useState(true);
-
-  const handleClose = useCallback(() => {
-    setVisible(false);
-    onRespond({ behavior: "deny", message: "Dismissed by user" });
-  }, [onRespond]);
-
-  const handleFormRespond = useCallback(
-    (response: AgentPermissionResponse) => {
-      setVisible(false);
-      onRespond(response);
-    },
-    [onRespond],
-  );
-
-  const header = useMemo(() => ({ title: t("agentStream.permission.required") }), [t]);
-
-  if (!visible) {
-    return null;
-  }
-
-  return (
-    <AdaptiveModalSheet
-      header={header}
-      visible
-      onClose={handleClose}
-      snapPoints={["75%", "90%"]}
-      testID="question-form-sheet"
-    >
-      <QuestionFormCard
-        permission={permission}
-        onRespond={handleFormRespond}
-        isResponding={isResponding}
-      />
-    </AdaptiveModalSheet>
-  );
-}
-
 function PermissionRequestCard({
   permission,
   client,
@@ -1583,15 +1537,6 @@ function PermissionRequestCard({
   );
 
   if (request.kind === "question") {
-    if (isMobile) {
-      return (
-        <QuestionFormSheet
-          permission={permission}
-          onRespond={handleResponse}
-          isResponding={isResponding}
-        />
-      );
-    }
     return (
       <QuestionFormCard
         permission={permission}
@@ -1680,7 +1625,7 @@ const stylesheet = StyleSheet.create((theme) => ({
   },
   contentWrapper: {
     width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
+    maxWidth: theme.contentMaxWidth,
     alignSelf: "center",
     paddingHorizontal: theme.spacing[2],
   },
@@ -1701,7 +1646,7 @@ const stylesheet = StyleSheet.create((theme) => ({
   },
   streamItemWrapper: {
     width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
+    maxWidth: theme.contentMaxWidth,
     alignSelf: "center",
     paddingHorizontal: theme.spacing[2],
   },
@@ -1835,15 +1780,10 @@ interface StreamItemWrapperProps {
   children: ReactNode;
 }
 
-const SPACING_FACTORS: Record<string, number> = { compact: 0.5, spacious: 1.5 };
-
 function StreamItemWrapper({ gapBelow, children }: StreamItemWrapperProps) {
-  const debugSpacing = useSettings((settings) => settings.debugConversationSpacing);
-  const spacingFactor = SPACING_FACTORS[debugSpacing] ?? 1;
-  const scaledGap = gapBelow * spacingFactor;
   const wrapperStyle = useMemo(
-    () => [stylesheet.streamItemWrapper, { marginBottom: scaledGap }],
-    [scaledGap],
+    () => [stylesheet.streamItemWrapper, { marginBottom: gapBelow }],
+    [gapBelow],
   );
   return <View style={wrapperStyle}>{children}</View>;
 }

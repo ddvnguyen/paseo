@@ -14,26 +14,16 @@ import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { formatDuration, formatTimeAgo } from "@/utils/time";
+import { useTimeAgo } from "@/hooks/use-time-ago";
 import { type AggregatedAgent } from "@/hooks/use-aggregated-agents";
 import { useSessionStore } from "@/stores/session-store";
 import { Archive, ChevronRight } from "lucide-react-native";
-import { getProviderIcon } from "@/components/provider-icons";
+import { useProviderIcon } from "@/components/provider-icons";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
 import { HighlightedText } from "@/components/ui/highlighted-text";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
-import { PullToRefresh } from "@/components/pull-to-refresh";
-import { isWeb } from "@/constants/platform";
 import { findHighlightRanges } from "@/components/ui/highlighted-text-segments";
-import type { MatchRange } from "@getpaseo/protocol/search/text-match";
-
-interface SessionRanges {
-  workspace: MatchRange[];
-  title: MatchRange[];
-  branch: MatchRange[];
-  project: MatchRange[];
-}
 
 interface AgentListProps {
   agents: AggregatedAgent[];
@@ -170,79 +160,6 @@ function SessionRowTrailingAttention({
   );
 }
 
-function computeDuration(createdAt: Date | undefined, lastActivityAt: Date): string | null {
-  if (!createdAt) return null;
-  return formatDuration(lastActivityAt.getTime() - createdAt.getTime());
-}
-
-const AgentTitleCell = ({ agent, ranges }: { agent: AggregatedAgent; ranges: SessionRanges }) => {
-  const { theme } = useUnistyles();
-  const { t } = useTranslation();
-  const ProviderIcon = getProviderIcon(agent.provider, agent.serverId);
-  return (
-    <View style={styles.agentTitleRow}>
-      <View style={styles.providerIconWrap}>
-        <ProviderIcon size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
-      </View>
-      <HighlightedText
-        text={agent.title || t("agentList.fallbackTitle")}
-        ranges={ranges.title}
-        style={styles.sessionTitle}
-        numberOfLines={1}
-        testID={`agent-row-title-${agent.serverId}-${agent.id}`}
-      />
-    </View>
-  );
-};
-
-const SessionMetaRow = ({
-  agent,
-  ranges,
-  projectName,
-  branch,
-  timeLabel,
-  showHostColumn,
-  onToggleDuration,
-}: {
-  agent: AggregatedAgent;
-  ranges: SessionRanges;
-  projectName: string;
-  branch: string;
-  timeLabel: string;
-  showHostColumn: boolean;
-  onToggleDuration: () => void;
-}) => (
-  <View style={styles.rowMetaRow}>
-    <HighlightedText
-      text={projectName}
-      ranges={ranges.project}
-      style={styles.sessionMetaText}
-      numberOfLines={1}
-      testID={`agent-row-project-${agent.serverId}-${agent.id}`}
-    />
-    <Text style={styles.sessionMetaSeparator}>·</Text>
-    <HighlightedText
-      text={branch}
-      ranges={ranges.branch}
-      style={styles.sessionMetaText}
-      numberOfLines={1}
-      testID={`agent-row-branch-${agent.serverId}-${agent.id}`}
-    />
-    <Text style={styles.sessionMetaSeparator}>·</Text>
-    <Text style={styles.sessionMetaText} onPress={onToggleDuration}>
-      {timeLabel}
-    </Text>
-    {showHostColumn && agent.serverLabel ? (
-      <>
-        <Text style={styles.sessionMetaSeparator}>·</Text>
-        <Text style={styles.sessionMetaText} numberOfLines={1}>
-          {agent.serverLabel}
-        </Text>
-      </>
-    ) : null}
-  </View>
-);
-
 function SessionRow({
   agent,
   search,
@@ -263,16 +180,13 @@ function SessionRow({
   onLongPress: (agent: AggregatedAgent) => void;
 }) {
   const { theme } = useUnistyles();
-  const [showDuration, setShowDuration] = useState(false);
-  const timeAgo = formatTimeAgo(agent.lastActivityAt);
-  const duration = computeDuration(agent.createdAt, agent.lastActivityAt);
-  const toggleDuration = useCallback(() => setShowDuration((prev) => !prev), []);
-  const timeLabel = showDuration && duration ? duration : timeAgo;
+  const { t } = useTranslation();
   const agentKey = `${agent.serverId}:${agent.id}`;
   const isSelected = selectedAgentId === agentKey;
   const projectName = agent.projectPlacement?.projectName ?? "";
   const branch = agent.projectPlacement?.checkout.currentBranch ?? "";
   const workspaceName = agent.projectPlacement?.workspaceName ?? "";
+  const ProviderIcon = useProviderIcon(agent.provider, agent.serverId);
   const pendingPermissionCount = agent.pendingPermissionCount ?? 0;
   const ranges = useMemo(
     () => ({
@@ -304,7 +218,20 @@ function SessionRow({
   const showDesktopAttention =
     !isMobile && showAttentionIndicator && Boolean(agent.requiresAttention);
 
-  const agentTitle = <AgentTitleCell agent={agent} ranges={ranges} />;
+  const agentTitle = (
+    <View style={styles.agentTitleRow}>
+      <View style={styles.providerIconWrap}>
+        <ProviderIcon size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
+      </View>
+      <HighlightedText
+        text={agent.title || t("agentList.fallbackTitle")}
+        ranges={ranges.title}
+        style={styles.sessionTitle}
+        numberOfLines={1}
+        testID={`agent-row-title-${agent.serverId}-${agent.id}`}
+      />
+    </View>
+  );
 
   return (
     <Pressable
@@ -338,15 +265,33 @@ function SessionRow({
         </View>
         {isMobile ? agentTitle : null}
         {isMobile ? (
-          <SessionMetaRow
-            agent={agent}
-            ranges={ranges}
-            projectName={projectName}
-            branch={branch}
-            timeLabel={timeLabel}
-            showHostColumn={showHostColumn}
-            onToggleDuration={toggleDuration}
-          />
+          <View style={styles.rowMetaRow}>
+            <HighlightedText
+              text={projectName}
+              ranges={ranges.project}
+              style={styles.sessionMetaText}
+              numberOfLines={1}
+              testID={`agent-row-project-${agent.serverId}-${agent.id}`}
+            />
+            <Text style={styles.sessionMetaSeparator}>·</Text>
+            <HighlightedText
+              text={branch}
+              ranges={ranges.branch}
+              style={styles.sessionMetaText}
+              numberOfLines={1}
+              testID={`agent-row-branch-${agent.serverId}-${agent.id}`}
+            />
+            <Text style={styles.sessionMetaSeparator}>·</Text>
+            <AgentActivityTime date={agent.lastActivityAt} isMobile />
+            {showHostColumn && agent.serverLabel ? (
+              <>
+                <Text style={styles.sessionMetaSeparator}>·</Text>
+                <Text style={styles.sessionMetaText} numberOfLines={1}>
+                  {agent.serverLabel}
+                </Text>
+              </>
+            ) : null}
+          </View>
         ) : null}
       </View>
       {!isMobile ? (
@@ -370,9 +315,7 @@ function SessionRow({
             numberOfLines={1}
             testID={`agent-row-branch-${agent.serverId}-${agent.id}`}
           />
-          <Text style={styles.columnMetaFixed} numberOfLines={1} onPress={toggleDuration}>
-            {timeLabel}
-          </Text>
+          <AgentActivityTime date={agent.lastActivityAt} isMobile={false} />
         </View>
       ) : null}
       <SessionRowTrailingAttention
@@ -381,6 +324,15 @@ function SessionRow({
         requiresAttention={agent.requiresAttention}
       />
     </Pressable>
+  );
+}
+
+function AgentActivityTime({ date, isMobile }: { date: Date; isMobile: boolean }) {
+  const label = useTimeAgo(date);
+  return (
+    <Text style={isMobile ? styles.sessionMetaText : styles.columnMetaFixed} numberOfLines={1}>
+      {label}
+    </Text>
   );
 }
 
@@ -545,29 +497,19 @@ export function AgentList({
     [onRefresh, isRefreshing, theme.colors.foregroundMuted, refreshColors],
   );
 
-  const list = (
-    <FlatList
-      data={flatItems}
-      style={styles.list}
-      contentContainerStyle={styles.listContent}
-      keyExtractor={keyExtractor}
-      renderItem={renderItem}
-      showsVerticalScrollIndicator={false}
-      keyboardShouldPersistTaps="handled"
-      ListFooterComponent={listFooterComponent}
-      refreshControl={refreshControl}
-    />
-  );
-
   return (
     <>
-      {isWeb && onRefresh ? (
-        <PullToRefresh refreshing={!!isRefreshing} onRefresh={onRefresh}>
-          {list}
-        </PullToRefresh>
-      ) : (
-        list
-      )}
+      <FlatList
+        data={flatItems}
+        style={styles.list}
+        contentContainerStyle={styles.listContent}
+        keyExtractor={keyExtractor}
+        renderItem={renderItem}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        ListFooterComponent={listFooterComponent}
+        refreshControl={refreshControl}
+      />
 
       <Modal
         visible={isActionSheetVisible}
