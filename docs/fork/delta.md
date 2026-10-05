@@ -370,6 +370,126 @@ it should take, for whoever implements it:
 The verification procedure itself is implemented by a sibling agent and is not
 edited here. This section describes the shape so the two agree.
 
+## A2 appearance scales
+
+Owner decision 2026-10-05: the `uiScale` / `iconScale` / `spacingScale` /
+`lineHeightScale` family is **dropped on purpose**, on the same reasoning as A1
+Freebuff. It is cosmetic, upstream deliberately removed it, and re-adding ~800
+lines on a family upstream deleted means re-conflicting on every future sync.
+
+Ten commits move from RE-APPLIED to DROPPED-ON-PURPOSE:
+
+| Commit | Subject |
+| --- | --- |
+| `0050cb17b` | debug conversation spacing toggle (red/pink) |
+| `3ad218e6e` | add UI zoom and text line-height settings |
+| `474c7b8bb` | decimal font sizes and independent icon-size setting |
+| `5d008afc8` | add reset defaults button to Appearance settings |
+| `66965eef3` | ui zoom scales UI fonts, wider line-height range |
+| `7ff4976e6` | UI zoom step to 1% for finer control |
+| `87494c397` | restore Hub appearance scales after upstream merge |
+| `c126cb553` | restore sidebarNavItems after debug port (settings persistence) |
+| `c9f1db3d2` | add spacingScale |
+| `deb124729` | tint tool block gaps blue in debug mode |
+
+### What survives — do not describe this as "the appearance settings were deleted"
+
+**The appearance settings are alive.** Only the scale sliders are gone. Verified
+in the merged tree:
+
+- `packages/app/src/screens/settings/appearance/` still contains
+  `appearance-section.tsx`, `appearance-preview.tsx` and `preview-snippet.ts`
+- `appearance/provider.tsx:70` still calls `applyAppearance(`
+- `AppearanceInput` (`appearance/apply.ts:14-22`) still carries
+  `uiFontFamily`, `monoFontFamily`, `uiBaseFontSize`, `contentFontSize`,
+  `codeFontSize`, `contentMaxWidth`, `syntaxTheme`
+
+So these remain user-adjustable: fonts, `uiBaseFontSize`, `contentFontSize`,
+`codeFontSize`, `contentMaxWidth`, `syntaxTheme`. **Decimal font sizes already
+ship** — `apply.ts` builds the ramp from the canonical `FONT_SIZE` ramp scaled
+proportionally from the requested base size. `474c7b8bb` is in the drop for its
+icon-scale half; its font-size half is already present, which is why the commit
+can be dropped without losing decimal sizes.
+
+`AppearanceInput` has **no scale field**, which is the basis for the drop: the
+family is genuinely absent from the apply path, so nothing scales the UI.
+
+### The dead i18n surface — measured, and the figures differ from the report
+
+Two rounds of reporting understated this. The measured state:
+
+- **5 i18n scale keys**: `uiScale`, `iconScale`, `lineHeightScale`,
+  `spacingScale`, `contentSpacingScale`. Each has a base, a `Hint` and an
+  `Accessibility` variant — **15 distinct key names per language**.
+- **9 language files** carry them: `ar`, `en`, `es`, `fr`, `ja`, `ko`, `pt-BR`,
+  `ru`, `zh-CN`. The tenth file in that directory, `plugin-settings.ts`, is a
+  shared namespace and contains **zero** scale keys.
+- **15 × 9 = 135 key entries**, all unreferenced outside
+  `packages/app/src/i18n/resources/`.
+
+The incoming instruction said "6 key groups across 10 languages … 6 × 10 = 60
+keys". The substance is right — the surface is larger than "five sets" — but the
+arithmetic is not, and this file records what the tree actually contains. There
+is no sixth i18n group: in `en.ts` the five scale keys sit in one flat run
+alongside the surviving `interfaceSize` / `contentSize` / `codeFont` / `codeSize`
+keys and `resetDefaults`.
+
+Where a **sixth** item does come from: `debugConversationSpacing`, introduced by
+`0050cb17b`. It is a **theme token with no i18n key at all** (0 entries in
+`en.ts`), read only by `styles/markdown-styles.ts`. It is a 6th dead token, not a
+6th i18n group.
+
+### `contentSpacingScale` is NOT declared — the reads are compile errors
+
+The instruction to retain this token was right in intent and wrong about the
+state. Measured:
+
+- `contentSpacingScale` appears in **no** theme file. `CommonTheme` ends at
+  `styles/theme.ts:666` and `commonTheme` (669-679) has no such token. The cited
+  `theme.ts:667` and `theme.ts:683` are `const commonTheme` and the `darkShadow`
+  block.
+- Three files still read it, and all three are **type errors**:
+
+  | File | Line | Expression |
+  | --- | --- | --- |
+  | `agent-stream/spacing.ts` | 7 | `theme.contentSpacingScale ?? 0.75` |
+  | `styles/markdown-styles.ts` | 21 | `theme.contentSpacingScale ?? 0.75` |
+  | `styles/markdown-styles.test.ts` | 135, 141 | same, against `darkTheme` |
+
+  ```
+  error TS2339: Property 'contentSpacingScale' does not exist on type '{ readonly
+  spacing: { ... }; ... 11 more ...; readonly shadow: { ... } }'
+  ```
+
+  `?? 0.75` does not help: `??` guards a nullish *value*, not a missing
+  *property*. The token has to be put back on the theme for these to compile, and
+  until it is, markdown element spacing is not adjustable — it is whatever the
+  `?? 0.75` fallback yields.
+
+So the three `contentSpacingScale` commits stay **RE-APPLIED** — restoring the
+declaration is exactly their job — and the three commits that use the *adjustable*
+scales are dropped. The two are different things sharing a name, which is the
+whole reason this section is written out.
+
+**Deliberately retained, do not "clean up":** once restored, the
+`theme.contentSpacingScale` token must stay, because live code reads it. A reader
+who sees an apparently-unused token next to 135 dead i18n keys will otherwise
+delete something three call sites depend on.
+
+### Post-merge cleanup — NOT part of this merge
+
+Both are **deferred**, not done here. A sibling track is integrating four areas
+right now and the churn carries real regression risk for zero user value. They
+are safe only once the merge has landed and CI is green on Paseo-hub.
+
+1. **Delete `appearance/apply-root-scale.ts` and `appearance/apply-root-scale.web.ts`.**
+   Both export `applyRootUiScale` and have **zero call sites** anywhere,
+   including tests. Verified: the only references to the identifier are the two
+   definitions.
+2. **Remove the 5 unreferenced i18n scale key groups from all 9 locale files**
+   (135 entries). The `contentSpacingScale` *token* is not part of this and must
+   be restored first.
+
 ## Re-derive this
 
 The helper that produced this baseline is not checked in — it lives outside the
