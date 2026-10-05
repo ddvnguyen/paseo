@@ -3066,6 +3066,57 @@ export const HubExecutionAgentCreateRequestSchema = z.object({
 
 export type HubExecutionAgentCreateRequest = z.infer<typeof HubExecutionAgentCreateRequestSchema>;
 
+// ---------------------------------------------------------------------------
+// Background Task descriptors (bg-bash MCP + Claude native run_in_background)
+// ---------------------------------------------------------------------------
+
+export const BackgroundTaskDescriptorPayloadSchema = z.object({
+  id: z.string(),
+  agentId: z.string(),
+  toolName: z.string(),
+  command: z.string().nullable(),
+  status: z.enum(["running", "completed", "failed", "cancelled"]),
+  startedAt: z.string(),
+  finishedAt: z.string().nullable(),
+  exitCode: z.number().nullable(),
+  outputPreview: z.string().nullable(),
+});
+
+export type BackgroundTaskDescriptorPayload = z.infer<typeof BackgroundTaskDescriptorPayloadSchema>;
+
+export const BackgroundTaskListRequestMessageSchema = z.object({
+  type: z.literal("agent.background_tasks.list.request"),
+  payload: z.object({
+    agentId: z.string(),
+    requestId: z.string(),
+  }),
+});
+
+export const BackgroundTaskListResponseMessageSchema = z.object({
+  type: z.literal("agent.background_tasks.list.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    tasks: z.array(BackgroundTaskDescriptorPayloadSchema),
+    error: z.string().nullable(),
+  }),
+});
+
+export const BackgroundTaskUpdateMessageSchema = z.object({
+  type: z.literal("agent.background_tasks.update"),
+  payload: z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("upsert"),
+      task: BackgroundTaskDescriptorPayloadSchema,
+    }),
+    z.object({
+      kind: z.literal("remove"),
+      agentId: z.string(),
+      taskId: z.string(),
+    }),
+  ]),
+});
+
 export const HubExecutionAgentValidateRequestSchema = z.object({
   type: z.literal("hub.execution.agent.validate.request"),
   requestId: z.string(),
@@ -3171,6 +3222,7 @@ export const SubscriptionReleaseResponseSchema = z.object({
 });
 
 export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
+  BackgroundTaskListRequestMessageSchema,
   BrowserHostRegisterRequestSchema,
   SubscriptionReleaseRequestSchema,
   SessionEventsSetSubscriptionRequestSchema,
@@ -6795,6 +6847,8 @@ export const AgentSkillsImportLegacySelectionResponseSchema = z.object({
 });
 
 export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
+  BackgroundTaskListResponseMessageSchema,
+  BackgroundTaskUpdateMessageSchema,
   BrowserHostRegisterResponseSchema,
   SubscriptionReleaseResponseSchema,
   SessionEventsSetSubscriptionResponseSchema,
@@ -7514,6 +7568,7 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.timelineReplacementInvalidation]: z.boolean().optional(),
       [CLIENT_CAPS.timelineNotifications]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
+      [CLIENT_CAPS.backgroundTasks]: z.boolean().optional(),
     })
     .passthrough()
     .optional(),
