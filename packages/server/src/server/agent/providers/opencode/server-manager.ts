@@ -8,7 +8,8 @@ import type { Logger } from "pino";
 import { findExecutable } from "../../../../executable-resolution/executable-resolution.js";
 import type { SpawnProcessOptions } from "../../../../utils/spawn.js";
 import { spawnInAgentScope } from "../../agent-process-scope.js";
-import { beginAgentDetachStop, shouldDetachAgentProcess } from "../../agent-detach.js";
+import { DAEMON_STOP_CLOSE_REASON, shouldDetachAgentProcess } from "../../agent-detach.js";
+import type { AgentCloseOptions, AgentCloseReason } from "../../agent-sdk-types.js";
 import { terminateWithTreeKill, type ProcessTerminator } from "../../../../utils/tree-kill.js";
 import type { ManagedProcessRegistry } from "../../../managed-processes/managed-processes.js";
 import {
@@ -31,9 +32,9 @@ const OPENCODE_SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_MS = 5_000;
 const OPENCODE_SERVER_FORCE_SHUTDOWN_TIMEOUT_MS = 1_000;
 
 export interface OpenCodeServerAcquisition {
-  server: { port: number; url: string };
+  server: { port: number; url: string; pid?: number };
   events: OpenCodeEventSource;
-  release: () => Promise<void>;
+  release: (options?: AgentCloseOptions) => Promise<void>;
 }
 
 export interface OpenCodeServerManagerLike {
@@ -41,7 +42,15 @@ export interface OpenCodeServerManagerLike {
   acquireNew(signal?: AbortSignal): Promise<OpenCodeServerAcquisition>;
   acquireDedicated(env: Record<string, string>): Promise<OpenCodeServerAcquisition>;
   acquireExisting(url: string): OpenCodeServerAcquisition | null;
-  shutdown(): Promise<void>;
+  shutdown(options?: OpenCodeServerShutdownOptions): Promise<void>;
+}
+
+/**
+ * `reason` rides along to killServer exactly like AgentSession.close's does, so
+ * detach stays a property of the call rather than of the process.
+ */
+export interface OpenCodeServerShutdownOptions {
+  reason?: AgentCloseReason;
 }
 
 export interface OpenCodeServerGeneration {
@@ -154,14 +163,15 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
     OpenCodeServerManager.exitHandlerRegistered = true;
 
     const cleanup = () => {
-      // This handler can fire before bootstrap.stop() runs, so a detach-stop
-      // must engage here too; killServer() then refuses to terminate scoped
-      // children. With detach disabled this is today's behaviour exactly.
-      if (beginAgentDetachStop()) {
-        return;
-      }
+      // shutdown() always runs. It used to be skipped entirely when detach was
+      // configured, which leaked every server that was NOT in the scope registry
+      // (a plain-spawned server after a probe downgrade) — nothing tore them
+      // down. Now shutdown runs unconditionally and passes reason:"daemon-stop";
+      // killServer applies the per-pid gate, so scoped children survive and
+      // unscoped ones get cleaned up. With detach disabled this is today's
+      // behaviour exactly.
       const instance = OpenCodeServerManager.instance;
-      void instance?.shutdown();
+      void instance?.shutdown({ reason: DAEMON_STOP_CLOSE_REASON });
     };
 
     process.on("exit", cleanup);
@@ -222,19 +232,22 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
     server.refCount += 1;
     let releasePromise: Promise<void> | null = null;
     return {
-      server: { port: server.port, url: server.url },
+      server: { port: server.port, url: server.url, pid: server.process.pid },
       events: server.events,
-      release: async () => {
+      release: async (options?: AgentCloseOptions) => {
         if (releasePromise) {
           return releasePromise;
         }
-        releasePromise = this.releaseServer(server);
+        releasePromise = this.releaseServer(server, options?.reason);
         return releasePromise;
       },
     };
   }
 
-  private async releaseServer(server: OpenCodeServerGeneration): Promise<void> {
+  private async releaseServer(
+    server: OpenCodeServerGeneration,
+    reason: AgentCloseReason | undefined,
+  ): Promise<void> {
     server.refCount = Math.max(0, server.refCount - 1);
     if (server.refCount > 0) {
       return;
@@ -250,7 +263,7 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
 
     this.retiredServers.delete(server);
     this.logger.info(generationLogContext(server), "OpenCode server generation released");
-    await this.killServer(server);
+    await this.killServer(server, reason);
   }
 
   private async getNewServer(): Promise<OpenCodeServerGeneration> {
@@ -473,7 +486,9 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
     });
 
     server.ready = ready.catch(async (error) => {
-      await this.killServer(server);
+      // A server that failed to become ready is being abandoned, not preserved:
+      // terminate it outright.
+      await this.killServer(server, "user");
       if (this.currentServer === server) {
         this.currentServer = null;
       }
@@ -484,7 +499,7 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
     return server;
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(options?: OpenCodeServerShutdownOptions): Promise<void> {
     const servers = [
       ...(this.currentServer ? [this.currentServer] : []),
       ...Array.from(this.retiredServers),
@@ -492,7 +507,7 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
     for (const server of servers) {
       this.logger.info(generationLogContext(server), "OpenCode server generation stopping");
     }
-    await Promise.all(servers.map((server) => this.killServer(server)));
+    await Promise.all(servers.map((server) => this.killServer(server, options?.reason)));
     this.currentServer = null;
     this.retiredServers.clear();
   }
@@ -502,13 +517,18 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
     for (const server of Array.from(this.retiredServers)) {
       if (server.refCount === 0) {
         this.retiredServers.delete(server);
-        cleanup.push(this.killServer(server));
+        // Refcount-driven retirement is not a daemon stop: these generations are
+        // genuinely done, so they are terminated as usual.
+        cleanup.push(this.killServer(server, "user"));
       }
     }
     await Promise.all(cleanup);
   }
 
-  private async killServer(server: OpenCodeServerGeneration): Promise<void> {
+  private async killServer(
+    server: OpenCodeServerGeneration,
+    reason: AgentCloseReason | undefined,
+  ): Promise<void> {
     await server.events.close();
     if (
       (server.process.exitCode !== null && server.process.exitCode !== undefined) ||
@@ -518,8 +538,9 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
     }
     // Detach-stop: a scoped server child stays running for the next daemon.
     // Its managed-process record and scope-registry entry stay too, so the
-    // next daemon can reconcile and discover it.
-    if (shouldDetachAgentProcess(server.process.pid)) {
+    // next daemon can reconcile and discover it. The gate is per-pid AND
+    // call-scoped on `reason`, so a user-initiated kill never detaches.
+    if (shouldDetachAgentProcess(server.process.pid, reason)) {
       this.logger.info(
         generationLogContext(server),
         "Detach-stop: leaving OpenCode server generation running",
