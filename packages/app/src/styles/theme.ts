@@ -663,6 +663,10 @@ interface CommonTheme {
   borderRadius: typeof BORDER_RADIUS;
   borderWidth: typeof BORDER_WIDTH;
   opacity: typeof OPACITY;
+  /** Scales markdown/HTML content spacing independently of UI spacing. */
+  contentSpacingScale: number;
+  /** Tints conversation spacing blocks so the rhythm is visible. */
+  debugConversationSpacing: boolean;
 }
 
 const commonTheme: CommonTheme = {
@@ -676,6 +680,8 @@ const commonTheme: CommonTheme = {
   borderRadius: BORDER_RADIUS,
   borderWidth: BORDER_WIDTH,
   opacity: OPACITY,
+  contentSpacingScale: 0.75,
+  debugConversationSpacing: false,
 };
 
 const darkShadow = {
