@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 
 import type {
   AgentCapabilityFlags,
+  AgentCloseOptions,
+  AgentCloseOutcome,
   AgentPromptInput,
   AgentSession,
   AgentStreamEvent,
@@ -193,5 +195,78 @@ describe("wrapSessionProvider", () => {
       "tryHandleOutOfBand",
       "tryHandleOutOfBand.run",
     ]);
+  });
+});
+
+/**
+ * The close-reason propagation hop.
+ *
+ * `wrapSessionProvider` stands between `AgentManager.closeAgent` and the real
+ * provider session for every provider that goes through `wrapClientProvider` —
+ * i.e. any aliased/overridden provider (a `providerOverrides` entry with its
+ * own `id`, or any provider with model overrides), where
+ * `createResolvedProviderClient` takes the wrapping branch instead of handing
+ * back the inner client unchanged.
+ *
+ * A wrapper that dropped the argument would fail SAFE and silently: the inner
+ * session would see `reason: undefined`, `shouldDetachAgentProcess` would
+ * return false for a `daemon-stop` close, and detach-on-stop would simply
+ * never happen for that provider. Nothing would throw, no log line would look
+ * wrong, and the whole suite would stay green — which is exactly why this hop
+ * needs its own assertion on the value that actually arrived.
+ */
+describe("wrapSessionProvider close-reason propagation", () => {
+  /** Records the options the inner session's `close` actually received. */
+  class CloseRecordingSession extends FakeSession {
+    readonly closeOptions: (AgentCloseOptions | undefined)[] = [];
+    readonly closeOutcomes: (AgentCloseOutcome | void)[] = [];
+    detachedOnReason: "user" | "daemon-stop" | undefined = "daemon-stop";
+
+    override async close(options?: AgentCloseOptions): Promise<AgentCloseOutcome | void> {
+      this.closeOptions.push(options);
+      const detached = options?.reason === this.detachedOnReason;
+      this.closeOutcomes.push({ detached });
+      return { detached };
+    }
+  }
+
+  test("a daemon-stop reason reaches the inner session through the wrapper", async () => {
+    const session = new CloseRecordingSession();
+    const wrapped = wrapSessionProvider("opencode-work", session);
+
+    await wrapped.close({ reason: "daemon-stop" });
+
+    expect(session.closeOptions).toEqual([{ reason: "daemon-stop" }]);
+  });
+
+  test("a user reason reaches the inner session through the wrapper", async () => {
+    const session = new CloseRecordingSession();
+    session.detachedOnReason = undefined;
+    const wrapped = wrapSessionProvider("opencode-work", session);
+
+    await wrapped.close({ reason: "user" });
+
+    expect(session.closeOptions).toEqual([{ reason: "user" }]);
+  });
+
+  test("the wrapper returns the inner close outcome so detachment can reach AgentManager", async () => {
+    // The other direction of the hop. Even a wrapper that forwarded `options`
+    // but returned nothing would make every close look non-detached and strip
+    // resumability from every legitimately-detached agent.
+    const session = new CloseRecordingSession();
+    const wrapped = wrapSessionProvider("opencode-work", session);
+
+    await expect(wrapped.close({ reason: "daemon-stop" })).resolves.toEqual({ detached: true });
+  });
+
+  test("a wrapper close with no options reaches the inner session with no options", async () => {
+    // Guards against a "helpful" wrapper that substitutes a default reason: a
+    // close that forgot to declare its intent must stay a user close.
+    const session = new CloseRecordingSession();
+    const wrapped = wrapSessionProvider("opencode-work", session);
+
+    await wrapped.close();
+
+    expect(session.closeOptions).toEqual([undefined]);
   });
 });

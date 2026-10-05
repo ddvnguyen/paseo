@@ -8,10 +8,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { asInternals } from "../test-utils/class-mocks.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import {
-  __resetAgentDetachForTests,
-  beginAgentDetachStop,
-  isAgentDetachStopActive,
+  DETACH_AGENTS_ON_STOP_ENV,
+  DAEMON_STOP_CLOSE_REASON,
   isDetachAgentsOnStopEnabled,
+  logDetachOnStopConfigured,
   shouldDetachAgentProcess,
 } from "./agent-detach.js";
 import {
@@ -100,60 +100,76 @@ async function killAndWait(child: ChildProcess): Promise<void> {
   await exited;
 }
 
-describe("agent detach flag", () => {
+describe("agent detach configuration", () => {
+  let previousDetachEnv: string | undefined;
+
+  beforeEach(() => {
+    previousDetachEnv = process.env[DETACH_AGENTS_ON_STOP_ENV];
+    delete process.env[DETACH_AGENTS_ON_STOP_ENV];
+  });
+
+  afterEach(() => {
+    if (previousDetachEnv === undefined) {
+      delete process.env[DETACH_AGENTS_ON_STOP_ENV];
+    } else {
+      process.env[DETACH_AGENTS_ON_STOP_ENV] = previousDetachEnv;
+    }
+  });
+
+  test("is disabled by default", () => {
+    expect(isDetachAgentsOnStopEnabled()).toBe(false);
+  });
+
+  test("PASEO_DETACH_AGENTS_ON_STOP=1 and =true enable detach; 0 does not", () => {
+    process.env[DETACH_AGENTS_ON_STOP_ENV] = "1";
+    expect(isDetachAgentsOnStopEnabled()).toBe(true);
+
+    process.env[DETACH_AGENTS_ON_STOP_ENV] = "true";
+    expect(isDetachAgentsOnStopEnabled()).toBe(true);
+
+    process.env[DETACH_AGENTS_ON_STOP_ENV] = "0";
+    expect(isDetachAgentsOnStopEnabled()).toBe(false);
+  });
+
+  test("logDetachOnStopConfigured only logs when the env opt-in is on", () => {
+    const silent = { info: vi.fn() } as unknown as Parameters<typeof logDetachOnStopConfigured>[0];
+    logDetachOnStopConfigured(silent);
+    expect(silent.info).not.toHaveBeenCalled();
+
+    process.env[DETACH_AGENTS_ON_STOP_ENV] = "1";
+    const loud = { info: vi.fn() } as unknown as Parameters<typeof logDetachOnStopConfigured>[0];
+    logDetachOnStopConfigured(loud);
+    expect(loud.info).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The gate itself. Detach intent is a property of the CLOSE CALL, never of the
+ * process, so there is deliberately no mutable module state here to reset
+ * between tests — that absence is the point of the fix.
+ */
+describe("shouldDetachAgentProcess is call-scoped", () => {
   let tmpDir: string;
   let previousDetachEnv: string | undefined;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(path.join(os.tmpdir(), "agent-detach-"));
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), "agent-detach-gate-"));
     setAgentProcessRegistryHome(tmpDir);
-    previousDetachEnv = process.env.PASEO_DETACH_AGENTS_ON_STOP;
-    delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
-    __resetAgentDetachForTests();
+    previousDetachEnv = process.env[DETACH_AGENTS_ON_STOP_ENV];
+    delete process.env[DETACH_AGENTS_ON_STOP_ENV];
   });
 
   afterEach(() => {
-    __resetAgentDetachForTests();
     setAgentProcessRegistryHome(null);
     if (previousDetachEnv === undefined) {
-      delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
+      delete process.env[DETACH_AGENTS_ON_STOP_ENV];
     } else {
-      process.env.PASEO_DETACH_AGENTS_ON_STOP = previousDetachEnv;
+      process.env[DETACH_AGENTS_ON_STOP_ENV] = previousDetachEnv;
     }
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test("is disabled by default and a default stop does not engage detach", () => {
-    expect(isDetachAgentsOnStopEnabled()).toBe(false);
-    expect(beginAgentDetachStop(logger)).toBe(false);
-    expect(isAgentDetachStopActive()).toBe(false);
-  });
-
-  test("PASEO_DETACH_AGENTS_ON_STOP=1 and =true enable detach; 0 does not", () => {
-    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
-    expect(isDetachAgentsOnStopEnabled()).toBe(true);
-    expect(beginAgentDetachStop(logger)).toBe(true);
-    expect(isAgentDetachStopActive()).toBe(true);
-
-    __resetAgentDetachForTests();
-    process.env.PASEO_DETACH_AGENTS_ON_STOP = "true";
-    expect(isDetachAgentsOnStopEnabled()).toBe(true);
-
-    __resetAgentDetachForTests();
-    process.env.PASEO_DETACH_AGENTS_ON_STOP = "0";
-    expect(isDetachAgentsOnStopEnabled()).toBe(false);
-    expect(beginAgentDetachStop(logger)).toBe(false);
-    expect(isAgentDetachStopActive()).toBe(false);
-  });
-
-  test("begin is idempotent once engaged", () => {
-    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
-    expect(beginAgentDetachStop(logger)).toBe(true);
-    expect(beginAgentDetachStop(logger)).toBe(true);
-    expect(isAgentDetachStopActive()).toBe(true);
-  });
-
-  test("shouldDetachAgentProcess only matches registry entries while a detach-stop runs", () => {
+  test("only an explicit daemon-stop reason on a registered pid may detach", () => {
     recordAgentProcess(
       {
         scopeId: "paseo-agent-unit-1",
@@ -164,18 +180,36 @@ describe("agent detach flag", () => {
       },
       { logger },
     );
+    process.env[DETACH_AGENTS_ON_STOP_ENV] = "1";
 
-    // Detach not engaged: never consults the child (default stop = today's behaviour).
-    expect(shouldDetachAgentProcess(4242)).toBe(false);
+    expect(shouldDetachAgentProcess(4242, DAEMON_STOP_CLOSE_REASON)).toBe(true);
 
-    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
-    expect(beginAgentDetachStop(logger)).toBe(true);
-    expect(shouldDetachAgentProcess(4242)).toBe(true);
+    // A user close, and a close that forgot to declare its reason, both
+    // terminate — this is the leak the ambient-global version had.
+    expect(shouldDetachAgentProcess(4242, "user")).toBe(false);
+    expect(shouldDetachAgentProcess(4242, undefined)).toBe(false);
+
     // Registered for someone else / never recorded: terminate as usual.
-    expect(shouldDetachAgentProcess(4243)).toBe(false);
-    expect(shouldDetachAgentProcess(null)).toBe(false);
-    expect(shouldDetachAgentProcess(undefined)).toBe(false);
-    expect(shouldDetachAgentProcess(-1)).toBe(false);
+    expect(shouldDetachAgentProcess(4243, DAEMON_STOP_CLOSE_REASON)).toBe(false);
+    expect(shouldDetachAgentProcess(null, DAEMON_STOP_CLOSE_REASON)).toBe(false);
+    expect(shouldDetachAgentProcess(undefined, DAEMON_STOP_CLOSE_REASON)).toBe(false);
+    expect(shouldDetachAgentProcess(-1, DAEMON_STOP_CLOSE_REASON)).toBe(false);
+  });
+
+  test("a daemon-stop reason without the env opt-in still terminates", () => {
+    recordAgentProcess(
+      {
+        scopeId: "paseo-agent-unit-2",
+        unit: "paseo-agent-unit-2.scope",
+        pid: 4343,
+        provider: "opencode",
+        startedAt: new Date().toISOString(),
+      },
+      { logger },
+    );
+
+    // Env unset: default behaviour, even on the daemon-stop path.
+    expect(shouldDetachAgentProcess(4343, DAEMON_STOP_CLOSE_REASON)).toBe(false);
   });
 });
 
@@ -186,25 +220,22 @@ describe("detach stop vs normal stop with a real child", () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(path.join(os.tmpdir(), "agent-detach-stop-"));
     setAgentProcessRegistryHome(tmpDir);
-    previousDetachEnv = process.env.PASEO_DETACH_AGENTS_ON_STOP;
-    delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
-    __resetAgentDetachForTests();
+    previousDetachEnv = process.env[DETACH_AGENTS_ON_STOP_ENV];
+    delete process.env[DETACH_AGENTS_ON_STOP_ENV];
   });
 
   afterEach(() => {
-    __resetAgentDetachForTests();
     setAgentProcessRegistryHome(null);
     if (previousDetachEnv === undefined) {
-      delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
+      delete process.env[DETACH_AGENTS_ON_STOP_ENV];
     } else {
-      process.env.PASEO_DETACH_AGENTS_ON_STOP = previousDetachEnv;
+      process.env[DETACH_AGENTS_ON_STOP_ENV] = previousDetachEnv;
     }
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
   test("detach-stop skips provider cancel/closeSession/terminate and the scoped child survives", async () => {
-    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
-    expect(beginAgentDetachStop(logger)).toBe(true);
+    process.env[DETACH_AGENTS_ON_STOP_ENV] = "1";
 
     const child = spawnRealChild();
     const pid = registerChild(child);
@@ -214,7 +245,22 @@ describe("detach stop vs normal stop with a real child", () => {
     const connection = internals.connection as NonNullable<DetachACPInternals["connection"]>;
 
     try {
-      await session.close();
+      // `detached: false` here, and deliberately so. The teardown IS skipped
+      // and the child IS still alive — those are asserted below — but this
+      // child was spawned with `stdio: ["pipe","pipe","pipe"]`, so its stdin is
+      // a pipe owned by this process. When the daemon exits that pipe reaches
+      // EOF and the child exits with it, exactly as every real ACP child does
+      // (`ACPAgentClient.spawnTransport` always pipes stdin). So no writer
+      // survives this close, and reporting `detached: true` would only make
+      // `AgentManager.snapshotForClosedAgent` persist `persistence: null` for a
+      // writer that is already gone — permanently stripping resumability from
+      // every ACP agent closed by a stop.
+      //
+      // The positive case (a child that genuinely outlives the daemon) is
+      // covered in acp-agent.test.ts, "ACPAgentSession detach reporting".
+      await expect(session.close({ reason: DAEMON_STOP_CLOSE_REASON })).resolves.toEqual({
+        detached: false,
+      });
 
       expect(connection.cancel).not.toHaveBeenCalled();
       expect(connection.unstable_closeSession).not.toHaveBeenCalled();
@@ -241,15 +287,13 @@ describe("detach stop vs normal stop with a real child", () => {
   });
 
   test("normal stop cancels, closes the session, and terminates the child as today", async () => {
-    expect(beginAgentDetachStop(logger)).toBe(false);
-
     const child = spawnRealChild();
     const pid = registerChild(child);
     const session = createSession();
     const internals = attachChild(session, child);
     const connection = internals.connection as NonNullable<DetachACPInternals["connection"]>;
 
-    await session.close();
+    await session.close({ reason: "user" });
 
     expect(connection.cancel).toHaveBeenCalledWith({
       sessionId: "session-detach-1",
@@ -266,20 +310,66 @@ describe("detach stop vs normal stop with a real child", () => {
   });
 
   test("detach-stop still tears down children outside the scope registry", async () => {
-    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
-    expect(beginAgentDetachStop(logger)).toBe(true);
+    process.env[DETACH_AGENTS_ON_STOP_ENV] = "1";
 
     // Never recorded: unscoped children cannot be adopted, so they keep
-    // today's teardown even while detach is engaged.
+    // today's teardown even on an explicit daemon-stop close.
     const child = spawnRealChild();
     const session = createSession();
     const internals = attachChild(session, child);
     const connection = internals.connection as NonNullable<DetachACPInternals["connection"]>;
 
-    await session.close();
+    await session.close({ reason: DAEMON_STOP_CLOSE_REASON });
 
     expect(connection.cancel).toHaveBeenCalled();
     expect(connection.unstable_closeSession).toHaveBeenCalled();
     expect(child.exitCode === null && child.signalCode === null).toBe(false);
+  });
+
+  /**
+   * B2 regression guard. Under the old process-global `detachStopActive` flag,
+   * this close detached the child because the flag happened to be set by a
+   * daemon stop that was in progress. Detach is now carried on the call, so an
+   * owner-initiated close always terminates its child.
+   */
+  test("a USER close terminates a registered scoped child even while a stop is configured", async () => {
+    process.env[DETACH_AGENTS_ON_STOP_ENV] = "1";
+
+    const child = spawnRealChild();
+    const pid = registerChild(child);
+    const session = createSession();
+    const internals = attachChild(session, child);
+    const connection = internals.connection as NonNullable<DetachACPInternals["connection"]>;
+
+    try {
+      await expect(session.close({ reason: "user" })).resolves.toEqual({ detached: false });
+
+      expect(connection.cancel).toHaveBeenCalled();
+      expect(connection.unstable_closeSession).toHaveBeenCalled();
+      expect(child.exitCode === null && child.signalCode === null).toBe(false);
+      expect(isPidAlive(pid)).toBe(false);
+    } finally {
+      await killAndWait(child);
+    }
+  });
+
+  test("a close with NO reason terminates a registered scoped child", async () => {
+    process.env[DETACH_AGENTS_ON_STOP_ENV] = "1";
+
+    const child = spawnRealChild();
+    const pid = registerChild(child);
+    const session = createSession();
+    const internals = attachChild(session, child);
+    const connection = internals.connection as NonNullable<DetachACPInternals["connection"]>;
+
+    try {
+      await expect(session.close()).resolves.toEqual({ detached: false });
+
+      expect(connection.cancel).toHaveBeenCalled();
+      expect(connection.unstable_closeSession).toHaveBeenCalled();
+      expect(isPidAlive(pid)).toBe(false);
+    } finally {
+      await killAndWait(child);
+    }
   });
 });

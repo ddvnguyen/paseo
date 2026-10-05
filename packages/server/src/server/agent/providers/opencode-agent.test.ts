@@ -25,7 +25,8 @@ import type {
   AssistantMessageTimelineItem,
   AgentTimelineItem,
 } from "../agent-sdk-types.js";
-import { __resetAgentDetachForTests, beginAgentDetachStop } from "../agent-detach.js";
+import { DAEMON_STOP_CLOSE_REASON, shouldDetachAgentProcess } from "../agent-detach.js";
+import { recordAgentProcess, setAgentProcessRegistryHome } from "../agent-process-registry.js";
 
 // Deliberately an independent literal rather than the production constant these tests
 // guard: deriving the boundary from OPENCODE_SERVER_STARTUP_TIMEOUT_MS would keep the
@@ -3828,7 +3829,8 @@ describe("OpenCode adapter startTurn error handling", () => {
           setTimeout(() => reject(new Error(`request did not start: ${requestClass}`)), 500),
         ),
       ]);
-      await expect(session.close()).resolves.toBeUndefined();
+      // close() now reports whether it detached; an ordinary close never does.
+      await expect(session.close()).resolves.toEqual({ detached: false });
     }
   });
 
@@ -6850,15 +6852,18 @@ describe("OpenCode session permission rules", () => {
 
 describe("OpenCode session close under detach-stop", () => {
   let previousDetachEnv: string | undefined;
+  let registryHome: string;
 
   beforeEach(() => {
     previousDetachEnv = process.env.PASEO_DETACH_AGENTS_ON_STOP;
     delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
-    __resetAgentDetachForTests();
+    registryHome = mkdtempSync(path.join(os.tmpdir(), "opencode-detach-registry-"));
+    setAgentProcessRegistryHome(registryHome);
   });
 
   afterEach(() => {
-    __resetAgentDetachForTests();
+    setAgentProcessRegistryHome(null);
+    rmSync(registryHome, { recursive: true, force: true });
     if (previousDetachEnv === undefined) {
       delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
     } else {
@@ -6866,52 +6871,136 @@ describe("OpenCode session close under detach-stop", () => {
     }
   });
 
-  test("detach-stop on close skips abort and ephemeral delete but still resolves", async () => {
-    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
-    expect(beginAgentDetachStop(createTestLogger())).toBe(true);
-
-    const sessionApi = {
+  function createSessionApi() {
+    return {
       abort: vi.fn().mockResolvedValue({ error: null }),
       update: vi.fn().mockResolvedValue({ error: null }),
       delete: vi.fn().mockResolvedValue({ error: null }),
     };
-    const fakeClient = { session: sessionApi } as never;
+  }
 
-    const session = new __openCodeInternals.OpenCodeAgentSession(
+  function createSession(sessionApi: unknown, serverPid?: number) {
+    return new __openCodeInternals.OpenCodeAgentSession(
       { provider: "opencode", cwd: "/tmp/test", providerOptions: {} },
-      fakeClient,
+      { session: sessionApi } as never,
       "ses_unit_test",
       createTestLogger(),
       new Map(),
-      undefined,
-      undefined,
-      false,
+      undefined, // events
+      undefined, // releaseServer
+      false, // persistSession
+      undefined, // agentId
+      serverPid,
     );
+  }
 
-    await expect(session.close()).resolves.toBeUndefined();
+  function registerServerPid(pid: number): void {
+    expect(
+      recordAgentProcess(
+        {
+          scopeId: `paseo-agent-test-${pid}`,
+          unit: `paseo-agent-test-${pid}.scope`,
+          pid,
+          provider: "opencode",
+          startedAt: new Date().toISOString(),
+        },
+        { logger: createTestLogger() },
+      ),
+    ).toBe(true);
+  }
+
+  test("a daemon-stop close on a registered scoped pid skips abort and ephemeral delete", async () => {
+    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
+    const sessionApi = createSessionApi();
+    const session = createSession(sessionApi, 515151);
+    registerServerPid(515151);
+
+    await expect(session.close({ reason: DAEMON_STOP_CLOSE_REASON })).resolves.toEqual({
+      detached: true,
+    });
 
     expect(sessionApi.abort).not.toHaveBeenCalled();
     expect(sessionApi.delete).not.toHaveBeenCalled();
   });
 
-  test("default close aborts the session and deletes it when persistence is disabled", async () => {
-    const sessionApi = {
-      abort: vi.fn().mockResolvedValue({ error: null }),
-      update: vi.fn().mockResolvedValue({ error: null }),
-      delete: vi.fn().mockResolvedValue({ error: null }),
-    };
-    const fakeClient = { session: sessionApi } as never;
+  test("a daemon-stop close on an UNREGISTERED pid still aborts and deletes", async () => {
+    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
+    const sessionApi = createSessionApi();
+    // Never recorded: a plain-spawned server (after a probe downgrade) is killed,
+    // so skipping abort/delete here would leak the ephemeral session.
+    const session = createSession(sessionApi, 515152);
 
-    const session = new __openCodeInternals.OpenCodeAgentSession(
-      { provider: "opencode", cwd: "/tmp/test", providerOptions: {} },
-      fakeClient,
-      "ses_unit_test",
-      createTestLogger(),
-      new Map(),
-      undefined,
-      undefined,
-      false,
-    );
+    await expect(session.close({ reason: DAEMON_STOP_CLOSE_REASON })).resolves.toEqual({
+      detached: false,
+    });
+
+    expect(sessionApi.abort).toHaveBeenCalledWith({
+      sessionID: "ses_unit_test",
+      directory: "/tmp/test",
+    });
+    expect(sessionApi.delete).toHaveBeenCalledWith({
+      sessionID: "ses_unit_test",
+      directory: "/tmp/test",
+    });
+  });
+
+  test("a USER close on a registered scoped pid still aborts and deletes", async () => {
+    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
+    const sessionApi = createSessionApi();
+    const session = createSession(sessionApi, 515153);
+    registerServerPid(515153);
+
+    // Detach is configured and the pid is registered, but this is an owner
+    // action: the gate is call-scoped, so it must terminate.
+    await expect(session.close({ reason: "user" })).resolves.toEqual({ detached: false });
+
+    expect(sessionApi.abort).toHaveBeenCalledWith({
+      sessionID: "ses_unit_test",
+      directory: "/tmp/test",
+    });
+    expect(sessionApi.delete).toHaveBeenCalledWith({
+      sessionID: "ses_unit_test",
+      directory: "/tmp/test",
+    });
+  });
+
+  test("a close with NO reason aborts and deletes (regression guard for the old ambient flag)", async () => {
+    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
+    const sessionApi = createSessionApi();
+    const session = createSession(sessionApi, 515154);
+    registerServerPid(515154);
+
+    // No reason at all. This is exactly the shape the old process-global
+    // implementation got wrong: it detached here.
+    await expect(session.close()).resolves.toEqual({ detached: false });
+
+    expect(sessionApi.abort).toHaveBeenCalledWith({
+      sessionID: "ses_unit_test",
+      directory: "/tmp/test",
+    });
+    expect(sessionApi.delete).toHaveBeenCalledWith({
+      sessionID: "ses_unit_test",
+      directory: "/tmp/test",
+    });
+  });
+
+  test("shouldDetachAgentProcess requires an explicit daemon-stop reason", () => {
+    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
+    registerServerPid(515155);
+
+    expect(shouldDetachAgentProcess(515155, DAEMON_STOP_CLOSE_REASON)).toBe(true);
+    // Every other shape is a user close, including a missing reason.
+    expect(shouldDetachAgentProcess(515155, "user")).toBe(false);
+    expect(shouldDetachAgentProcess(515155, undefined)).toBe(false);
+    expect(shouldDetachAgentProcess(515156, DAEMON_STOP_CLOSE_REASON)).toBe(false);
+    expect(shouldDetachAgentProcess(null, DAEMON_STOP_CLOSE_REASON)).toBe(false);
+    expect(shouldDetachAgentProcess(-1, DAEMON_STOP_CLOSE_REASON)).toBe(false);
+  });
+
+  test("default close aborts the session and deletes it when persistence is disabled", async () => {
+    const sessionApi = createSessionApi();
+
+    const session = createSession(sessionApi);
 
     await session.close();
 

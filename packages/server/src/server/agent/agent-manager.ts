@@ -46,6 +46,8 @@ import {
   type AgentRunResult,
   type AgentSession,
   type AgentSessionConfig,
+  type AgentCloseOptions,
+  type AgentCloseReason,
   type SteerResult,
   type AgentStreamEvent,
   type AgentTimelineItem,
@@ -1813,7 +1815,8 @@ export class AgentManager {
   private async closeReloadedSession(session: AgentSession, agentId: string): Promise<void> {
     let operation = this.reloadedSessionCloses.get(session);
     if (!operation) {
-      operation = session.close();
+      // A reload is an owner-initiated lifecycle action, never a daemon stop.
+      operation = session.close({ reason: "user" }).then(() => undefined);
       this.reloadedSessionCloses.set(session, operation);
       // Keep pending closes across request timeouts; a retry must await the same release.
       void operation.catch(() => this.reloadedSessionCloses.delete(session));
@@ -1863,7 +1866,7 @@ export class AgentManager {
     }
   }
 
-  closeAgent(agentId: string): Promise<void> {
+  closeAgent(agentId: string, options?: AgentCloseOptions): Promise<void> {
     const existing = this.inFlightAgentCloses.get(agentId);
     if (existing) {
       return existing;
@@ -1871,7 +1874,7 @@ export class AgentManager {
 
     const close = this.runLifecycleMutation(agentId, async () => {
       // A preceding reload or archive may already have closed the durable agent.
-      if (this.agents.has(agentId)) await this.closeAgentRuntime(agentId);
+      if (this.agents.has(agentId)) await this.closeAgentRuntime(agentId, options);
     });
     this.inFlightAgentCloses.set(agentId, close);
     const clearClose = () => {
@@ -1883,8 +1886,13 @@ export class AgentManager {
     return close;
   }
 
-  private async closeAgentRuntime(agentId: string): Promise<void> {
+  private async closeAgentRuntime(agentId: string, options?: AgentCloseOptions): Promise<void> {
     const agent = this.requireAgent(agentId);
+    // Default to "user" so a close that forgets to declare its intent (or that
+    // comes from the owner) always terminates. Only an explicit
+    // reason:"daemon-stop" may detach, and that reason travels with this call
+    // rather than living in module state — see agent-detach.ts.
+    const closeReason: AgentCloseReason = options?.reason ?? "user";
     this.logger.trace(
       {
         agentId,
@@ -1894,18 +1902,27 @@ export class AgentManager {
         lifecycle: agent.lifecycle,
         activeForegroundTurnId: agent.activeForegroundTurnId,
         pendingPermissions: agent.pendingPermissions.size,
+        closeReason,
       },
       "agent.manager.close.start",
     );
     await this.drainSessionEvents(agentId);
     // Retain ownership until shutdown succeeds. A failed close may still own a
     // native writer, so publishing a resumable closed snapshot would orphan it.
-    await agent.session.close();
+    //
+    // The provider reports whether it actually detached. A second close is
+    // attempted below (some providers only settle on the second pass), so the
+    // outcome is OR-ed: if EITHER pass detached, the writer is still alive.
+    const firstOutcome = await agent.session.close({ reason: closeReason });
+    let detached = firstOutcome?.detached === true;
     this.cancelRunningProviderSubagents(agentId);
     const closedAgent = this.prepareAgentForClosure(agent, "agent closed");
     let closeError: unknown;
     try {
-      await agent.session.close();
+      const secondOutcome = await agent.session.close({ reason: closeReason });
+      if (secondOutcome?.detached === true) {
+        detached = true;
+      }
     } catch (error) {
       closeError = error;
     }
@@ -1917,7 +1934,7 @@ export class AgentManager {
 
     let persistError: unknown;
     try {
-      await this.persistSnapshot(closedAgent);
+      await this.persistSnapshot(this.snapshotForClosedAgent(closedAgent, detached));
     } catch (error) {
       persistError = error;
     }
@@ -1937,6 +1954,35 @@ export class AgentManager {
     if (persistError !== undefined) {
       throw persistError;
     }
+  }
+
+  /**
+   * Decide what the persisted closed snapshot may advertise.
+   *
+   * When the provider detached, its native writer is STILL RUNNING: the child
+   * survived in its systemd user scope and still owns the session directory and
+   * cwd. Publishing a snapshot that keeps `persistence` would leave a resumable
+   * handle on disk for a live writer, and the next daemon would resume it and
+   * spawn a SECOND writer on the same session — two writers, one cwd.
+   *
+   * So a detached close persists with `persistence: null`. Note that persisting
+   * *nothing at all* would be worse, not better: the previous LIVE snapshot
+   * (which does carry `persistence`) would remain in storage and remain just as
+   * resumable, so the second-writer hole would survive in a different shape.
+   * Overwriting with an explicit non-resumable record is what actually closes it.
+   *
+   * The agent is still emitted closed (`emitClosedAgent`), so clients see the
+   * agent go away — it simply cannot be resumed into a competing writer.
+   */
+  private snapshotForClosedAgent(agent: ManagedAgentClosed, detached: boolean): ManagedAgentClosed {
+    if (!detached) {
+      return agent;
+    }
+    this.logger.info(
+      { agentId: agent.id, provider: agent.provider },
+      "agent.manager.close.detached: persisting a non-resumable closed snapshot because the provider writer is still running",
+    );
+    return { ...agent, persistence: null };
   }
 
   private cancelRunningProviderSubagents(parentAgentId: string): void {

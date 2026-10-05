@@ -11244,3 +11244,360 @@ test("concurrent native restores run once before resuming the same agent", async
     rmSync(workdir, { recursive: true, force: true });
   }
 });
+
+/**
+ * Detach-on-stop: the close reason is call-scoped, and a detached close must
+ * not leave a resumable snapshot behind.
+ *
+ * These use a real AgentStorage on disk (not a mock) so the assertions are on
+ * the persisted state, which is the thing that decides whether a later daemon
+ * can resume the agent into a second writer.
+ */
+describe("detach-on-stop close semantics", () => {
+  interface CloseCall {
+    reason: string | undefined;
+    detached: boolean;
+  }
+
+  /**
+   * A session that behaves like a detaching provider: it reports `detached`
+   * when it is closed for a daemon stop and the caller asked for it. Records
+   * every close so the test can prove the reason actually arrived.
+   */
+  class RecordingDetachSession extends TestAgentSession {
+    readonly calls: CloseCall[] = [];
+
+    override async close(options?: {
+      reason?: "user" | "daemon-stop";
+    }): Promise<{ detached?: boolean } | void> {
+      this.calls.push({ reason: options?.reason, detached: options?.reason === "daemon-stop" });
+      return { detached: options?.reason === "daemon-stop" };
+    }
+  }
+
+  /**
+   * Models a provider that reports its detach outcome on ONE pass only.
+   *
+   * Real ACP settles on the FIRST `close()` and returns `undefined` from every
+   * later one, because `AcpAgentSession.close` short-circuits on
+   * `if (this.closed) return;`. The `RecordingDetachSession` above instead
+   * answers `detached` on BOTH passes, which silently papers over that: it
+   * makes the second pass a duplicate source of the same truth, so a mutation
+   * that deletes the first pass's contribution (`let detached = false`) still
+   * finds `detached: true` waiting in the second outcome and never fails.
+   *
+   * These two fakes keep exactly one source of truth each, so each half of the
+   * OR in `closeAgentRuntime` is load-bearing and independently breakable:
+   *
+   * - {@link SinglePassDetachSession} with `settlesOn: 1` behaves like real ACP
+   *   (first pass answers, second returns `undefined`).
+   * - {@link SinglePassDetachSession} with `settlesOn: 2` is the "provider only
+   *   settles on the second pass" case the second pass exists for.
+   */
+  class SinglePassDetachSession extends TestAgentSession {
+    readonly calls: CloseCall[] = [];
+
+    constructor(
+      config: AgentSessionConfig,
+      /** Which 1-based close pass is the one allowed to report `detached`. */
+      private readonly settlesOn: 1 | 2,
+    ) {
+      super(config);
+    }
+
+    override async close(options?: {
+      reason?: "user" | "daemon-stop";
+    }): Promise<{ detached?: boolean } | void> {
+      const detached = options?.reason === "daemon-stop";
+      this.calls.push({ reason: options?.reason, detached });
+      // `this.calls.length` is now the 1-based pass number. Every pass other
+      // than `settlesOn` reports nothing at all — the `void` half of
+      // `AgentCloseOutcome | void`, exactly as the real providers do.
+      return this.calls.length === this.settlesOn ? { detached } : undefined;
+    }
+  }
+
+  function createManagerWithSession(options: {
+    workdir: string;
+    session: AgentSession;
+    storage: AgentStorage;
+    agentId: string;
+  }): AgentManager {
+    const client = new (class extends TestAgentClient {
+      override async createSession(): Promise<AgentSession> {
+        return options.session;
+      }
+    })();
+    return new AgentManager({
+      clients: { codex: client },
+      registry: options.storage,
+      logger,
+      idFactory: () => options.agentId,
+    });
+  }
+
+  async function createStoredAgent(options: {
+    workdir: string;
+    session: AgentSession;
+    storage: AgentStorage;
+    agentId: string;
+  }): Promise<{ manager: AgentManager; agent: ManagedAgent }> {
+    const manager = createManagerWithSession(options);
+    const agent = await manager.createAgent(
+      { provider: "codex", cwd: options.workdir },
+      undefined,
+      {
+        workspaceId: undefined,
+      },
+    );
+    return { manager, agent };
+  }
+
+  test("a daemon-stop close passes reason:daemon-stop down to the provider session", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-detach-reason-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const session = new RecordingDetachSession({ provider: "codex", cwd: workdir });
+    const agentId = "00000000-0000-4000-8000-000000000201";
+    let manager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({ workdir, session, storage, agentId });
+      manager = created.manager;
+      expect(created.agent.persistence?.sessionId).toBe(session.id);
+
+      await manager.closeAgent(agentId, { reason: "daemon-stop" });
+
+      expect(session.calls.length).toBeGreaterThan(0);
+      expect(session.calls.every((call) => call.reason === "daemon-stop")).toBe(true);
+    } finally {
+      if (manager) await manager.closeAgent(agentId).catch(() => undefined);
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  test("an owner-initiated close carries reason:user, never daemon-stop", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-detach-user-reason-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const session = new RecordingDetachSession({ provider: "codex", cwd: workdir });
+    const agentId = "00000000-0000-4000-8000-000000000202";
+    let manager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({ workdir, session, storage, agentId });
+      manager = created.manager;
+
+      // No reason supplied — this is exactly the shape an archive_agent RPC or a
+      // draft-session probe close takes while a daemon stop is in progress.
+      await manager.closeAgent(agentId);
+
+      expect(session.calls.length).toBeGreaterThan(0);
+      expect(session.calls.every((call) => call.reason === "user")).toBe(true);
+      expect(session.calls.some((call) => call.detached)).toBe(false);
+    } finally {
+      if (manager) await manager.closeAgent(agentId).catch(() => undefined);
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  test("archiving during a detach-stop window still terminates (reason:user reaches the provider)", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-detach-archive-race-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const session = new RecordingDetachSession({ provider: "codex", cwd: workdir });
+    const agentId = "00000000-0000-4000-8000-000000000203";
+    let manager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({ workdir, session, storage, agentId });
+      manager = created.manager;
+
+      // A daemon stop is configured; the owner's archive lands inside its window.
+      // The provider must be closed as a user action, so nothing detaches.
+      await manager.archiveAgent(agentId);
+
+      expect(session.calls.length).toBeGreaterThan(0);
+      expect(session.calls.every((call) => call.reason === "user")).toBe(true);
+      expect(session.calls.some((call) => call.detached)).toBe(false);
+    } finally {
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  test("a detached close persists a NON-resumable snapshot; a normal close keeps one", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-detach-persistence-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+
+    // --- detached close ---
+    const detachedSession = new RecordingDetachSession({ provider: "codex", cwd: workdir });
+    const detachedId = "00000000-0000-4000-8000-000000000204";
+    let detachedManager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({
+        workdir,
+        session: detachedSession,
+        storage,
+        agentId: detachedId,
+      });
+      detachedManager = created.manager;
+      // Precondition: while live, the persisted record IS resumable.
+      const live = await storage.get(detachedId);
+      expect(live?.persistence?.sessionId).toBe(detachedSession.id);
+
+      await detachedManager.closeAgent(detachedId, { reason: "daemon-stop" });
+      await storage.flush();
+
+      // The writer is still running, so the persisted record must not be
+      // resumable. Assert on the PERSISTED state, not on a mock call: a later
+      // daemon reads exactly this.
+      const afterDetach = await storage.get(detachedId);
+      expect(afterDetach).not.toBeNull();
+      expect(afterDetach?.persistence).toBeNull();
+      expect(afterDetach?.persistence?.sessionId).toBeUndefined();
+      expect(afterDetach?.persistence?.nativeHandle).toBeUndefined();
+      expect(afterDetach?.lastStatus).toBe("closed");
+    } finally {
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+
+    // --- ordinary close, for contrast: the snapshot stays resumable ---
+    const normalWorkdir = mkdtempSync(join(tmpdir(), "agent-detach-persistence-normal-"));
+    const normalStorage = new AgentStorage(join(normalWorkdir, "agents"), logger);
+    const normalSession = new RecordingDetachSession({ provider: "codex", cwd: normalWorkdir });
+    const normalId = "00000000-0000-4000-8000-000000000205";
+    let normalManager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({
+        workdir: normalWorkdir,
+        session: normalSession,
+        storage: normalStorage,
+        agentId: normalId,
+      });
+      normalManager = created.manager;
+
+      await normalManager.closeAgent(normalId);
+      await normalStorage.flush();
+
+      const afterNormal = await normalStorage.get(normalId);
+      expect(afterNormal?.persistence?.sessionId).toBe(normalSession.id);
+    } finally {
+      await normalStorage.flush();
+      rmSync(normalWorkdir, { recursive: true, force: true });
+    }
+  });
+
+  test("a detached close overwrites the previous LIVE snapshot rather than leaving it resumable", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-detach-overwrite-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const session = new RecordingDetachSession({ provider: "codex", cwd: workdir });
+    const agentId = "00000000-0000-4000-8000-000000000206";
+    let manager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({ workdir, session, storage, agentId });
+      manager = created.manager;
+      await storage.flush();
+      expect((await storage.get(agentId))?.persistence?.sessionId).toBe(session.id);
+
+      await manager.closeAgent(agentId, { reason: "daemon-stop" });
+      await storage.flush();
+
+      // Persisting NOTHING would leave that live snapshot in place, still
+      // resumable. The record must have been overwritten.
+      const stored = await storage.get(agentId);
+      expect(stored?.persistence).toBeNull();
+    } finally {
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  test("a provider that settles on the FIRST close pass still suppresses the resumable snapshot", async () => {
+    // Real ACP shape: `AcpAgentSession.close` sets `this.closed` and every
+    // later call short-circuits on `if (this.closed) return;`, so pass two
+    // resolves to `undefined` — no `detached` field at all. `closeAgentRuntime`
+    // calls `session.close` twice (a provider may only settle on the second
+    // pass), so under real ACP the FIRST outcome is the only one that can
+    // report detachment. If that first contribution were dropped
+    // (`let detached = false`), the second pass would hand back `undefined`
+    // and the agent would be persisted RESUMABLE while its writer is still
+    // running — reopening B3.
+    const workdir = mkdtempSync(join(tmpdir(), "agent-detach-first-pass-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const session = new SinglePassDetachSession({ provider: "codex", cwd: workdir }, 1);
+    const agentId = "00000000-0000-4000-8000-000000000207";
+    let manager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({ workdir, session, storage, agentId });
+      manager = created.manager;
+      await storage.flush();
+      expect((await storage.get(agentId))?.persistence?.sessionId).toBe(session.id);
+
+      await manager.closeAgent(agentId, { reason: "daemon-stop" });
+      await storage.flush();
+
+      // Both passes ran and both carried the reason; only the first reported.
+      expect(session.calls).toEqual([
+        { reason: "daemon-stop", detached: true },
+        { reason: "daemon-stop", detached: true },
+      ]);
+      // The second outcome was `undefined`, so the persisted record is only
+      // non-resumable because the FIRST outcome was honoured.
+      expect((await storage.get(agentId))?.persistence).toBeNull();
+    } finally {
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  test("a provider that only settles on the SECOND close pass suppresses the resumable snapshot", async () => {
+    // The other half of the OR: some providers are not finished on the first
+    // pass and only report `detached` on the second. This guards the
+    // `if (secondOutcome?.detached === true)` arm independently of the first,
+    // so neither half of the OR can be deleted silently.
+    const workdir = mkdtempSync(join(tmpdir(), "agent-detach-second-pass-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const session = new SinglePassDetachSession({ provider: "codex", cwd: workdir }, 2);
+    const agentId = "00000000-0000-4000-8000-000000000208";
+    let manager: AgentManager | null = null;
+    try {
+      const created = await createStoredAgent({ workdir, session, storage, agentId });
+      manager = created.manager;
+      await storage.flush();
+      expect((await storage.get(agentId))?.persistence?.sessionId).toBe(session.id);
+
+      await manager.closeAgent(agentId, { reason: "daemon-stop" });
+      await storage.flush();
+
+      expect(session.calls).toEqual([
+        { reason: "daemon-stop", detached: true },
+        { reason: "daemon-stop", detached: true },
+      ]);
+      expect((await storage.get(agentId))?.persistence).toBeNull();
+    } finally {
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  test("an ordinary user close stays resumable no matter which pass a provider settles on", async () => {
+    // Negative control for both of the above: neither pass reports `detached`
+    // for a user close, so the snapshot must keep its resumable handle. This
+    // is what proves the two tests above are asserting the daemon-stop gate
+    // rather than an unconditional `persistence: null`.
+    for (const settlesOn of [1, 2] as const) {
+      const workdir = mkdtempSync(join(tmpdir(), `agent-detach-user-pass-${settlesOn}-`));
+      const storage = new AgentStorage(join(workdir, "agents"), logger);
+      const session = new SinglePassDetachSession({ provider: "codex", cwd: workdir }, settlesOn);
+      const agentId = `00000000-0000-4000-8000-0000000002${settlesOn === 1 ? "09" : "10"}`;
+      try {
+        const created = await createStoredAgent({ workdir, session, storage, agentId });
+        await created.manager.closeAgent(agentId, { reason: "user" });
+        await storage.flush();
+
+        expect((await storage.get(agentId))?.persistence?.sessionId).toBe(session.id);
+      } finally {
+        await storage.flush();
+        rmSync(workdir, { recursive: true, force: true });
+      }
+    }
+  });
+});
