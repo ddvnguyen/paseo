@@ -21,9 +21,9 @@
 #
 # Usage:
 #   source scripts/bun-runtime.sh
-#   paseo_assert_bun        # die unless the required bun is on PATH
-#   BUN_BIN="$(paseo_resolve_bun)"   # print its absolute path
-#   PASEO_REQUIRED_BUN_VERSION       # the pinned version, read from .tool-versions
+#   paseo_assert_bun            # die unless the required bun is on PATH; sets BUN_BIN
+#   BUN="$(paseo_find_bun)"     # print the resolved bun path, or fail
+#   paseo_required_bun_version  # print the pinned version, read from .tool-versions
 
 # Absolute path to the bun binary, exported for callers that exec it.
 BUN_BIN=""
