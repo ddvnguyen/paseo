@@ -566,7 +566,7 @@ jobs:
           BUILD_DIR="${{ steps.locate.outputs.dir }}"
           TEST_HOME="${{ env.TEST_HOME }}"
           mkdir -p "$TEST_HOME/node_modules/@getpaseo"
-          for pkg in client highlight plugin protocol relay server; do
+          for pkg in cli client highlight plugin protocol relay server; do
             if [ -d "$BUILD_DIR/packages/$pkg/dist" ]; then
               mkdir -p "$TEST_HOME/node_modules/@getpaseo/$pkg"
               rsync -a --delete "$BUILD_DIR/packages/$pkg/dist/" "$TEST_HOME/node_modules/@getpaseo/$pkg/dist/"
@@ -683,7 +683,7 @@ jobs:
           BUILD_DIR="${{ steps.locate.outputs.dir }}"
           PROD_HOME="${{ env.PROD_HOME }}"
           mkdir -p "$PROD_HOME/node_modules/@getpaseo"
-          for pkg in client highlight plugin protocol relay server; do
+          for pkg in cli client highlight plugin protocol relay server; do
             if [ -d "$BUILD_DIR/packages/$pkg/dist" ]; then
               mkdir -p "$PROD_HOME/node_modules/@getpaseo/$pkg"
               rsync -a --delete "$BUILD_DIR/packages/$pkg/dist/" "$PROD_HOME/node_modules/@getpaseo/$pkg/dist/"
