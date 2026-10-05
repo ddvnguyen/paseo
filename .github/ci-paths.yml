@@ -89,3 +89,16 @@ fleet-backend:
   - "packages/fleet-backend/**"
   - "scripts/fleet-merge-safety.mjs"
   - ".github/workflows/fleet-merge-safety.yml"
+
+# Anything that decides WHICH RUNTIME executes the daemon. The pin lives in
+# .tool-versions; these are the paths that read it or route through it.
+bun-runtime:
+  - ".tool-versions"
+  - "scripts/bun-runtime.sh"
+  - "scripts/verify-bun-runtime.sh"
+  - "scripts/runtime-pin.test.mjs"
+  - "scripts/dev-daemon.sh"
+  - "scripts/dev-home.sh"
+  - "deploy/**"
+  - "packages/cli/src/commands/daemon/**"
+  - "packages/server/package.json"
