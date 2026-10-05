@@ -68,7 +68,10 @@ configure_dev_daemon_config() {
   fi
 
   mkdir -p "$PASEO_HOME"
-  node -e '
+  # bun, not node: this runs on every dev launcher invocation, so it is part of
+  # the runtime the pin governs. `bun -e` supports the same CJS `require` this
+  # snippet uses, so the only change is which runtime executes it.
+  bun -e '
 const fs = require("fs");
 const [path, listen] = [process.argv[1], process.argv[2]];
 let cfg = {};
