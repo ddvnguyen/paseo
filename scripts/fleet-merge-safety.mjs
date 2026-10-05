@@ -9,6 +9,14 @@
 //   also fire. Matcher + extension set + allowlist MUST stay identical to
 //   packages/fleet-backend/tests/gates/turso-import.test.ts.
 //
+// Rule 3 (owner decision 2026-10-05, "version stamping is KEPT-VIA-SCRIPT"):
+//   the fork version stamp is reproduced by running
+//   scripts/sync-workspace-versions.mjs, never re-applied by hand during the merge.
+//   Fails when that script is missing, is upstream's non-stamping copy, carries an
+//   identifier other than "hub", no longer runs, or has not been run against this
+//   tree. Delegates to scripts/check-fork-version-stamp.mjs so there is exactly one
+//   implementation of the rule.
+//
 // Usage:
 //   node scripts/fleet-merge-safety.mjs --base <sha> --head <sha>
 //   node scripts/fleet-merge-safety.mjs --files $'a\nb\nc'   (porcelain list)
@@ -57,7 +65,12 @@ function collectFiles(dir, out = []) {
       continue;
     const full = path.join(dir, entry);
     if (statSync(full).isDirectory()) collectFiles(full, out);
-    else if (/\.(ts|mts|js|mjs|cjs)$/.test(entry) && !entry.endsWith(".d.ts") && !entry.endsWith(".d.ts.map")) out.push(full);
+    else if (
+      /\.(ts|mts|js|mjs|cjs)$/.test(entry) &&
+      !entry.endsWith(".d.ts") &&
+      !entry.endsWith(".d.ts.map")
+    )
+      out.push(full);
   }
   return out;
 }
@@ -78,7 +91,11 @@ function checkTursoImport() {
     // SUBSTRING match on the forbidden package name: also fires on
     // node_modules-prefixed specifiers (../node_modules/@tursodatabase/...).
     // Keep in sync with tests/gates/turso-import.test.ts.
-    if (/(?:from\s+['"]|import\s*\(\s*['"]|require\s*\(\s*['"])[^'"]*@tursodatabase\/database(?:\/[^'"]*)?['"]/.test(text)) {
+    if (
+      /(?:from\s+['"]|import\s*\(\s*['"]|require\s*\(\s*['"])[^'"]*@tursodatabase\/database(?:\/[^'"]*)?['"]/.test(
+        text,
+      )
+    ) {
       if (!allowed.has(file)) offenders.push(path.relative(ROOT, file));
     }
   }
@@ -91,6 +108,32 @@ function checkTursoImport() {
     };
   }
   return { ok: true };
+}
+
+// Rule 3 delegates rather than reimplementing: the stamp rule needs to run the
+// stamp script against a throwaway replica of the tree, which is too much state
+// to carry inside this file. Subprocess keeps one source of truth for the rule
+// and lets it print its own remediation.
+function checkForkVersionStamp() {
+  const check = path.join(ROOT, "scripts", "check-fork-version-stamp.mjs");
+  if (!existsSync(check)) {
+    return {
+      ok: false,
+      message:
+        "fork-version-stamp: scripts/check-fork-version-stamp.mjs is missing. Rule 3 has no " +
+        "implementation, which would make the stamp gate a silent pass. Restore it.",
+    };
+  }
+  try {
+    execFileSync(process.execPath, [check], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
+    return { ok: true };
+  } catch (error) {
+    const output = `${error?.stdout ?? ""}${error?.stderr ?? ""}`.trim();
+    return {
+      ok: false,
+      message: output || `fork-version-stamp: check exited non-zero: ${error?.message ?? error}`,
+    };
+  }
 }
 
 const argv = process.argv.slice(2);
@@ -154,5 +197,8 @@ if (flag("--files") === null) {
       : `turso-import: FAIL\n${r.message}`,
   );
   if (!r.ok) failures++;
+  const stamp = checkForkVersionStamp();
+  console.log(stamp.ok ? "fork-version-stamp: PASS" : `fork-version-stamp: FAIL\n${stamp.message}`);
+  if (!stamp.ok) failures++;
 }
 process.exit(failures ? 1 : 0);
