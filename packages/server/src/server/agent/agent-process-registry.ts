@@ -966,11 +966,44 @@ function hasForeignScope(cgroup: string, entry: AgentProcessEntry): boolean {
 }
 
 /**
+ * May this entry's record be deleted without signalling anything?
+ *
+ * Only when the scope is PROVABLY unpopulated, or when the entry provably has
+ * no scope of its own (which `readAgentScopePopulation` answers with a known,
+ * unpopulated set). An unreadable scope is never "empty": the record is the
+ * only handle anyone has on whatever is still running in there, so an
+ * unmeasurable scope keeps its record.
+ *
+ * This is the single definition of "dead" in the registry, shared by the
+ * reaper (`classifyByScopePopulation`) and the detach-stop flush
+ * (`flushLiveAgentProcesses`), so the two pid-first paths cannot drift into
+ * disagreeing about what a scope reading means.
+ */
+function mayForgetScopedEntry(population: AgentScopePopulation): boolean {
+  return population.known && !population.populated;
+}
+
+/**
+ * Classification for an entry the pid path could not speak for.
+ *
+ * Every "inconclusive pid" outcome funnels through here, so the scope — not the
+ * pid — decides. `dead` requires a provably empty scope, and an unmeasurable
+ * one (`known: false`) counts as populated on purpose.
+ */
+function classifyByScopePopulation(
+  entry: AgentProcessEntry,
+  readScopePopulation: AgentScopePopulationReader,
+): AgentProcessClassification {
+  return mayForgetScopedEntry(readScopePopulation(entry)) ? "dead" : "live-matching";
+}
+
+/**
  * Classify one registry entry:
- * - dead: pid is gone (or vanished mid-check / no cmdline — an exited zombie)
- *   AND the scope is provably empty
+ * - dead: the pid path could not identify a live child AND the scope is provably
+ *   empty
  * - live-matching: pid is alive and a member of the entry's expected scope, OR
- *   the pid is gone but the scope still holds something
+ *   the pid could not speak (gone, or no usable identity) but the scope still
+ *   holds something
  * - recycled: pid is alive but provably not the recorded child
  *
  * Identity is decided by cgroup membership first: the ACP spawn site records
@@ -988,54 +1021,50 @@ function hasForeignScope(cgroup: string, entry: AgentProcessEntry): boolean {
  * scope either. Best effort either way; never applies to a pid alive in its
  * expected scope.
  *
- * A DEAD main pid is not proof the scope is empty. Provider children run in
- * `KillMode=process` scopes, where nothing kills the siblings of an exiting
- * main process, so a child the provider spawned (an ACP adapter's dev server,
- * a tool it launched) routinely outlives the recorded pid. Calling that `dead`
- * deleted the record with zero signals and left the survivor running with
- * nothing left pointing at it — the one outcome this whole path must never
- * produce. The scope is therefore consulted, but only once the pid path has
- * failed to classify the entry, so a reap of live records costs no extra
- * `systemctl` fork per entry.
+ * An INCONCLUSIVE pid is not proof the scope is empty, and there are two ways to
+ * be inconclusive — not just the obvious one:
+ *
+ * 1. `kill(pid, 0)` fails: the pid is gone entirely.
+ * 2. `kill(pid, 0)` SUCCEEDS but the pid carries no usable identity, because a
+ *    ZOMBIE still answers signal 0 while `/proc/<pid>/cmdline` is empty (it has
+ *    already exited and only its parent's `waitpid` can clear it). An unreadable
+ *    `/proc/<pid>` — `hidepid`, or a `PR_SET_DUMPABLE=0` provider — lands on the
+ *    same branch, since `readProcessIdentity` returns null.
+ *
+ * Treating case 2 as `dead` deleted the record with zero signals while the scope
+ * was still running, which is precisely the leak this whole path exists to
+ * prevent. Both cases now consult the scope, and only a provably empty scope is
+ * `dead`.
+ *
+ * That happens only once the pid path has failed to classify the entry, so a reap
+ * of live records still costs no `systemctl` fork per entry.
  */
 export function classifyAgentProcessEntry(
   entry: AgentProcessEntry,
   readScopePopulation?: AgentScopePopulationReader,
 ): AgentProcessClassification {
+  // Binding the reader is free — `agentScopePopulationReader()` only returns a
+  // reference; the `systemctl show` fork happens when the reader is CALLED.
+  const readScope = readScopePopulation ?? agentScopePopulationReader();
   if (!isPidAlive(entry.pid)) {
-    const population = (readScopePopulation ?? agentScopePopulationReader())(entry);
-    return population.populated ? "live-matching" : "dead";
+    return classifyByScopePopulation(entry, readScope);
   }
   if (process.platform !== "linux") {
     // /proc is unavailable; liveness is all we can verify off Linux.
     return "live-matching";
   }
   const identity = readProcessIdentity(entry.pid);
-  if (!identity) return "dead";
-  if (!identity.cmdline) return "dead";
+  // No usable identity: a zombie (empty cmdline, still answering `kill(pid, 0)`),
+  // a vanished pid, or an unreadable /proc. Not evidence about the scope.
+  if (!identity || !identity.cmdline) {
+    return classifyByScopePopulation(entry, readScope);
+  }
   const cgroup = readProcessCgroup(entry.pid);
   if (cgroup !== null) {
     if (cgroupHasScope(cgroup, entry.scopeId)) return "live-matching";
     if (hasForeignScope(cgroup, entry)) return "recycled";
   }
   return matchesProviderMarker(identity, entry.provider) ? "live-matching" : "recycled";
-}
-
-/**
- * May this entry's record be deleted without signalling anything?
- *
- * Only when the scope is PROVABLY unpopulated, or when the entry provably has
- * no scope of its own (which `readAgentScopePopulation` answers with a known,
- * unpopulated set). An unreadable scope is never "empty": the record is the
- * only handle anyone has on whatever is still running in there, so an
- * unmeasurable scope keeps its record.
- *
- * The reaper does not need this — `classifyAgentProcessEntry` reports an
- * unmeasurable scope as populated, so it never produces `"dead"` for one. The
- * detach-stop flush does, because it decides on pid liveness alone.
- */
-function mayForgetScopedEntry(population: AgentScopePopulation): boolean {
-  return population.known && !population.populated;
 }
 
 /** Flush outcome: records kept because the pid is alive, records dropped. */

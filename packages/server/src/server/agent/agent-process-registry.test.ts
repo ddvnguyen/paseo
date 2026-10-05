@@ -25,6 +25,7 @@ import {
   getAgentProcessOwnerDaemonId,
   isPidAlive,
   isPidRunning,
+  isPidZombie,
   isSignalableAgentScopeUnit,
   readAgentProcessRegistry,
   readAgentScopePopulation,
@@ -124,6 +125,194 @@ function expectPidAlive(pid: number, context: string): void {
     alive = false;
   }
   expect(alive, `${context} (pid ${pid})`).toBe(true);
+}
+
+// ---------------------------------------------------------------------------
+// Real unreaped children ("zombies").
+//
+// libuv — and every Node parent — reaps the processes it spawns BEFORE it emits
+// `exit`, so no test running inside this process can ever observe a pid in state
+// `Z`. That is exactly why driving a synthetic `exit` event cannot reproduce the
+// defect these fixtures exist for: the defect needs a pid that answers
+// `kill(pid, 0)` while `/proc/<pid>/cmdline` is empty, and only a process whose
+// parent declines to `waitpid` produces that pair.
+//
+// The launcher below forks a SIGTERM-ignoring heartbeat writer (the survivor —
+// the stand-in for the dev server an ACP adapter leaves behind), then forks a
+// second child that calls `os._exit(0)`, publishes both pids, and then sleeps
+// WITHOUT ever reaping. Staying alive is what stops the unreaped child being
+// reparented to init and collected, so the zombie is genuinely present for the
+// whole test rather than for one lucky poll.
+// ---------------------------------------------------------------------------
+
+const ZOMBIE_LAUNCHER_SOURCE = `
+import os, signal, sys, time
+
+zombie_pid_file, member_pid_file, ready_file, beat_file = sys.argv[1:5]
+hold_seconds = float(sys.argv[5])
+
+# The survivor. Ignoring SIGTERM and beating keeps "present" distinguishable from
+# "still running", and a heartbeat also survives pid reuse.
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if os.fork() == 0:
+    with open(member_pid_file, "w") as handle:
+        handle.write(str(os.getpid()))
+    while True:
+        with open(beat_file, "w") as handle:
+            handle.write(str(time.time()))
+        time.sleep(0.1)
+
+# The recorded main pid: exits at once, and this launcher never calls waitpid on
+# it, so it stays in state Z with an empty /proc/<pid>/cmdline.
+zombie = os.fork()
+if zombie == 0:
+    os._exit(0)
+
+with open(zombie_pid_file, "w") as handle:
+    handle.write(str(zombie))
+with open(ready_file, "w") as handle:
+    handle.write(str(os.getpid()))
+
+time.sleep(hold_seconds)
+`;
+
+/** How long the launcher holds its unreaped child. Longer than any assertion. */
+const ZOMBIE_HOLD_SECONDS = 120;
+
+interface ZombieFixturePaths {
+  script: string;
+  zombiePidFile: string;
+  memberPidFile: string;
+  readyFile: string;
+  beatFile: string;
+}
+
+interface ZombieFixture extends ZombieFixturePaths {
+  launcherPid: number;
+  zombiePid: number;
+  memberPid: number;
+}
+
+let zombieLauncherCommand: string | null | undefined;
+
+/** The interpreter that produces the real zombie, or null when the host has none. */
+function resolveZombieLauncherCommand(): string | null {
+  if (zombieLauncherCommand === undefined) {
+    zombieLauncherCommand =
+      spawnSync("python3", ["-c", "pass"], { stdio: "ignore" }).status === 0 ? "python3" : null;
+  }
+  return zombieLauncherCommand;
+}
+
+/**
+ * Skip loudly rather than pretending the real zombie path ran. A host with no
+ * python3 cannot produce an unreaped child at all, and a quiet skip would let a
+ * green run hide the fact that the defect's real trigger was never built.
+ */
+function requireZombieLauncher(): boolean {
+  if (resolveZombieLauncherCommand() !== null) return true;
+  const message = "[agent-process-registry] python3 unavailable; real-zombie tests skipped";
+  if (process.env.PASEO_REQUIRE_SYSTEMD_TESTS === "1") {
+    throw new Error(message);
+  }
+  console.warn(message);
+  return false;
+}
+
+function writeZombieLauncher(tmpDir: string): ZombieFixturePaths {
+  const script = path.join(tmpDir, "zombie-launcher.py");
+  writeFileSync(script, ZOMBIE_LAUNCHER_SOURCE);
+  return {
+    script,
+    zombiePidFile: path.join(tmpDir, "zombie.pid"),
+    memberPidFile: path.join(tmpDir, "member.pid"),
+    readyFile: path.join(tmpDir, "launcher.ready"),
+    beatFile: path.join(tmpDir, "member.beat"),
+  };
+}
+
+/** Spawn the launcher, optionally inside a real `KillMode=process` scope. */
+function spawnZombieLauncher(
+  paths: ZombieFixturePaths,
+  children: ReturnType<typeof spawn>[],
+  options: { scoped: boolean },
+): number {
+  const command = resolveZombieLauncherCommand();
+  if (command === null) throw new Error("requireZombieLauncher() must gate this call");
+  const args = [
+    paths.script,
+    paths.zombiePidFile,
+    paths.memberPidFile,
+    paths.readyFile,
+    paths.beatFile,
+    String(ZOMBIE_HOLD_SECONDS),
+  ];
+  const child = options.scoped
+    ? spawnInAgentScope(command, args, { stdio: "ignore" }, { provider: "zombie-fixture", logger })
+    : spawn(command, args, { stdio: "ignore" });
+  children.push(child);
+  if (typeof child.pid !== "number") {
+    throw new Error("failed to spawn the zombie launcher");
+  }
+  return child.pid;
+}
+
+/**
+ * Wait for the launcher to publish all three files, then hand back the fixture.
+ * Polled rather than raced: the zombie only exists once its parent has forked it
+ * and declined to reap it.
+ */
+async function waitForZombieFixture(
+  paths: ZombieFixturePaths,
+  launcherPid: number,
+): Promise<ZombieFixture> {
+  await expect
+    .poll(
+      () =>
+        existsSync(paths.zombiePidFile) &&
+        existsSync(paths.memberPidFile) &&
+        existsSync(paths.readyFile),
+      { timeout: 15_000, interval: 25 },
+    )
+    .toBe(true);
+  return {
+    ...paths,
+    launcherPid,
+    zombiePid: Number(readFileSync(paths.zombiePidFile, "utf8")),
+    memberPid: Number(readFileSync(paths.memberPidFile, "utf8")),
+  };
+}
+
+/**
+ * Assert the recorded pid really is an unreaped child BEFORE anything is
+ * concluded from its classification: state `Z`, an empty `/proc/<pid>/cmdline`,
+ * and `kill(pid, 0)` still succeeding. Without all three the test could pass for
+ * the wrong reason — a reaped-then-reused pid answers `kill(pid, 0)` too.
+ */
+function expectRealZombie(pid: number): void {
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  // "pid (comm) state ..." — comm can contain spaces and parentheses, so the
+  // state letter is the first token after the final ')'.
+  const state = stat
+    .slice(stat.lastIndexOf(")") + 1)
+    .trim()
+    .split(/\s+/)[0];
+  expect(state, `pid ${pid} must be an unreaped child in state Z`).toBe("Z");
+  expect(readFileSync(`/proc/${pid}/cmdline`, "utf8"), "a zombie has an empty cmdline").toBe("");
+  expect(isPidAlive(pid), "a zombie still answers kill(pid, 0)").toBe(true);
+  expect(isPidZombie(pid), "isPidZombie must observe the same state").toBe(true);
+  expect(isPidRunning(pid), "a zombie can no longer consume CPU").toBe(false);
+}
+
+/** SIGKILL every pid a fixture created; a no-op for pids already gone. */
+function killPids(pids: number[]): void {
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
 }
 
 describe("agent process registry", () => {
@@ -630,6 +819,9 @@ describe.runIf(process.platform === "linux")("agent process identity", () => {
   let tmpDir: string;
   let filePath: string;
   const liveChildren: ReturnType<typeof spawn>[] = [];
+  // The zombie fixture's launcher forks a member that outlives it, so the
+  // launcher being killed is not enough to clean the fixture up.
+  const fixturePids: number[] = [];
 
   function scopeCgroup(scopeName: string): string {
     return `0::/user.slice/user-1000.slice/user@1000.service/app.slice/${scopeName}\n`;
@@ -644,6 +836,10 @@ describe.runIf(process.platform === "linux")("agent process identity", () => {
     for (const child of liveChildren.splice(0)) {
       child.kill("SIGKILL");
     }
+    // Unconditional, and in this order: the member and the zombie are
+    // grandchildren the launcher spawned, so killing the launcher reaps the
+    // zombie but leaves the member running.
+    killPids(fixturePids.splice(0));
     __setAgentProcessCgroupReaderForTests(null);
     rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -757,6 +953,149 @@ describe.runIf(process.platform === "linux")("agent process identity", () => {
     const gonePid = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" }).pid as number;
     expect(classifyAgentProcessEntry(buildEntry({ pid: gonePid }), counting)).toBe("dead");
     expect(scopeReads, "an inconclusive pid must consult the scope exactly once").toBe(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // `!isPidAlive` is not the only way for the pid path to be inconclusive. A pid
+  // can answer `kill(pid, 0)` and still carry NO usable identity: a zombie has
+  // already exited, so `/proc/<pid>/cmdline` is empty. The code returned "dead"
+  // there without ever asking the scope, and the reaper deleted the record with
+  // the survivor still running — the exact outcome this whole path exists to
+  // prevent.
+  //
+  // Driven by a REAL unreaped child. A synthetic `exit` event cannot produce
+  // this state: libuv reaps a child before emitting `exit`, so the pid is always
+  // already gone by then, which is why the earlier round of probes passed on the
+  // buggy code.
+  // ---------------------------------------------------------------------------
+
+  test("classifies a real zombie main pid as live-matching while its scope still has members", async () => {
+    if (!requireZombieLauncher()) return;
+    const paths = writeZombieLauncher(tmpDir);
+    const launcherPid = spawnZombieLauncher(paths, liveChildren, { scoped: false });
+    const fixture = await waitForZombieFixture(paths, launcherPid);
+    fixturePids.push(fixture.launcherPid, fixture.zombiePid, fixture.memberPid);
+
+    // The precondition, asserted before anything is concluded from it.
+    expectRealZombie(fixture.zombiePid);
+    expect(isPidRunning(fixture.memberPid), "the survivor is a real running process").toBe(true);
+
+    const entry = buildSignalableEntry({ pid: fixture.zombiePid, provider: "claude-acp" });
+    const populatedScope = (): AgentScopePopulation => ({
+      known: true,
+      populated: true,
+      pids: [fixture.memberPid],
+    });
+
+    // Pinning the exact value matters: anything else is dropped by the reaper
+    // without a signal.
+    expect(classifyAgentProcessEntry(entry, populatedScope)).toBe("live-matching");
+
+    // And through the reaper end to end: the record survives the zombie main pid.
+    recordAgentProcess(entry, { filePath, logger });
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger,
+      readScopePopulation: populatedScope,
+      sleepMs: () => {},
+    });
+    expect(result.removed).toEqual([]);
+    expect(result.kept.map((kept) => kept.pid)).toEqual([fixture.zombiePid]);
+    expect(readAgentProcessRegistry({ filePath }).map((kept) => kept.pid)).toEqual([
+      fixture.zombiePid,
+    ]);
+    expect(isPidRunning(fixture.memberPid), "the survivor is untouched").toBe(true);
+
+    // The detach-stop flush decides from the pid alone, and a zombie answers
+    // `kill(pid, 0)`, so it must keep the record too. Asserted so a future change
+    // to `isPidAlive` cannot quietly reintroduce the same leak here.
+    const flushed = flushLiveAgentProcesses({
+      filePath,
+      logger,
+      readScopePopulation: populatedScope,
+    });
+    expect(flushed.removed).toEqual([]);
+    expect(flushed.kept.map((kept) => kept.pid)).toEqual([fixture.zombiePid]);
+  });
+
+  test("classifies a real zombie main pid as dead only when its scope is provably empty", async () => {
+    if (!requireZombieLauncher()) return;
+    const paths = writeZombieLauncher(tmpDir);
+    const launcherPid = spawnZombieLauncher(paths, liveChildren, { scoped: false });
+    const fixture = await waitForZombieFixture(paths, launcherPid);
+    fixturePids.push(fixture.launcherPid, fixture.zombiePid, fixture.memberPid);
+    expectRealZombie(fixture.zombiePid);
+
+    const entry = buildSignalableEntry({ pid: fixture.zombiePid, provider: "claude-acp" });
+
+    // The symmetric case on the SAME real zombie: the scope decides, not the pid.
+    // A zombie alone must not keep a record alive forever.
+    expect(
+      classifyAgentProcessEntry(entry, () => ({ known: true, populated: false, pids: [] })),
+    ).toBe("dead");
+
+    // An unmeasurable scope is "cannot tell", never "empty" — even when the
+    // reading claims it is empty, which is the one combination that would let an
+    // unreadable cgroup delete a live record.
+    expect(
+      classifyAgentProcessEntry(entry, () => ({
+        known: false,
+        populated: false,
+        pids: [],
+        reason: "simulated",
+      })),
+    ).toBe("live-matching");
+  });
+
+  test("still classifies a genuinely dead pid with an empty scope as dead", async () => {
+    // The guard on the other side of the fix: routing inconclusive pids through
+    // the scope must not make records immortal. A reaped-and-gone pid in a
+    // provably empty scope is still `dead`, and is still dropped.
+    const gonePid = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" }).pid as number;
+    expect(isPidAlive(gonePid)).toBe(false);
+    const emptyScope = (): AgentScopePopulation => ({ known: true, populated: false, pids: [] });
+    const entry = buildSignalableEntry({ pid: gonePid });
+
+    expect(classifyAgentProcessEntry(entry, emptyScope)).toBe("dead");
+
+    recordAgentProcess(entry, { filePath, logger });
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger,
+      readScopePopulation: emptyScope,
+      sleepMs: () => {},
+    });
+    expect(result.removed.map((removed) => removed.pid)).toEqual([gonePid]);
+    expect(readAgentProcessRegistry({ filePath })).toEqual([]);
+  });
+
+  test("consults the scope exactly once for a real zombie main pid", async () => {
+    // Perf guard extended to the new inconclusive branch: a zombie costs ONE
+    // scope read, and a pid that classifies outright still costs none — so
+    // reaping live records keeps costing no `systemctl` fork per entry.
+    if (!requireZombieLauncher()) return;
+    const paths = writeZombieLauncher(tmpDir);
+    const launcherPid = spawnZombieLauncher(paths, liveChildren, { scoped: false });
+    const fixture = await waitForZombieFixture(paths, launcherPid);
+    fixturePids.push(fixture.launcherPid, fixture.zombiePid, fixture.memberPid);
+    expectRealZombie(fixture.zombiePid);
+
+    let scopeReads = 0;
+    const counting = (): AgentScopePopulation => {
+      scopeReads += 1;
+      return { known: true, populated: true, pids: [fixture.memberPid] };
+    };
+    const entry = buildSignalableEntry({ pid: fixture.zombiePid });
+    expect(classifyAgentProcessEntry(entry, counting)).toBe("live-matching");
+    expect(scopeReads, "an inconclusive pid must consult the scope exactly once").toBe(1);
+
+    // And the same entry against a pid that classifies outright still costs none.
+    const liveProbe = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
+    await waitUntilProbeReady(liveProbe);
+    expect(classifyAgentProcessEntry(buildEntry({ pid: liveProbe.pid }), counting)).toBe(
+      "live-matching",
+    );
+    expect(scopeReads, "a live pid must not cost a scope read").toBe(1);
   });
 
   test("keeps a record whose scope population cannot be read", async () => {
@@ -1097,6 +1436,10 @@ describe.skipIf(process.platform !== "linux")("scope membership (real systemd)",
   let canScope = false;
   let unitName = "";
   let grandchildPid: number | null = null;
+  // The zombie fixture forks a heartbeat writer that outlives its launcher, so
+  // killing the scope's main process is not by itself enough to clean up.
+  const fixturePids: number[] = [];
+  const scopeChildren: ReturnType<typeof spawn>[] = [];
 
   beforeEach(() => {
     tmpDir = mkdtempSync(path.join(os.tmpdir(), "agent-process-scope-members-"));
@@ -1127,6 +1470,10 @@ describe.skipIf(process.platform !== "linux")("scope membership (real systemd)",
       }
       unitName = "";
     }
+    for (const child of scopeChildren.splice(0)) {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+    killPids(fixturePids.splice(0));
     if (spawnedChild && spawnedChild.exitCode === null && spawnedChild.signalCode === null) {
       spawnedChild.kill("SIGKILL");
     }
@@ -1376,5 +1723,90 @@ describe.skipIf(process.platform !== "linux")("scope membership (real systemd)",
     expect(flush.kept.map((kept) => kept.pid)).toEqual([mainPid]);
     expect(readAgentProcessRegistry({ filePath, logger })).toHaveLength(1);
     expectPidAlive(grandchildPid as number, "the survivor stays tracked across a flush");
+  });
+
+  // The strongest form of the zombie defect: a REAL `KillMode=process` scope
+  // whose recorded main pid is a genuine unreaped child (state `Z`, empty
+  // `/proc/<pid>/cmdline`, still answering `kill(pid, 0)`) while a real member
+  // keeps running in the scope.
+  //
+  // The fixtures above all drive the "main pid exited and was reaped" shape,
+  // which takes the `!isPidAlive` branch. That is why they pass on the code that
+  // answered `dead` for an empty cmdline without ever asking the scope.
+  test("keeps the record of a real scope whose main pid is an unreaped child", async () => {
+    if (!requireRealScope()) return;
+    if (!requireZombieLauncher()) return;
+
+    const paths = writeZombieLauncher(tmpDir);
+    setAgentProcessRegistryHome(tmpDir);
+    __setAgentProcessScopeDetectionForTests({ available: true, reason: "forced by test" });
+    __setAgentProcessScopeProbeForTests(() => ({ ok: true, reason: "forced by test" }));
+
+    const launcherPid = spawnZombieLauncher(paths, scopeChildren, { scoped: true });
+    spawnedChild = scopeChildren[scopeChildren.length - 1] ?? null;
+    const fixture = await waitForZombieFixture(paths, launcherPid);
+    fixturePids.push(fixture.launcherPid, fixture.zombiePid, fixture.memberPid);
+
+    // The unit `spawnInAgentScope` recorded is the scope the fixture lives in;
+    // swap only the pid, so the registry holds exactly one entry whose main pid is
+    // the zombie this launcher created.
+    const recorded = readAgentProcessRegistry({ filePath, logger });
+    expect(recorded, "the scoped fixture must record one entry").toHaveLength(1);
+    unitName = recorded[0].unit;
+    expect(isSignalableAgentScopeUnit(recorded[0])).toBe(true);
+    expect(forgetAgentProcess(recorded[0].pid, { filePath, logger })).toBe(true);
+    const entry: AgentProcessEntry = { ...recorded[0], pid: fixture.zombiePid };
+    expect(recordAgentProcess(entry, { filePath, logger })).toBe(true);
+
+    // PRECONDITION: the pid really is a zombie, and really is inside this scope.
+    // Asserted before anything is concluded from its classification, because a
+    // reaped-then-reused pid would answer `kill(pid, 0)` just as happily.
+    expectRealZombie(fixture.zombiePid);
+    expect(readFileSync(`/proc/${fixture.zombiePid}/cgroup`, "utf8")).toContain(unitName);
+    expect(isPidRunning(fixture.memberPid), "the scope member is a real running process").toBe(
+      true,
+    );
+
+    // The scope is populated by the live member — a zombie is deliberately absent
+    // from `cgroup.procs` (it holds no resources), so it is the member that keeps
+    // the scope from being provably empty.
+    const population = readAgentScopePopulation(entry);
+    expect(population).toMatchObject({ known: true, populated: true });
+    expect(population.pids, "the live member is what holds the scope open").toContain(
+      fixture.memberPid,
+    );
+
+    // No seam anywhere in this assertion: the real reader, the real cgroup, the
+    // real zombie. This is the line the fix moves.
+    expect(classifyAgentProcessEntry(entry)).toBe("live-matching");
+
+    // And end to end: a real reap must keep the record and signal nothing.
+    const logs: string[] = [];
+    const captureLogger = pino({ level: "warn" }, { write: (line) => logs.push(line) });
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger: captureLogger,
+      sleepMs: () => {},
+      termGraceMs: 500,
+      killTimeoutMs: 5_000,
+    });
+    expect(result.removed, "a zombie main pid must not cost the record").toEqual([]);
+    expect(result.kept.map((kept) => kept.pid)).toEqual([fixture.zombiePid]);
+    expect(readAgentProcessRegistry({ filePath, logger }).map((kept) => kept.pid)).toEqual([
+      fixture.zombiePid,
+    ]);
+    expect(
+      logs.some((line) => line.includes("orphan-stopped")),
+      "nothing may be signalled while the record is owned by this daemon",
+    ).toBe(false);
+    expect(isPidRunning(fixture.memberPid), "the survivor is untouched").toBe(true);
+
+    // The detach-stop flush must agree, on the real reader.
+    const flush = flushLiveAgentProcesses({ filePath, logger });
+    expect(flush.removed).toEqual([]);
+    expect(flush.kept.map((kept) => kept.pid)).toEqual([fixture.zombiePid]);
+
+    // Still a zombie at the end of all of that: nothing reaped it behind our back.
+    expectRealZombie(fixture.zombiePid);
   });
 });
