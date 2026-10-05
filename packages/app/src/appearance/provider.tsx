@@ -8,7 +8,12 @@ import {
   useState,
 } from "react";
 import { UnistylesRuntime } from "react-native-unistyles";
-import { DEFAULT_THEME_PREFERENCE, useAppSettings, type AppSettings } from "@/hooks/use-settings";
+import {
+  DEFAULT_THEME_PREFERENCE,
+  resolveContentMaxWidth,
+  useAppSettings,
+  type AppSettings,
+} from "@/hooks/use-settings";
 import {
   rememberPluginThemeHost,
   usePluginThemeCatalog,
@@ -68,12 +73,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       uiBaseFontSize: settings.uiBaseFontSize,
       contentFontSize: settings.contentFontSize,
       codeFontSize: settings.codeFontSize,
-      uiScale: settings.uiScale,
-      iconScale: settings.iconScale,
-      spacingScale: settings.spacingScale,
-      contentSpacingScale: settings.contentSpacingScale,
-      debugConversationSpacing: settings.debugConversationSpacing,
-      lineHeightScale: settings.lineHeightScale,
+      contentMaxWidth: resolveContentMaxWidth({ contentMaxWidth: settings.contentMaxWidth }),
       syntaxTheme: settings.syntaxTheme,
     });
     setHasAppliedAppearance(true);
@@ -86,12 +86,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     settings.uiBaseFontSize,
     settings.contentFontSize,
     settings.codeFontSize,
-    settings.uiScale,
-    settings.iconScale,
-    settings.spacingScale,
-    settings.contentSpacingScale,
-    settings.debugConversationSpacing,
-    settings.lineHeightScale,
+    settings.contentMaxWidth,
     settings.syntaxTheme,
   ]);
 
