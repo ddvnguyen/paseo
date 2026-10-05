@@ -1,5 +1,6 @@
 packages:
   - "packages/*"
+  - "plugins"
   - "plugin-examples"
 
 # Dependency pins. These lived under a top-level `overrides` key in
