@@ -39,29 +39,6 @@ const ABORTED_TERMINAL_RESPONSE: OmpAgentMessage = {
   errorMessage: "Interrupted by user",
 };
 
-const TURN_LIFECYCLE_EVENTS = new Set<AgentStreamEvent["type"]>([
-  "turn_started",
-  "turn_completed",
-  "turn_failed",
-  "turn_canceled",
-]);
-
-function isTurnLifecycle(type: AgentStreamEvent["type"]): boolean {
-  return TURN_LIFECYCLE_EVENTS.has(type);
-}
-
-// What OMP reports for a turn the user stopped: an error message on a terminal
-// response whose stop reason says the request was aborted.
-const ABORTED_TERMINAL_RESPONSE: OmpAgentMessage = {
-  role: "assistant",
-  content: [],
-  provider: "ai-harness-omp",
-  model: "glm-5.3-flash-high",
-  responseId: "chatcmpl-aborted",
-  stopReason: "aborted",
-  errorMessage: "Interrupted by user",
-};
-
 test("OMP ready timeout defaults to 20 seconds and RPC timeout overrides both", () => {
   expect(resolveOmpProviderOptions({}).runtimeOptions).toMatchObject({
     readyTimeoutMs: 20_000,
