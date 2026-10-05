@@ -69,10 +69,9 @@ Three classes reflect owner decisions rather than the merge's mechanics, and
 their boundaries matter more than their counts:
 
 - **DROPPED-ON-PURPOSE (8)** — dropped by choice, *not* because upstream carries
-  the work. Seven are Freebuff (`owner: freebuff no longer used`); the eighth is
-  the `-hydra` identifier being written back into root `package.json`, which
-  conflicts with upstream owning that field. Do not read this class as "upstream
-  has it".
+  the work. Seven are Freebuff (`owner: freebuff no longer used`). The eighth is
+  `510074f55`, a version-stamp changelog, caught by rule V2 because every path it
+  touched is markdown. Do not read this class as "upstream has it".
 - **KEPT-VIA-SCRIPT (38)** — kept, but reproduced by running
   `scripts/sync-workspace-versions.mjs` rather than by re-applying a diff. See
   [delta.md](delta.md#kept-via-script) for what verification has to prove.
