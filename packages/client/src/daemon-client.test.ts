@@ -1039,6 +1039,7 @@ test("advertises client capabilities in hello", async () => {
       plugin_timeline_items: true,
       workspace_setup_blocked: true,
       hello_rejection: true,
+      background_tasks: true,
       browser_host: {
         supportedCommands: ["list_tabs"],
         hostKind: "desktop app",
@@ -7324,4 +7325,83 @@ test("usage request timeout detaches its update listener", async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("listBackgroundTasks sends the request and returns the matching tasks", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+  const connected = client.connect();
+  mock.triggerOpen();
+  await connected;
+
+  const result = client.listBackgroundTasks("agt_123", { requestId: "bg-req" });
+  await vi.waitFor(() => expect(mock.sent).toHaveLength(1));
+  expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
+    type: "session",
+    message: {
+      type: "agent.background_tasks.list.request",
+      payload: { agentId: "agt_123", requestId: "bg-req" },
+    },
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.background_tasks.list.response",
+      payload: {
+        requestId: "bg-req",
+        agentId: "agt_123",
+        tasks: [
+          {
+            id: "bg_1",
+            agentId: "agt_123",
+            toolName: "bash",
+            command: "npm test",
+            status: "running",
+            startedAt: "2026-01-01T00:00:00.000Z",
+            finishedAt: null,
+            exitCode: null,
+            outputPreview: null,
+          },
+        ],
+        error: null,
+      },
+    }),
+  );
+
+  await expect(result).resolves.toMatchObject({
+    agentId: "agt_123",
+    tasks: [{ id: "bg_1", status: "running" }],
+  });
+});
+
+test("listBackgroundTasks throws the server error", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+  const connected = client.connect();
+  mock.triggerOpen();
+  await connected;
+
+  const result = client.listBackgroundTasks("agt_123", { requestId: "bg-err" });
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.background_tasks.list.response",
+      payload: { requestId: "bg-err", agentId: "agt_123", tasks: [], error: "no such agent" },
+    }),
+  );
+
+  await expect(result).rejects.toThrow("no such agent");
 });
