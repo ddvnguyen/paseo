@@ -905,21 +905,25 @@ jobs:
   # Stage 6 — Deploy BETA daemon
   # ═══════════════════════════════════════════════════════════════════════
   # Modelled on deploy-test, with two deliberate differences:
-  #  * it waits on deploy-test (below), so a SHA that failed TEST never reaches
-  #    a second environment;
+  #  * it waits on deploy-test and requires that TEST passed (see the if below);
   #  * its runtime deps come from deploy/paseo-test/, not a deploy/paseo-beta/.
   #    There is no deploy/paseo-beta/ in this repo, and the test and prod
   #    manifests are the same closure — their package.json files differ only in
   #    `name`/`description` and their pnpm-lock.yaml files are byte-identical —
   #    so reusing the TEST manifest installs the correct dependency set.
   deploy-beta:
-    # Waits for deploy-test, exactly as build-android does: it runs when TEST
-    # succeeded *or* was skipped, and is blocked when TEST was selected and
-    # failed. deploy-prod does NOT wait for deploy-test today (both are
-    # siblings on needs: [build-hydra]), so there is no prod-style ordering to
-    # mirror; build-android is the file's real precedent for waiting on TEST.
-    # The `skipped` arm is what keeps BETA selectable on its own — a hard
-    # `== 'success'` would make BETA unusable unless TEST were ticked too.
+    # Owner topology (D-4): build -> TEST -> BETA -> manual PROD.
+    #
+    # The deploy-test arm below is deliberately two-sided, and `always()` is
+    # what makes the second side reachable at all: without it, a *skipped*
+    # needs-dependency auto-skips this job, so a beta-only dispatch — the main
+    # way anyone will use a BETA stage — could never run.
+    #   * deploy-test ticked  -> result is 'success' or 'failure'. This job
+    #     waits for it and requires 'success'; a failed TEST blocks BETA.
+    #   * deploy-test not ticked -> result is 'skipped'. That is the operator's
+    #     explicit choice to deploy BETA on its own (the same class as today's
+    #     standalone TEST deploy against a past SHA), so it runs.
+    # 'cancelled' satisfies neither arm and blocks, which is the safe default.
     if: |
       always() &&
       inputs.run_deploy_beta &&
