@@ -16,7 +16,8 @@
 # rewriting the flags would break the unit and take every agent in the cgroup
 # with it. That precondition no longer holds: ~/paseo/PROD installs
 # 0.9.2-hub-7d30525687, which ships `daemon run`, verified in
-# dist/commands/daemon/{index,start}.js. Re-check that before assuming it.
+# node_modules/@getpaseo/cli/dist/commands/daemon/{index,start}.js. Re-check that
+# before assuming it.
 #
 # `--listen` and `--no-web-ui` were removed from the daemon CLI and moved into
 # daemon config; `daemon start --foreground` was replaced by `daemon run`. The
@@ -29,9 +30,10 @@
 # from flags: the daemon resolves cli > env.PASEO_LISTEN > config daemon.listen
 # (packages/server/src/server/config.ts, resolveListenAddress). PASEO_LISTEN and
 # PASEO_WEB_UI_ENABLED are stated explicitly so this unit does not inherit them
-# from paseo-bun's defaults or from whatever a fresh PASEO_HOME's config.json
-# happens to say — PROD's config.json does carry daemon.listen 0.0.0.0:6767, but
-# a runtime tree with no config.json yet would fall back to loopback.
+# from ~/paseo/PROD/paseo-bun's defaults or from whatever a fresh PASEO_HOME's
+# config.json happens to say — ~/paseo/PROD/config.json does carry
+# daemon.listen 0.0.0.0:6767, but a runtime tree with no config.json yet would
+# fall back to loopback.
 #
 # NOTE: the live ~/.config/systemd/user/paseo.service still carries the legacy
 # form. This repo file has no runtime effect until it is installed; migrating

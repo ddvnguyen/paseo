@@ -18,7 +18,8 @@
 # comment said the runtime tree shipped a 0.6.x CLI with no `daemon run`, so
 # rewriting the flags would break the unit. That precondition no longer holds:
 # ~/paseo/TEST installs 0.9.2-hub-764caf1f19, which ships `daemon run`, verified
-# in dist/commands/daemon/{index,start}.js. Re-check that before assuming it.
+# in node_modules/@getpaseo/cli/dist/commands/daemon/{index,start}.js. Re-check that
+# before assuming it.
 #
 # `--listen` and `--no-web-ui` were removed from the daemon CLI and moved into
 # daemon config; `daemon start --foreground` was replaced by `daemon run`. The
