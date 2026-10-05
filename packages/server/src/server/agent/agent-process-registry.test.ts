@@ -2,7 +2,16 @@ import { describe, expect, test, beforeEach, afterEach } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import pino from "pino";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
@@ -14,6 +23,8 @@ import {
   flushLiveAgentProcesses,
   forgetAgentProcess,
   getAgentProcessOwnerDaemonId,
+  isPidRunning,
+  isSignalableAgentScopeUnit,
   readAgentProcessRegistry,
   recordAgentProcess,
   reapStaleAgentProcesses,
@@ -21,6 +32,12 @@ import {
   setAgentProcessRegistryHome,
   type AgentProcessEntry,
 } from "./agent-process-registry.js";
+import {
+  __setAgentProcessScopeDetectionForTests,
+  __setAgentProcessScopeProbeForTests,
+  probeAgentScopeRoundTrip,
+  spawnInAgentScope,
+} from "./agent-process-scope.js";
 
 const logger = createTestLogger();
 
@@ -31,6 +48,28 @@ function buildEntry(overrides: Partial<AgentProcessEntry> = {}): AgentProcessEnt
     pid: 4242,
     provider: "opencode",
     startedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+/**
+ * An entry whose unit matches the exact shape `buildAgentScopeInvocation`
+ * generates, so it is a legitimate signalling target.
+ */
+function buildSignalableEntry(overrides: Partial<AgentProcessEntry> = {}): AgentProcessEntry {
+  return buildEntry({
+    scopeId: "paseo-agent-4242-aaaaaaaaaaaa",
+    unit: "paseo-agent-4242-aaaaaaaaaaaa.scope",
+    ...overrides,
+  });
+}
+
+/** As `buildSignalableEntry`, with an orphan window that has already elapsed. */
+function buildExpiredOrphanEntry(overrides: Partial<AgentProcessEntry> = {}): AgentProcessEntry {
+  return {
+    ...buildSignalableEntry({
+      orphanedAt: new Date(Date.now() - AGENT_PROCESS_UNOWNED_RECORD_TTL_MS - 60_000).toISOString(),
+    }),
     ...overrides,
   };
 }
@@ -116,17 +155,22 @@ describe("agent process registry", () => {
     expect(entries[0].startedAt).toBeTruthy();
   });
 
-  test("recovers from a corrupt registry file", () => {
+  test("recovers from a corrupt registry file without erasing the corrupt content", () => {
     writeFileSync(filePath, "{ this is not json !!");
     expect(readAgentProcessRegistry({ filePath, logger })).toEqual([]);
 
-    // A successful record replaces the corrupt content.
+    // A successful record starts clean, but the corrupt bytes are moved aside
+    // rather than overwritten, so an operator can still inspect them.
     expect(recordAgentProcess(buildEntry({ pid: 7 }), { filePath, logger })).toBe(true);
     expect(readAgentProcessRegistry({ filePath })).toHaveLength(1);
+    const quarantined = readdirSync(tmpDir).filter((name) => name.includes(".corrupt-"));
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(path.join(tmpDir, quarantined[0]), "utf8")).toBe("{ this is not json !!");
 
-    // Wrong shape counts as corrupt too.
+    // Wrong shape counts as corrupt too, and is quarantined the same way.
     writeFileSync(filePath, JSON.stringify({ pid: 1 }));
     expect(readAgentProcessRegistry({ filePath, logger })).toEqual([]);
+    expect(readdirSync(tmpDir).filter((name) => name.includes(".corrupt-"))).toHaveLength(2);
 
     // A reaper on a corrupt file degrades to an empty result, then rewrites cleanly.
     const result = reapStaleAgentProcesses({ filePath, logger });
@@ -134,6 +178,22 @@ describe("agent process registry", () => {
     expect(result.kept).toEqual([]);
     expect(recordAgentProcess(buildEntry({ pid: 9 }), { filePath, logger })).toBe(true);
     expect(readAgentProcessRegistry({ filePath })).toHaveLength(1);
+  });
+
+  test("refuses to write when the registry is present but unreadable", () => {
+    // A directory at the registry path makes every read fail with EISDIR. This
+    // is the class of failure that used to be reported as "empty registry",
+    // which made recordAgentProcess write back a single-entry file and erase
+    // every other live child's record.
+    mkdirSync(filePath, { recursive: true });
+
+    expect(recordAgentProcess(buildEntry(), { filePath, logger })).toBe(false);
+    expect(forgetAgentProcess(4242, { filePath, logger })).toBe(false);
+    expect(reapStaleAgentProcesses({ filePath, logger })).toEqual({ removed: [], kept: [] });
+    expect(flushLiveAgentProcesses({ filePath, logger })).toEqual({ kept: [], removed: [] });
+    // Nothing was replaced: the unreadable path is left exactly as found.
+    expect(statSync(filePath).isDirectory()).toBe(true);
+    rmSync(filePath, { recursive: true, force: true });
   });
 
   test("adds, replaces and removes entries", () => {
@@ -265,37 +325,242 @@ describe.runIf(process.platform === "linux")("agent process reaper", () => {
     expectPidAlive(recycled.pid, "recycled probe survives the reaper");
   });
 
-  test("reaps an expired unowned live record with a loud scope-naming warning", async () => {
+  // Review finding #42-B1. The previous version of this test asserted the
+  // opposite of the fix: it reaped an expired unowned record and then asserted
+  // the child was STILL ALIVE. That encoded the defect — dropping the record
+  // while the process lives leaves it running and now untracked, so nothing can
+  // ever kill it again. The reap must now stop the orphan first and only then
+  // drop its record.
+  test("stops an expired orphan and drops its record only after the process is gone", async () => {
     const logs: string[] = [];
     const captureLogger = pino({ level: "warn" }, { write: (line) => logs.push(line) });
     const probe = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
     await waitUntilProbeReady(probe);
 
-    const expiredAt = new Date(
-      Date.now() - AGENT_PROCESS_UNOWNED_RECORD_TTL_MS - 60_000,
-    ).toISOString();
     recordAgentProcess(
-      buildEntry({
-        scopeId: "orphan-1",
-        unit: "orphan-1.scope",
+      buildExpiredOrphanEntry({
         pid: probe.pid,
         ownerDaemonId: "previous-daemon-generation",
-        startedAt: expiredAt,
       }),
       { filePath, logger: captureLogger },
     );
 
-    const result = reapStaleAgentProcesses({ filePath, logger: captureLogger });
+    const killed: Array<{ unit: string; signal: string }> = [];
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger: captureLogger,
+      killScope: (unit, signal) => {
+        killed.push({ unit, signal });
+        // Real SIGKILL so the probe is genuinely stopped; the reaper's
+        // post-kill check treats the resulting zombie as gone.
+        process.kill(probe.pid, "SIGKILL");
+      },
+      sleepMs: () => {},
+    });
 
-    expect(result.removed.map((entry) => entry.scopeId)).toEqual(["orphan-1"]);
+    // Signalled as a unit, never by pid: SIGTERM first, SIGKILL only if needed.
+    expect(killed.length).toBeGreaterThanOrEqual(1);
+    expect(killed[0]).toEqual({
+      unit: `paseo-agent-4242-${"a".repeat(12)}.scope`,
+      signal: "SIGTERM",
+    });
+
+    expect(result.removed.map((entry) => entry.pid)).toEqual([probe.pid]);
     expect(result.kept).toEqual([]);
-    const warning = logs.find((line) => line.includes("expired unowned agent scope record"));
-    expect(warning, "reaper logs a loud warning for the expired record").toBeTruthy();
-    expect(warning).toContain("orphan-1.scope");
-    expect(warning).toContain(String(probe.pid));
+    expect(readAgentProcessRegistry({ filePath })).toEqual([]);
 
-    // Dropping the record never signals the child.
-    expectPidAlive(probe.pid, "expired-orphan probe survives the reaper");
+    // The child really is stopped, and the log names the scope it stopped.
+    // isPidRunning (not isPidAlive) because a SIGKILLed child of this test
+    // process lingers as a zombie until the event loop reaps it — and a zombie
+    // is stopped: no memory, no fds, no CPU, and it will never run again.
+    expect(isPidRunning(probe.pid), "the expired orphan is stopped").toBe(false);
+    const warning = logs.find((line) => line.includes("Stopped expired orphan agent scope"));
+    expect(warning, "reaper logs the stopped orphan by scope").toBeTruthy();
+    expect(warning).toContain(`paseo-agent-4242-${"a".repeat(12)}.scope`);
+  });
+
+  test("keeps the record when the orphan survives the kill so the next reap retries", async () => {
+    const logs: string[] = [];
+    const captureLogger = pino({ level: "warn" }, { write: (line) => logs.push(line) });
+    const probe = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
+    await waitUntilProbeReady(probe);
+
+    recordAgentProcess(
+      buildExpiredOrphanEntry({
+        pid: probe.pid,
+        ownerDaemonId: "previous-daemon-generation",
+      }),
+      { filePath, logger: captureLogger },
+    );
+
+    let signals = 0;
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger: captureLogger,
+      // Nothing actually stops: the record must survive for the next reap.
+      killScope: () => {
+        signals += 1;
+      },
+      sleepMs: () => {},
+      termGraceMs: 0,
+      killTimeoutMs: 0,
+    });
+
+    expect(signals).toBeGreaterThanOrEqual(1);
+    expect(result.removed).toEqual([]);
+    expect(result.kept.map((entry) => entry.pid)).toEqual([probe.pid]);
+    expect(readAgentProcessRegistry({ filePath }).map((entry) => entry.pid)).toEqual([probe.pid]);
+    expectPidAlive(probe.pid, "the unkillable orphan is still running");
+
+    const error = logs.find((line) => line.includes("Failed to stop expired agent scope orphan"));
+    expect(error, "a kill failure is logged loudly, not swallowed").toBeTruthy();
+    expect(error).toContain("orphan-kill-failed");
+  });
+
+  test("refuses to signal a tampered unit name and keeps the record", async () => {
+    const logs: string[] = [];
+    const captureLogger = pino({ level: "warn" }, { write: (line) => logs.push(line) });
+    const probe = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
+    await waitUntilProbeReady(probe);
+
+    // `$PASEO_HOME/agent-processes.json` is data, and the unit name in it is
+    // handed to `systemctl --user kill`. A tampered entry must not be able to
+    // make the reaper terminate an arbitrary user unit.
+    const tamperedUnits = [
+      "sshd.service",
+      "paseo.service",
+      "paseo-agent-4242-zzzzzzzzzzzz.scope",
+      "paseo-agent-4242-aaaaaaaaaaaa.scope.evil",
+      "paseo-agent-4242-aaaaaaaaaaaa.scope extra",
+      "",
+    ];
+    for (const unit of tamperedUnits) {
+      const entry = buildExpiredOrphanEntry({
+        pid: probe.pid,
+        ownerDaemonId: "previous-daemon-generation",
+      });
+      expect(isSignalableAgentScopeUnit({ ...entry, unit })).toBe(false);
+    }
+
+    // End to end through the reaper: nothing is signalled, record is kept.
+    recordAgentProcess(
+      {
+        ...buildExpiredOrphanEntry({
+          pid: probe.pid,
+          ownerDaemonId: "previous-daemon-generation",
+        }),
+        unit: "sshd.service",
+      },
+      { filePath, logger: captureLogger },
+    );
+
+    let killCalls = 0;
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger: captureLogger,
+      killScope: () => {
+        killCalls += 1;
+      },
+      sleepMs: () => {},
+    });
+
+    expect(killCalls).toBe(0);
+    expect(result.removed).toEqual([]);
+    expect(result.kept.map((entry) => entry.unit)).toEqual(["sshd.service"]);
+    expect(readAgentProcessRegistry({ filePath })).toHaveLength(1);
+    expectPidAlive(probe.pid, "the untrusted entry's process is untouched");
+
+    const error = logs.find((line) => line.includes("not a scope unit this daemon created"));
+    expect(error, "an untrusted unit name is refused loudly").toBeTruthy();
+    expect(error).toContain("untrusted-unit-name");
+  });
+
+  test("never signals a live record this daemon owns", async () => {
+    const probe = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
+    await waitUntilProbeReady(probe);
+    // Expired on paper, but owned by this daemon generation: a legitimately
+    // long-lived agent must never be reaped out from under its owner.
+    recordAgentProcess(
+      buildExpiredOrphanEntry({
+        pid: probe.pid,
+        startedAt: new Date(
+          Date.now() - AGENT_PROCESS_UNOWNED_RECORD_TTL_MS - 60_000,
+        ).toISOString(),
+      }),
+      { filePath, logger },
+    );
+    expect(readAgentProcessRegistry({ filePath })[0].ownerDaemonId).toBe(
+      getAgentProcessOwnerDaemonId(),
+    );
+
+    let killCalls = 0;
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger,
+      killScope: () => {
+        killCalls += 1;
+      },
+      sleepMs: () => {},
+    });
+
+    expect(killCalls).toBe(0);
+    expect(result.removed).toEqual([]);
+    expect(result.kept.map((entry) => entry.pid)).toEqual([probe.pid]);
+    expectPidAlive(probe.pid, "this daemon's own agent is never signalled");
+  });
+
+  test("stamps orphanedAt on first sight and expires from it, not from startedAt", async () => {
+    const probe = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
+    await waitUntilProbeReady(probe);
+    const longStartedAt = new Date(
+      Date.now() - AGENT_PROCESS_UNOWNED_RECORD_TTL_MS - 60_000,
+    ).toISOString();
+    // No orphanedAt yet: this is the first daemon to see the entry unowned.
+    recordAgentProcess(
+      buildSignalableEntry({
+        pid: probe.pid,
+        ownerDaemonId: "previous-daemon-generation",
+        startedAt: longStartedAt,
+      }),
+      { filePath, logger },
+    );
+
+    // First reap after the owner died: the orphan clock starts NOW. A
+    // long-running agent must not lose its record just because it is old.
+    const first = reapStaleAgentProcesses({ filePath, logger });
+    expect(first.removed).toEqual([]);
+    expect(first.kept.map((entry) => entry.pid)).toEqual([probe.pid]);
+    const stamped = readAgentProcessRegistry({ filePath })[0];
+    expect(stamped.orphanedAt).toBeTruthy();
+    expect(new Date(stamped.orphanedAt as string).getTime()).toBeGreaterThan(
+      new Date(longStartedAt).getTime(),
+    );
+
+    // A second reap keeps the first stamp: the window must not slide forward.
+    const second = reapStaleAgentProcesses({ filePath, logger });
+    expect(second.removed).toEqual([]);
+    expect(readAgentProcessRegistry({ filePath })[0].orphanedAt).toBe(stamped.orphanedAt);
+    expectPidAlive(probe.pid, "the orphan survives inside its adoption window");
+
+    // Only once the window has genuinely elapsed is it stopped.
+    const expired = readAgentProcessRegistry({ filePath })[0];
+    recordAgentProcess(
+      {
+        ...expired,
+        orphanedAt: new Date(Date.now() - AGENT_PROCESS_UNOWNED_RECORD_TTL_MS - 1).toISOString(),
+      },
+      { filePath, logger },
+    );
+    const third = reapStaleAgentProcesses({
+      filePath,
+      logger,
+      killScope: () => {},
+      sleepMs: () => {},
+      termGraceMs: 0,
+      killTimeoutMs: 0,
+    });
+    expect(third.removed).toEqual([]);
+    expect(third.kept.map((entry) => entry.pid)).toEqual([probe.pid]);
   });
 
   test("keeps fresh unowned records and expired records owned by this daemon", async () => {
@@ -489,4 +754,94 @@ describe("agent process flush (detach stop)", () => {
     expect(result).toEqual({ kept: [], removed: [] });
     expect(readAgentProcessRegistry({ filePath })).toEqual([]);
   });
+});
+
+// Real-systemd proof of the #42-B1 kill path. `systemctl --user stop` is a
+// no-op for scope units (verified on systemd 259: exits 0, process keeps
+// running), so this exercises the primitive that actually stops one:
+// `systemctl --user kill --kill-whom=all`. Skipped where there is no real
+// systemd user session — it is NOT a CI gate on such runners.
+describe.skipIf(process.platform !== "linux")("expired orphan stop (real systemd)", () => {
+  let tmpDir: string;
+  let filePath: string;
+  let spawnedChild: ReturnType<typeof spawn> | null = null;
+  let canScope = false;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), "agent-process-orphan-kill-"));
+    filePath = path.join(tmpDir, "agent-processes.json");
+    canScope = probeAgentScopeRoundTrip().ok;
+  });
+
+  afterEach(() => {
+    if (spawnedChild && spawnedChild.exitCode === null && spawnedChild.signalCode === null) {
+      spawnedChild.kill("SIGKILL");
+    }
+    spawnedChild = null;
+    __setAgentProcessScopeDetectionForTests(null);
+    __setAgentProcessScopeProbeForTests(null);
+    setAgentProcessRegistryHome(null);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test.runIf(process.platform === "linux")(
+    "stops a real scoped orphan and only then drops its record",
+    async () => {
+      if (!canScope) {
+        // No systemd user session here (typical CI runner): say so out loud
+        // instead of pretending the real kill path was exercised.
+        console.warn(
+          "[agent-process-registry] real systemd scope unavailable; orphan kill e2e skipped",
+        );
+        return;
+      }
+      setAgentProcessRegistryHome(tmpDir);
+      __setAgentProcessScopeDetectionForTests({ available: true, reason: "forced by test" });
+      __setAgentProcessScopeProbeForTests(() => ({ ok: true, reason: "forced by test" }));
+
+      spawnedChild = spawnInAgentScope(
+        process.execPath,
+        ["-e", "setInterval(() => {}, 1000)"],
+        { stdio: "ignore" },
+        { provider: "orphan-kill-test", logger },
+      );
+      const pid = spawnedChild.pid;
+      expect(typeof pid).toBe("number");
+
+      const recorded = readAgentProcessRegistry({ filePath, logger });
+      expect(recorded).toHaveLength(1);
+      expect(isSignalableAgentScopeUnit(recorded[0])).toBe(true);
+
+      // systemd-run execs the target into the scope asynchronously; wait for the
+      // real cgroup membership instead of assuming it exists at spawn time.
+      await expect
+        .poll(() => classifyAgentProcessEntry(readAgentProcessRegistry({ filePath, logger })[0]), {
+          timeout: 10_000,
+          interval: 100,
+        })
+        .toBe("live-matching");
+
+      // Age the entry into an orphan from a previous daemon generation.
+      recordAgentProcess(
+        {
+          ...readAgentProcessRegistry({ filePath, logger })[0],
+          ownerDaemonId: "previous-daemon-generation",
+          orphanedAt: new Date(
+            Date.now() - AGENT_PROCESS_UNOWNED_RECORD_TTL_MS - 60_000,
+          ).toISOString(),
+        },
+        { filePath, logger },
+      );
+      expect(classifyAgentProcessEntry(readAgentProcessRegistry({ filePath, logger })[0])).toBe(
+        "live-matching",
+      );
+
+      // No killScope seam: this drives the real systemctl path.
+      const result = reapStaleAgentProcesses({ filePath, logger });
+
+      expect(result.removed.map((entry) => entry.pid)).toEqual([pid]);
+      expect(readAgentProcessRegistry({ filePath, logger })).toEqual([]);
+      expect(isPidRunning(pid as number), "the real scoped orphan is stopped").toBe(false);
+    },
+  );
 });

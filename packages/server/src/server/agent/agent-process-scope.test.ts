@@ -18,7 +18,10 @@ import {
   __setAgentProcessScopeDetectionForTests,
   __setAgentProcessScopeProbeForTests,
   buildAgentScopeInvocation,
+  hasUsableSpawnCwd,
+  isCommandResolvableOnPath,
   probeAgentScopeRoundTrip,
+  resolveAgentScopeRuntimeMaxSec,
   spawnInAgentScope,
 } from "./agent-process-scope.js";
 
@@ -147,7 +150,9 @@ describe("spawnInAgentScope", () => {
     );
     expect(String(first.spawnfile)).not.toContain("systemd-run");
 
-    // Sticky: the downgrade applies to every later spawn without re-probing.
+    // "user bus gone" is ambiguous, so it is treated as TRANSIENT: scoping is
+    // skipped without re-probing until the cooldown window elapses. A hard
+    // failure would instead pin the downgrade for the rest of the process.
     const second = spawnInAgentScope(
       process.execPath,
       ["-e", "setTimeout(() => {}, 50)"],
@@ -167,6 +172,109 @@ describe("spawnInAgentScope", () => {
     expect(warning).toContain("user bus gone");
 
     await Promise.all([once(first, "close"), once(second, "close")]);
+  });
+
+  // A single hung bus must not disable scoping for the whole daemon lifetime,
+  // but a session that genuinely cannot host scopes must not be retried per
+  // spawn either.
+  test("keeps a hard probe failure sticky for the process and re-probes after a transient one", async () => {
+    __setAgentProcessScopeDetectionForTests({ available: true, reason: "forced by test" });
+    let probeCalls = 0;
+    let reason = "Failed to connect to bus: No medium found";
+    __setAgentProcessScopeProbeForTests(() => {
+      probeCalls += 1;
+      return { ok: false, reason };
+    });
+
+    const first = spawnInAgentScope(
+      process.execPath,
+      ["-e", "setTimeout(() => {}, 50)"],
+      { stdio: "ignore" },
+      { provider: "scope-test", logger },
+    );
+    const second = spawnInAgentScope(
+      process.execPath,
+      ["-e", "setTimeout(() => {}, 50)"],
+      { stdio: "ignore" },
+      { provider: "scope-test", logger },
+    );
+    expect(String(first.spawnfile)).not.toContain("systemd-run");
+    expect(String(second.spawnfile)).not.toContain("systemd-run");
+    // Hard failure: scoping stays off and the probe is never called again for
+    // the rest of this process.
+    expect(probeCalls).toBe(1);
+    const third = spawnInAgentScope(
+      process.execPath,
+      ["-e", "setTimeout(() => {}, 50)"],
+      { stdio: "ignore" },
+      { provider: "scope-test", logger },
+    );
+    expect(String(third.spawnfile)).not.toContain("systemd-run");
+    expect(probeCalls).toBe(1);
+    await Promise.all([once(first, "close"), once(second, "close"), once(third, "close")]);
+  });
+
+  test("resolves a relative command against the spawn cwd, not the daemon cwd", async () => {
+    __setAgentProcessScopeDetectionForTests({ available: true, reason: "forced by test" });
+    __setAgentProcessScopeProbeForTests(() => ({ ok: true, reason: "forced by test" }));
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "agent-scope-cwd-"));
+    const relative = "./provider-binary";
+    writeFileSync(path.join(cwd, "provider-binary"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    try {
+      expect(isCommandResolvableOnPath(relative, { cwd })).toBe(true);
+      expect(isCommandResolvableOnPath(relative)).toBe(false);
+      expect(hasUsableSpawnCwd({ cwd })).toBe(true);
+      expect(hasUsableSpawnCwd({ cwd: path.join(cwd, "no-such-dir") })).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("a missing cwd plain-spawns so the caller sees the cwd error, not a missing binary", async () => {
+    __setAgentProcessScopeDetectionForTests({ available: true, reason: "forced by test" });
+    __setAgentProcessScopeProbeForTests(() => ({ ok: true, reason: "forced by test" }));
+    const missingCwd = path.join(tmpDir, "no-such-cwd");
+    const child = spawnInAgentScope(
+      process.execPath,
+      ["-e", "setTimeout(() => {}, 50)"],
+      { cwd: missingCwd, stdio: "ignore" },
+      { provider: "scope-test", logger },
+    );
+    // Plain spawn: the ENOENT now names the command the caller asked for
+    // instead of `spawn systemd-run ENOENT`, which reads like a missing
+    // provider binary.
+    expect(String(child.spawnfile)).toBe(process.execPath);
+    const [error] = (await once(child, "error")) as [NodeJS.ErrnoException];
+    expect(error.code).toBe("ENOENT");
+    expect(String(error.syscall ?? "")).toContain(process.execPath);
+    expect(String(error.syscall ?? "")).not.toContain("systemd-run");
+  });
+
+  test("adds RuntimeMaxSec only when an operator opts in", () => {
+    const withoutCap = buildAgentScopeInvocation("opencode", ["serve"]);
+    expect(withoutCap.args.some((arg) => arg.startsWith("--property=RuntimeMaxSec"))).toBe(false);
+
+    const previous = process.env.PASEO_AGENT_SCOPE_MAX_RUNTIME_SEC;
+    try {
+      process.env.PASEO_AGENT_SCOPE_MAX_RUNTIME_SEC = "3600";
+      expect(resolveAgentScopeRuntimeMaxSec()).toBe(3600);
+      const capped = buildAgentScopeInvocation("opencode", ["serve"], {
+        runtimeMaxSec: resolveAgentScopeRuntimeMaxSec(),
+      });
+      expect(capped.args).toContain("--property=RuntimeMaxSec=3600");
+
+      // Nonsense values fall back to "no ceiling" rather than a broken unit.
+      process.env.PASEO_AGENT_SCOPE_MAX_RUNTIME_SEC = "-5";
+      expect(resolveAgentScopeRuntimeMaxSec()).toBeNull();
+      process.env.PASEO_AGENT_SCOPE_MAX_RUNTIME_SEC = "not-a-number";
+      expect(resolveAgentScopeRuntimeMaxSec()).toBeNull();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PASEO_AGENT_SCOPE_MAX_RUNTIME_SEC;
+      } else {
+        process.env.PASEO_AGENT_SCOPE_MAX_RUNTIME_SEC = previous;
+      }
+    }
   });
 
   test("a missing command still surfaces as a normal ENOENT spawn error", async () => {

@@ -49,7 +49,7 @@ $PASEO_HOME/
 ├── daemon-keypair.json                  # E2EE keypair for relay (mode 0600)
 ├── paseo.pid                            # Daemon PID lock file
 ├── daemon.log                           # Default log file (path configurable)
-├── agent-processes.json                 # Provider children spawned in systemd user scopes; stale records reaped on daemon bootstrap, unowned live records expire after 24h, flushed to survivors on detach-stop
+├── agent-processes.json                 # Provider children spawned in systemd user scopes; stale records reaped on daemon bootstrap, unowned orphans stamped with `orphanedAt` and stopped 24h later, flushed to survivors on detach-stop
 ├── agents/
 │   └── {sanitized-cwd}/
 │       └── {agentId}.json               # One file per agent
@@ -559,7 +559,7 @@ These small files are not validated as full Zod schemas but are persisted under 
 | `daemon-keypair.json`  | `{ v: 2, publicKeyB64, secretKeyB64 }` (libsodium box keypair)                     | E2EE relay identity. Written with mode `0600`. Regenerated if file is unreadable.                                                                                                                                                                                                                  |
 | `paseo.pid`            | JSON `{ pid, startedAt, ... }`                                                     | PID lock; prevents two daemons sharing one `$PASEO_HOME`.                                                                                                                                                                                                                                          |
 | `daemon.log`           | Pino log output                                                                    | Default location; path/rotation configurable via `log.file` in `config.json`.                                                                                                                                                                                                                      |
-| `agent-processes.json` | Array of `{ scopeId, unit, pid, provider, sessionId?, startedAt, ownerDaemonId? }` | Scoped provider children; written atomically, stale records reaped on daemon bootstrap, flushed to survivors on detach-stop (`PASEO_DETACH_AGENTS_ON_STOP`). Records missing this daemon's `ownerDaemonId` generation expire 24h after `startedAt`; the child is never signalled, only the record. |
+| `agent-processes.json` | Array of `{ scopeId, unit, pid, provider, sessionId?, startedAt, ownerDaemonId?, orphanedAt? }` | Scoped provider children; written atomically (fsync before rename), unreadable registries are never overwritten and corrupt ones are moved to `agent-processes.json.corrupt-<ts>-<rand>`. Stale records are reaped on daemon bootstrap and flushed to survivors on detach-stop (`PASEO_DETACH_AGENTS_ON_STOP`, off by default and not set in `deploy/systemd/paseo.service`). Records missing this daemon's `ownerDaemonId` generation get an `orphanedAt` stamp on first sight and are kept for 24h from that stamp (not from `startedAt`); past it the orphan is stopped via `systemctl --user kill --kill-whom=all` and only then is its record dropped. Unit names are validated against `paseo-agent-<pid>-<hex12>.scope` before anything is signalled. |
 
 ---
 
