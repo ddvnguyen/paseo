@@ -1,4 +1,13 @@
-import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -26,12 +35,24 @@ export function ensurePrivateFile(filePath: string): void {
 export function writePrivateFileAtomicSync(
   filePath: string,
   data: string | NodeJS.ArrayBufferView,
+  options?: { fsync?: boolean },
 ): void {
   ensurePrivateDirectory(path.dirname(filePath));
   const parent = path.dirname(filePath);
   const temporary = path.join(parent, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}`);
   try {
     writeFileSync(temporary, data, { mode: PRIVATE_FILE_MODE });
+    if (options?.fsync === true) {
+      // Durability before visibility: without fsync a crash can leave the
+      // renamed file present but empty, which for a registry means silently
+      // losing every recorded child.
+      const handle = openSync(temporary, "r");
+      try {
+        fsyncSync(handle);
+      } finally {
+        closeSync(handle);
+      }
+    }
     renameSync(temporary, filePath);
     ensurePrivateFile(filePath);
   } catch (error) {

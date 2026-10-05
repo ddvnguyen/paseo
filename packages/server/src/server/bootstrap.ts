@@ -131,6 +131,14 @@ import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { AgentStorage } from "./agent/agent-storage.js";
+import {
+  AGENT_PROCESS_REAP_BOOTSTRAP_BUDGET_MS,
+  flushLiveAgentProcesses,
+  reapStaleAgentProcesses,
+  setAgentProcessRegistryHome,
+} from "./agent/agent-process-registry.js";
+import { createAgentProcessReaper } from "./agent/agent-process-reaper.js";
+import { beginAgentDetachStop, isDetachAgentsOnStopEnabled } from "./agent/agent-detach.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
 import {
@@ -622,6 +630,28 @@ export async function createPaseoDaemon(
   void reconcileManagedProcessLedger(managedProcesses, logger).catch((error) => {
     logger.warn({ err: error }, "Failed to reconcile managed helper process ledger");
   });
+  // Drop dead or recycled scoped-child records before new spawns record fresh
+  // entries; live matching records are left alone (adoption is a later slice).
+  // Pin the registry to this daemon's home first so spawn-side recording and
+  // reaping agree even when config.paseoHome came from an explicit test harness.
+  //
+  // The FIRST pass is synchronous on purpose: the registry is a read-modify-write
+  // JSON file with no cross-process lock, and `recordAgentProcess` runs inline on
+  // the spawn path, so a reap that yielded between its read and its write-back
+  // could clobber a record a spawn had just written. It runs before anything is
+  // being served and gets a generous budget. Later passes run on an unref'd
+  // timer with a small budget, because a daemon that stays up for weeks must
+  // still reap and a reaper must never stall the event loop.
+  setAgentProcessRegistryHome(config.paseoHome);
+  reapStaleAgentProcesses({ logger, budgetMs: AGENT_PROCESS_REAP_BOOTSTRAP_BUDGET_MS });
+  const agentProcessReaper = createAgentProcessReaper({ logger });
+  agentProcessReaper.start();
+  if (isDetachAgentsOnStopEnabled()) {
+    logger.info(
+      { env: "PASEO_DETACH_AGENTS_ON_STOP" },
+      "Detach-on-stop configured: graceful stop will leave scoped agent children running",
+    );
+  }
   let relayRuntime: RelayRuntime | null = null;
 
   const staticDir = config.staticDir;
@@ -1779,6 +1809,11 @@ export async function createPaseoDaemon(
   };
 
   const stop = async () => {
+    // Detach-on-stop is decided once, here: with PASEO_DETACH_AGENTS_ON_STOP
+    // set, scoped provider children survive this stop (no cancel/closeSession/
+    // tree-kill) and their registry entries are flushed for the next daemon.
+    // Without it, every step below behaves exactly as before.
+    const detach = beginAgentDetachStop(logger);
     // Stop tracking plugin provider registrations before anything tears plugins
     // down, so plugin shutdown cannot withdraw a provider from under an agent
     // that is still open. Plugins themselves are stopped once every session
@@ -1787,10 +1822,17 @@ export async function createPaseoDaemon(
     await hubRelationships.stop();
     workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
+    agentProcessReaper.stop();
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
     await closeAllAgents(logger, agentManager);
+    if (detach) {
+      // Detach-stop flush: entries for surviving scoped children stay on disk
+      // for the next daemon; entries whose pid died during the stop are
+      // dropped here. Never throws into shutdown.
+      flushLiveAgentProcesses({ logger });
+    }
     await agentManager.flushForShutdown().catch(() => undefined);
     detachAgentStoragePersistence();
     await agentStorage.flush().catch(() => undefined);

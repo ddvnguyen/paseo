@@ -124,6 +124,8 @@ import {
   createStringCommandShellEnvOverlay,
 } from "../../../utils/string-command-shell.js";
 import { spawnProcess } from "../../../utils/spawn.js";
+import { spawnInAgentScope } from "../agent-process-scope.js";
+import { shouldDetachAgentProcess } from "../agent-detach.js";
 import {
   type DiagnosticEntry,
   toDiagnosticErrorMessage,
@@ -2458,6 +2460,14 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     }
     this.closed = true;
 
+    // Detach-stop: a scoped child recorded in the S2 registry is left running
+    // in its systemd user scope, so the RPCs that cancel its turn / close its
+    // session and the tree-kill below are all skipped for it. Daemon-side
+    // disposal (pending permissions, subscribers, buffered events) still runs
+    // so the daemon can exit cleanly. Children outside the registry keep
+    // today's teardown — they cannot outlive the daemon's cgroup anyway.
+    const detachChild = shouldDetachAgentProcess(this.child?.pid);
+
     this.deliverTranslatedEvents(this.flushPendingUserMessage());
     this.settleCommandsReady();
 
@@ -2466,7 +2476,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     }
     this.pendingPermissions.clear();
 
-    if (this.connection && this.sessionId) {
+    if (this.connection && this.sessionId && !detachChild) {
       try {
         if (this.activeForegroundTurnId) {
           await this.connection.cancel({ sessionId: this.sessionId });
@@ -2491,7 +2501,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     await Promise.all(terminalTerminations);
     this.terminalEntries.clear();
 
-    if (this.child) {
+    if (this.child && !detachChild) {
       await this.terminateProcess(this.child, { gracefulTimeoutMs: 2_000, forceTimeoutMs: 2_000 });
     }
 
@@ -2771,14 +2781,19 @@ export class ACPAgentSession implements AgentSession, ACPClient {
 
     const command = prefix.command;
     const args = [...prefix.args, ...this.defaultCommand.slice(1)];
-    const child = spawnProcess(command, args, {
-      cwd: this.config.cwd,
-      ...createProviderEnvSpec({
-        runtimeSettings: this.runtimeSettings,
-        overlays: [this.launchEnv],
-      }),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawnInAgentScope(
+      command,
+      args,
+      {
+        cwd: this.config.cwd,
+        ...createProviderEnvSpec({
+          runtimeSettings: this.runtimeSettings,
+          overlays: [this.launchEnv],
+        }),
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+      { provider: this.provider, logger: this.logger },
+    );
     assertChildWithPipes(child);
 
     const stderrChunks: string[] = [];

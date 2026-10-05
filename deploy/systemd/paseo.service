@@ -36,6 +36,12 @@ Type=simple
 Environment="PASEO_HOME=%h/paseo/PROD"
 Environment="PASEO_PID_FILE=%h/paseo/PROD/paseo.pid"
 Environment="PASEO_PRESTART_PORT=6767"
+# Detach-on-stop is deliberately NOT enabled here. It is an opt-in operator
+# decision: it depends on adoption (which does not exist yet) to be useful, it
+# only survives for the opencode HTTP server path, and with it on, any deploy
+# would leave scoped children that nothing re-attaches or kills. To try it:
+#   systemctl --user edit paseo.service
+# and add Environment="PASEO_DETACH_AGENTS_ON_STOP=1" (see docs/development.md).
 Environment="PASEO_APP_BASE_URL=https://paseo.ddvnguyen.com"
 Environment="PASEO_WEB_UI_ENABLED=false"
 Environment="PASEO_RELAY_ENABLED=true"

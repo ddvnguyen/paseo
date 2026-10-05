@@ -60,6 +60,87 @@ PASEO_DEV_SEED_HOME=/path/to/home npm run dev # seed from a different source hom
 PASEO_DEV_RESET_HOME=1 npm run dev            # clear and reseed the derived worktree home
 ```
 
+### PASEO_DETACH_AGENTS_ON_STOP
+
+`PASEO_DETACH_AGENTS_ON_STOP=1` makes a graceful daemon stop leave provider
+children running instead of tree-killing them. Off by default — every other stop
+path behaves exactly as before.
+
+**It is not enabled in `deploy/systemd/paseo.service`.** Enabling it in the
+production template would leave scoped children that nothing re-attaches or
+kills, for a feature whose consumer (adoption of survivors by the next daemon)
+does not exist yet. To opt in on a single host:
+
+```bash
+systemctl --user edit paseo.service
+# add: Environment="PASEO_DETACH_AGENTS_ON_STOP=1"
+systemctl --user daemon-reload && systemctl --user restart paseo
+```
+
+What survival is actually proven:
+
+- **opencode server path — yes.** An opencode server child started via the
+  scope registry survives the daemon's death, and a scoped child that ignores
+  stdin EOF keeps running after the parent holding its stdio pipes dies (it
+  observes EOF and stays alive; the scope is not torn down).
+- **ACP stdio children — no.** An ACP child talks over anonymous stdio pipes
+  owned by the dying daemon. Those pipes are gone, so it sees EOF/EPIPE and
+  exits; it cannot be re-attached. "Agent turns survive" is _not_ a claim about
+  ACP-backed agents.
+- Adapters that exit on EOF still exit — now without taking siblings down.
+
+Rules:
+
+- Only `1` or `true` (trimmed, case-insensitive) enable it. Anything else is a
+  normal stop.
+- Only children recorded in `$PASEO_HOME/agent-processes.json` are spared.
+  Unrecorded children cannot be reattached after the daemon's cgroup dies, so
+  they keep the normal teardown — a host without systemd never inherits orphans.
+- Detach is decided per close, from the close's own reason. Only a close
+  initiated by daemon stop detaches; archive, delete, reload and every other
+  user-originated close terminate the child even while a stop is in progress.
+- On a detach-stop the daemon flushes the registry first, dropping dead pids.
+  The next bootstrap inherits records only for children that are still alive.
+
+### Agent child lifetime backstops
+
+Scoped children live in transient `systemd --user --scope` units, so they are
+siblings of `paseo.service`'s cgroup and survive every kind of daemon death —
+which means systemd no longer kills them for us. One bounded path replaces that,
+and **the scope's cgroup is the only liveness authority**: under
+`KillMode=process` neither `systemctl stop` nor `RuntimeMaxSec` kills anything
+(measured on systemd 259: both leave the process running), so a record is only
+ever dropped once the scope's own `cgroup.procs` is empty. A dead _main_ pid
+proves nothing — a child the provider spawned routinely outlives it.
+
+- **Reaper (always on).** Every daemon bootstrap, and every 5 minutes after
+  that, reaps `$PASEO_HOME/agent-processes.json`. Each pass has a wall-clock
+  budget (2 s periodically, 15 s at bootstrap) so a reaper can never stall the
+  daemon; entries not reached inside the budget keep their records for the next
+  pass.
+- An entry whose owning daemon generation is gone is stamped with `orphanedAt`
+  and kept for a full `AGENT_PROCESS_UNOWNED_RECORD_TTL_MS` (24 h) adoption
+  window measured from that stamp — not from the child's age, so a long-running
+  agent is not expired by being old. Past the window the orphan is stopped for
+  real: SIGTERM the whole scope → grace → SIGKILL via
+  `systemctl --user kill --kill-whom=all` → and, only if the cgroup is still
+  populated, one direct write of the scope's own `cgroup.kill`. Only then is the
+  record dropped.
+- A failed kill **keeps** the record and logs at error level so the next pass
+  retries, and a scope whose cgroup cannot be read is reported as _populated_:
+  the record is the only handle on a survivor, so an unreadable scope must never
+  be the reason one is deleted. Entries this daemon owns are never signalled.
+- `PASEO_AGENT_SCOPE_MAX_RUNTIME_SEC` (opt-in) adds
+  `--property=RuntimeMaxSec=<n>` to every scope. **It does not bound the child's
+  lifetime.** Measured on systemd 259 with this feature's own
+  `KillMode=process`: with `RuntimeMaxSec=3` the unit goes `failed`
+  (`Result=timeout`) after 6 s and the process is _still running_ — systemd
+  abandons the processes rather than killing them. What it does give you is a
+  visible trigger: an over-long scope shows up as `failed` in
+  `systemctl --user status` instead of looking healthy forever. Off by default; a
+  low ceiling would fail a legitimately long-lived owned agent, which is worse
+  than a slow orphan bound.
+
 ### Daemon endpoints
 
 - Stable daemon launched by the desktop app: `localhost:6767`.

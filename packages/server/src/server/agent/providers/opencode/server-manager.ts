@@ -6,7 +6,9 @@ import path from "node:path";
 import type { Logger } from "pino";
 
 import { findExecutable } from "../../../../executable-resolution/executable-resolution.js";
-import { spawnProcess, type SpawnProcessOptions } from "../../../../utils/spawn.js";
+import type { SpawnProcessOptions } from "../../../../utils/spawn.js";
+import { spawnInAgentScope } from "../../agent-process-scope.js";
+import { beginAgentDetachStop, shouldDetachAgentProcess } from "../../agent-detach.js";
 import { terminateWithTreeKill, type ProcessTerminator } from "../../../../utils/tree-kill.js";
 import type { ManagedProcessRegistry } from "../../../managed-processes/managed-processes.js";
 import {
@@ -108,7 +110,13 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
       options.resolveCommandPrefix ??
       (() => resolveProviderCommandPrefix(this.runtimeSettings?.command, resolveOpenCodeBinary));
     this.resolveHomeDir = options.resolveHomeDir ?? resolveOpenCodeHomeDir;
-    this.spawnServerProcess = options.spawnServerProcess ?? spawnProcess;
+    this.spawnServerProcess =
+      options.spawnServerProcess ??
+      ((command, args, spawnOptions) =>
+        spawnInAgentScope(command, args, spawnOptions, {
+          provider: "opencode",
+          logger: this.logger,
+        }));
     this.createEventSource =
       options.createEventSource ?? ((input) => new OpenCodeEventConsumer(input));
     this.decorateServerEnv = options.decorateServerEnv;
@@ -146,6 +154,12 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
     OpenCodeServerManager.exitHandlerRegistered = true;
 
     const cleanup = () => {
+      // This handler can fire before bootstrap.stop() runs, so a detach-stop
+      // must engage here too; killServer() then refuses to terminate scoped
+      // children. With detach disabled this is today's behaviour exactly.
+      if (beginAgentDetachStop()) {
+        return;
+      }
       const instance = OpenCodeServerManager.instance;
       void instance?.shutdown();
     };
@@ -500,6 +514,16 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
       (server.process.exitCode !== null && server.process.exitCode !== undefined) ||
       (server.process.signalCode !== null && server.process.signalCode !== undefined)
     ) {
+      return;
+    }
+    // Detach-stop: a scoped server child stays running for the next daemon.
+    // Its managed-process record and scope-registry entry stay too, so the
+    // next daemon can reconcile and discover it.
+    if (shouldDetachAgentProcess(server.process.pid)) {
+      this.logger.info(
+        generationLogContext(server),
+        "Detach-stop: leaving OpenCode server generation running",
+      );
       return;
     }
     const result = await this.terminateProcess(server.process, {
