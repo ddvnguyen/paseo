@@ -67,6 +67,7 @@ describe("resolveAgentModelSelection", () => {
       ],
       runtimeModelId: null,
       configuredModelId: "claude-fable-5[1m]",
+      runtimeThinkingOptionId: null,
       explicitThinkingOptionId: null,
     });
 
@@ -88,6 +89,7 @@ describe("resolveAgentModelSelection", () => {
       ],
       runtimeModelId: "a",
       configuredModelId: "b",
+      runtimeThinkingOptionId: null,
       explicitThinkingOptionId: null,
     });
 
@@ -112,11 +114,60 @@ describe("resolveAgentModelSelection", () => {
       ],
       runtimeModelId: "a",
       configuredModelId: null,
+      runtimeThinkingOptionId: null,
       explicitThinkingOptionId: "high",
     });
 
     expect(selection.selectedThinkingId).toBe("high");
     expect(selection.displayThinking).toBe("High");
+  });
+
+  it("shows the thinking level the agent runs on when none was chosen", () => {
+    const selection = resolveAgentModelSelection({
+      models: [
+        {
+          id: "openrouter/google/gemini-3.6-flash",
+          provider: "pi",
+          label: "Gemini 3.6 Flash",
+          thinkingOptions: [
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium", isDefault: true },
+            { id: "high", label: "High" },
+          ],
+          defaultThinkingOptionId: "medium",
+        },
+      ],
+      runtimeModelId: "openrouter/google/gemini-3.6-flash",
+      configuredModelId: null,
+      runtimeThinkingOptionId: "high",
+      explicitThinkingOptionId: null,
+    });
+
+    expect(selection.selectedThinkingId).toBe("high");
+    expect(selection.displayThinking).toBe("High");
+  });
+
+  it("falls back to the chosen thinking level when the runtime level is not a model option", () => {
+    const selection = resolveAgentModelSelection({
+      models: [
+        {
+          id: "a",
+          provider: "codex",
+          label: "Model A",
+          thinkingOptions: [
+            { id: "low", label: "Low" },
+            { id: "high", label: "High" },
+          ],
+          defaultThinkingOptionId: "low",
+        },
+      ],
+      runtimeModelId: "a",
+      configuredModelId: null,
+      runtimeThinkingOptionId: "xhigh",
+      explicitThinkingOptionId: "high",
+    });
+
+    expect(selection.selectedThinkingId).toBe("high");
   });
 
   it("formats raw thinking labels in the selected model display", () => {
@@ -134,6 +185,7 @@ describe("resolveAgentModelSelection", () => {
       ],
       runtimeModelId: "a",
       configuredModelId: null,
+      runtimeThinkingOptionId: null,
       explicitThinkingOptionId: "xhigh",
     });
 
@@ -155,6 +207,7 @@ describe("resolveAgentModelSelection", () => {
       ],
       runtimeModelId: null,
       configuredModelId: null,
+      runtimeThinkingOptionId: null,
       explicitThinkingOptionId: null,
     });
 
@@ -178,6 +231,7 @@ describe("resolveAgentModelSelection", () => {
       ],
       runtimeModelId: "claude-sonnet-4-6-20260101",
       configuredModelId: "default",
+      runtimeThinkingOptionId: null,
       explicitThinkingOptionId: null,
     });
 
@@ -187,26 +241,30 @@ describe("resolveAgentModelSelection", () => {
     expect(selection.displayThinking).toBe("Low");
   });
 
-  it("surfaces the raw runtime id instead of the default label when nothing matches", () => {
-    // Customize-mapped / versioned runtime id with no configured model: the
-    // catalog default must not stand in — its label would lie about what runs.
+  it("shows the agent's own model when the catalog does not list it", () => {
     const selection = resolveAgentModelSelection({
       models: [
         {
-          id: "default",
-          provider: "claude",
-          label: "Default (Sonnet 4.6)",
+          id: "gpt-6-sol",
+          provider: "codex",
+          label: "GPT-6-Sol",
           isDefault: true,
-          thinkingOptions: [{ id: "low", label: "Low" }],
+          thinkingOptions: [
+            { id: "medium", label: "medium" },
+            { id: "max", label: "max" },
+          ],
+          defaultThinkingOptionId: "medium",
         },
       ],
-      runtimeModelId: "my-custom-map",
-      configuredModelId: null,
-      explicitThinkingOptionId: null,
+      runtimeModelId: "gpt-6.1-sol",
+      configuredModelId: "gpt-6.1-sol",
+      runtimeThinkingOptionId: null,
+      explicitThinkingOptionId: "max",
     });
 
     expect(selection.selectedModel).toBeNull();
-    expect(selection.activeModelId).toBe("my-custom-map");
-    expect(selection.displayModel).toBe("my-custom-map");
+    expect(selection.activeModelId).toBe("gpt-6.1-sol");
+    expect(selection.displayModel).toBe("gpt-6.1-sol");
+    expect(selection.displayThinking).toBe("Max");
   });
 });
