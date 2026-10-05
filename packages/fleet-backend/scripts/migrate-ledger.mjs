@@ -101,8 +101,18 @@ const die = (msg) => {
 // --- 1. global orphan scan (standing gate) ---------------------------------
 console.log("== global orphan scan ==");
 const src = new DatabaseSync(source, { readOnly: true });
-const trackIds = new Set(src.prepare("SELECT id FROM tracks").all().map((r) => r.id));
-const projectIds = new Set(src.prepare("SELECT id FROM projects").all().map((r) => r.id));
+const trackIds = new Set(
+  src
+    .prepare("SELECT id FROM tracks")
+    .all()
+    .map((r) => r.id),
+);
+const projectIds = new Set(
+  src
+    .prepare("SELECT id FROM projects")
+    .all()
+    .map((r) => r.id),
+);
 
 const danglingTracks = new Set();
 for (const t of CHILD_TRACK_FK) {
@@ -115,7 +125,9 @@ for (const t of CHILD_TRACK_FK) {
 const danglingProjects = new Set();
 for (const t of ["tracks", "suggestions"]) {
   for (const r of src
-    .prepare(`SELECT DISTINCT project_id FROM ${t} WHERE project_id IS NOT NULL AND project_id <> ''`)
+    .prepare(
+      `SELECT DISTINCT project_id FROM ${t} WHERE project_id IS NOT NULL AND project_id <> ''`,
+    )
     .all()) {
     if (!projectIds.has(r.project_id)) danglingProjects.add(r.project_id);
   }
@@ -193,7 +205,9 @@ for (const [from, to] of MAP) {
         `INSERT INTO ${to} (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`,
         cols.map((c) => rec[c]),
       );
-      console.log(`  reconstructed ${id} (turn_count=${rec.turn_count}, goal marked unrecoverable)`);
+      console.log(
+        `  reconstructed ${id} (turn_count=${rec.turn_count}, goal marked unrecoverable)`,
+      );
       extra += 1;
     }
   }
