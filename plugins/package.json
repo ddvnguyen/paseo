@@ -9,10 +9,15 @@
   },
   "dependencies": {
     "@getpaseo/plugin": "workspace:*",
+    "@getpaseo/protocol": "workspace:*",
+    "@tanstack/react-query": "^5.90.11",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^20.9.0",
+    "@types/react": "~19.2.0",
     "vitest": "^4.1.6"
   }
 }
