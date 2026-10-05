@@ -316,6 +316,60 @@ Not decided here, because neither is a repair:
 - **`nix-update-hash.yml`** still diffs and commits `package-lock.json`, which no
   longer exists. Do-not-touch list, so flagged rather than fixed.
 
+## KEPT-VIA-SCRIPT
+
+A class for behaviour that is **not** re-applied by hand during the merge,
+because running a script reproduces it. It is a form of kept, not of lost.
+
+Owner decision 2026-10-05: the fork's version stamping is kept. That is the
+`-hub` fork identifier and `scripts/sync-workspace-versions.mjs`, covering 38 of
+the 147 at-risk commits.
+
+### What the script does
+
+`scripts/sync-workspace-versions.mjs` is not a dropped path — it was never in
+conflict, so it is intact at HEAD. Entry point is `version:sync-internal` in the
+root `package.json`. It:
+
+1. reads the root `package.json` version and strips a trailing `-hub`, so the
+   identifier lives in the script rather than in the manifest field upstream owns;
+2. derives `versionWithHash` as `<root>-hub-<short-hash>-<hydra-timestamp>`, or
+   `<root>-hub` when no git hash is available;
+3. rewrites every workspace `package.json` `version` to that string;
+4. rewrites internal `@getpaseo/*` dependency ranges to exactly `workspace:*`;
+5. writes each file it changed and logs either `Synced to <version>:` with the
+   file list, or `Workspace versions and internal deps already synced to
+   <version>` when it had nothing to do.
+
+Point 4 matters beyond stamping: it means the `workspace:*` convention discussed
+under [Open decisions](#open-decisions) comes back **by running the script**,
+not by hand-editing 20-odd manifests. That is the right shape for it, because the
+script is the only thing that knows the current root version and hash.
+
+### How the verification should prove it
+
+The check cannot be "this diff was re-applied", because nothing re-applies it. It
+has to establish that the script ran and left a self-consistent tree. The shape
+it should take, for whoever implements it:
+
+- `node scripts/sync-workspace-versions.mjs` exits 0.
+- Its output is one of the two documented forms above. `Synced to <v>:` with a
+  file list on a first run, `already synced to <v>` on a second.
+- **Idempotence:** run it twice; the second run must report `already synced` and
+  change nothing. This is the property that makes the class safe, and it is
+  checkable without knowing the expected version up front.
+- **Consistency:** after the run, every workspace `package.json` `version` equals
+  the same stamped string, and differs from the root only by the `-hub` treatment
+  the script documents.
+- **Internal deps:** every `@getpaseo/*` range in every workspace manifest is
+  exactly `workspace:*`.
+- **Clean tree:** `git diff --exit-code` is empty afterwards, apart from the
+  version files the script is entitled to write. A second run must produce no
+  diff at all.
+
+The verification procedure itself is implemented by a sibling agent and is not
+edited here. This section describes the shape so the two agree.
+
 ## Re-derive this
 
 The helper that produced this baseline is not checked in — it lives outside the
