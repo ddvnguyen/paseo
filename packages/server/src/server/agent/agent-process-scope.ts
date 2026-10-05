@@ -6,7 +6,12 @@ import type { Logger } from "pino";
 
 import { spawnProcess, type SpawnProcessOptions } from "../../utils/spawn.js";
 import type { AgentProcessEntry } from "./agent-process-registry.js";
-import { forgetAgentProcess, isPidAlive, recordAgentProcess } from "./agent-process-registry.js";
+import {
+  forgetAgentProcess,
+  isPidAlive,
+  readAgentScopePopulation,
+  recordAgentProcess,
+} from "./agent-process-registry.js";
 
 export interface AgentScopeSpawnMeta {
   provider: string;
@@ -15,14 +20,26 @@ export interface AgentScopeSpawnMeta {
 }
 
 /**
- * Optional hard ceiling on a scoped child's lifetime, in seconds.
+ * Operator-set lifetime ceiling for a scoped child, in seconds, or null when
+ * unset/invalid.
  *
- * OFF by default on purpose: a fixed ceiling would SIGTERM a legitimately
- * long-lived agent that this daemon still owns, which is a worse failure than
- * a slow orphan bound. Operators who want systemd itself to cap runaway
- * children (a crash-looping daemon leaving scopes behind, a wedged provider)
- * opt in with this env var. The startup reaper's stop path is the always-on
- * bound; this is the belt to its braces.
+ * WHAT THIS DOES NOT DO: it does not bound the child's lifetime. Measured on
+ * systemd 259 with this feature's own `KillMode=process`: with
+ * `RuntimeMaxSec=3`, after 6s the unit is `failed` (`Result=timeout`) and the
+ * process is STILL RUNNING. `systemctl --user stop` behaves the same way — exit
+ * 0, process still running. Under `KillMode=process` systemd abandons the
+ * processes; the only primitive that stops them is
+ * `systemctl --user kill --kill-whom=all`, which the registry's reap path uses.
+ *
+ * What the ceiling does give an operator is a *trigger*: a scope that elapses
+ * goes `failed`, which makes its state visible in `systemctl --user status` and
+ * in the reap's own logs instead of looking healthy forever. The always-on bound
+ * on runaway children is the reap path (see `agent-process-registry.ts`), and
+ * the reap is what actually kills.
+ *
+ * It stays opt-in: a ceiling this low would still fail a legitimately
+ * long-lived agent that the running daemon owns, and failing it is worse than a
+ * slow orphan bound. Off by default.
  */
 export const AGENT_SCOPE_MAX_RUNTIME_ENV = "PASEO_AGENT_SCOPE_MAX_RUNTIME_SEC";
 
@@ -300,8 +317,10 @@ export function buildAgentScopeInvocation(
       "--quiet",
       `--unit=${scopeId}`,
       "--property=KillMode=process",
-      // Verified honoured on scope units (systemd 259: RuntimeMaxUSec is set
-      // and the unit is stopped once it elapses).
+      // Measured on systemd 259: RuntimeMaxSec IS honoured for scope units — the
+      // unit transitions to `failed`/`Result=timeout` once it elapses. It does
+      // NOT kill the processes: under KillMode=process systemd abandons them.
+      // See AGENT_SCOPE_MAX_RUNTIME_ENV for why this stays opt-in.
       ...(runtimeMaxSec === null ? [] : [`--property=RuntimeMaxSec=${runtimeMaxSec}`]),
       "--collect",
       "--",
@@ -425,12 +444,19 @@ export function spawnInAgentScope(
     };
     recordScopedAgentChild(entry, logger);
     // The spawner's exit/error event does not always mean the scoped child is
-    // gone: daemon teardown can surface either first. Only drop the record once
-    // the pid is actually dead, so a detach-stop never wipes a survivor the
-    // next daemon needs to discover. Recycled pids are handled by the next
-    // daemon's startup reap.
+    // gone: daemon teardown can surface either first. It is also not proof that
+    // the SCOPE is gone. These children run in `KillMode=process` scopes, where
+    // systemd kills nothing else, so a child the provider itself spawned (an ACP
+    // adapter's dev server, a tool it launched) routinely outlives the recorded
+    // pid. Dropping the record on the main pid's exit would leave that survivor
+    // running with nothing pointing at it — permanently unkillable. Only drop
+    // the record once the pid is dead AND the scope is provably empty.
     const forget = () => {
       if (isPidAlive(pid)) {
+        return;
+      }
+      const population = readAgentScopePopulation(entry);
+      if (!population.known || population.populated) {
         return;
       }
       forgetAgentProcess(pid, { logger });

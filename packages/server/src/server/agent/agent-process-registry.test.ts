@@ -23,14 +23,17 @@ import {
   flushLiveAgentProcesses,
   forgetAgentProcess,
   getAgentProcessOwnerDaemonId,
+  isPidAlive,
   isPidRunning,
   isSignalableAgentScopeUnit,
   readAgentProcessRegistry,
+  readAgentScopePopulation,
   recordAgentProcess,
   reapStaleAgentProcesses,
   resolveAgentProcessRegistryPath,
   setAgentProcessRegistryHome,
   type AgentProcessEntry,
+  type AgentScopePopulation,
 } from "./agent-process-registry.js";
 import {
   __setAgentProcessScopeDetectionForTests,
@@ -331,7 +334,7 @@ describe.runIf(process.platform === "linux")("agent process reaper", () => {
   // while the process lives leaves it running and now untracked, so nothing can
   // ever kill it again. The reap must now stop the orphan first and only then
   // drop its record.
-  test("stops an expired orphan and drops its record only after the process is gone", async () => {
+  test("stops an expired orphan and drops its record only after the scope is empty", async () => {
     const logs: string[] = [];
     const captureLogger = pino({ level: "warn" }, { write: (line) => logs.push(line) });
     const probe = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
@@ -355,6 +358,13 @@ describe.runIf(process.platform === "linux")("agent process reaper", () => {
         // post-kill check treats the resulting zombie as gone.
         process.kill(probe.pid, "SIGKILL");
       },
+      // The probe is not really in a systemd scope, so its "scope" population
+      // is modelled on its own liveness. This is what the fix reads, and the
+      // post-kill check only passes because the SIGKILL above emptied it.
+      readScopePopulation: () =>
+        isPidRunning(probe.pid)
+          ? { known: true, populated: true, pids: [probe.pid] }
+          : { known: true, populated: false, pids: [] },
       sleepMs: () => {},
     });
 
@@ -401,6 +411,7 @@ describe.runIf(process.platform === "linux")("agent process reaper", () => {
       killScope: () => {
         signals += 1;
       },
+      readScopePopulation: () => ({ known: true, populated: true, pids: [probe.pid] }),
       sleepMs: () => {},
       termGraceMs: 0,
       killTimeoutMs: 0,
@@ -555,6 +566,10 @@ describe.runIf(process.platform === "linux")("agent process reaper", () => {
       filePath,
       logger,
       killScope: () => {},
+      // The probe is not in a real systemd scope, so model the scope as still
+      // populated: that is the state the kill path has to see before it tries,
+      // and it is what keeps the record once the kill achieves nothing.
+      readScopePopulation: () => ({ known: true, populated: true, pids: [probe.pid] }),
       sleepMs: () => {},
       termGraceMs: 0,
       killTimeoutMs: 0,
@@ -689,6 +704,316 @@ describe.runIf(process.platform === "linux")("agent process identity", () => {
       ),
     ).toBe("recycled");
   });
+
+  // ---------------------------------------------------------------------------
+  // The blocking defect: a record was deleted while processes in its scope were
+  // still alive, because every liveness check read `entry.pid` and never the
+  // scope's cgroup. Each test below is paired with a single-site mutation in the
+  // PR description, so it is provably capable of failing.
+  // ---------------------------------------------------------------------------
+
+  test("classifies a dead main pid as live-matching while its scope still has members", async () => {
+    const survivor = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
+    await waitUntilProbeReady(survivor);
+    // A pid that is definitely gone: a synchronous child that already exited and
+    // was reaped, so `kill(pid, 0)` fails.
+    const gonePid = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" }).pid as number;
+    expect(isPidAlive(gonePid)).toBe(false);
+
+    const entry = buildSignalableEntry({ pid: gonePid });
+    // The scope the entry names still holds `survivor`, even though the recorded
+    // main pid is gone. Pinning the exact value matters: anything other than
+    // "live-matching" is dropped by the reaper without a signal.
+    expect(
+      classifyAgentProcessEntry(entry, () => ({
+        known: true,
+        populated: true,
+        pids: [survivor.pid],
+      })),
+    ).toBe("live-matching");
+
+    // An empty scope is the only thing that makes a dead pid "dead".
+    expect(
+      classifyAgentProcessEntry(entry, () => ({ known: true, populated: false, pids: [] })),
+    ).toBe("dead");
+  });
+
+  test("does not consult the scope when the pid path already classifies the entry", async () => {
+    // Perf guard: a reap of live records must not fork a `systemctl show` per
+    // entry, so the scope is only read once the pid path is inconclusive.
+    const probe = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
+    await waitUntilProbeReady(probe);
+    let scopeReads = 0;
+    const counting = (): AgentScopePopulation => {
+      scopeReads += 1;
+      return { known: true, populated: false, pids: [] };
+    };
+
+    expect(classifyAgentProcessEntry(buildEntry({ pid: probe.pid }), counting)).toBe(
+      "live-matching",
+    );
+    expect(scopeReads, "a live pid must not cost a scope read").toBe(0);
+
+    const gonePid = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" }).pid as number;
+    expect(classifyAgentProcessEntry(buildEntry({ pid: gonePid }), counting)).toBe("dead");
+    expect(scopeReads, "an inconclusive pid must consult the scope exactly once").toBe(1);
+  });
+
+  test("keeps a record whose scope population cannot be read", async () => {
+    const gonePid = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" }).pid as number;
+    expect(isPidAlive(gonePid)).toBe(false);
+
+    const logs: string[] = [];
+    const captureLogger = pino({ level: "warn" }, { write: (line) => logs.push(line) });
+    // systemd is unreachable: no user bus, systemctl missing. "Cannot tell" must
+    // never be read as "empty" — the record is the only handle on whatever is
+    // still running in that scope.
+    const unreadable = (): AgentScopePopulation => ({
+      known: false,
+      populated: true,
+      pids: [],
+      reason: "systemctl show failed: simulated",
+    });
+
+    recordAgentProcess(buildEntry({ scopeId: "gone-1", unit: "gone-1.scope", pid: gonePid }), {
+      filePath,
+      logger: captureLogger,
+    });
+    const reaped = reapStaleAgentProcesses({
+      filePath,
+      logger: captureLogger,
+      readScopePopulation: unreadable,
+      sleepMs: () => {},
+    });
+    expect(reaped.removed).toEqual([]);
+    expect(reaped.kept.map((entry) => entry.pid)).toEqual([gonePid]);
+
+    // The detach-stop flush must apply the same rule.
+    const flushed = flushLiveAgentProcesses({
+      filePath,
+      logger: captureLogger,
+      readScopePopulation: unreadable,
+    });
+    expect(flushed.removed).toEqual([]);
+    expect(flushed.kept.map((entry) => entry.pid)).toEqual([gonePid]);
+    expect(readAgentProcessRegistry({ filePath })).toHaveLength(1);
+
+    // Nothing was ever signalled for a scope nobody could measure.
+    expect(
+      logs.some((line) => line.includes("Systemctl") || line.includes("systemctl --user kill")),
+      "an unreadable scope must not fall through to a signal",
+    ).toBe(false);
+  });
+
+  test("reports an unreadable scope loudly once the orphan window has elapsed", async () => {
+    const gonePid = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" }).pid as number;
+    const logs: string[] = [];
+    const captureLogger = pino({ level: "warn" }, { write: (line) => logs.push(line) });
+
+    recordAgentProcess(
+      buildExpiredOrphanEntry({ pid: gonePid, ownerDaemonId: "previous-daemon-generation" }),
+      { filePath, logger: captureLogger },
+    );
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger: captureLogger,
+      readScopePopulation: () => ({
+        known: false,
+        populated: true,
+        pids: [],
+        reason: "systemctl show failed: simulated",
+      }),
+      sleepMs: () => {},
+    });
+
+    expect(result.removed).toEqual([]);
+    expect(result.kept.map((entry) => entry.pid)).toEqual([gonePid]);
+    // Kept, but not silently: the operator has to be able to see why.
+    const error = logs.find((line) => line.includes("orphan-kill-failed"));
+    expect(error, "an unmeasurable scope is reported as a failed stop").toBeTruthy();
+    expect(error).toContain("scope population unreadable");
+  });
+
+  test("keeps a record and signals the scope when the main pid is dead but the cgroup has members", async () => {
+    // The highest-value test in this file: it pins BOTH pid-only sites at once.
+    //  - `classifyAgentProcessEntry` used to answer "dead" for a gone main pid
+    //    and the reaper dropped the record with zero signals.
+    //  - `stopExpiredAgentScope` used to answer "already gone" for a gone main
+    //    pid and the reaper dropped the record after zero signals.
+    const survivor = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
+    await waitUntilProbeReady(survivor);
+    const gonePid = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" }).pid as number;
+    expect(isPidAlive(gonePid)).toBe(false);
+
+    recordAgentProcess(
+      buildExpiredOrphanEntry({ pid: gonePid, ownerDaemonId: "previous-daemon-generation" }),
+      { filePath, logger },
+    );
+
+    const signals: string[] = [];
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger,
+      // A kill that achieves nothing: the record must survive, and the scope
+      // must have been signalled rather than dismissed on the pid alone.
+      killScope: (unit, signal) => {
+        signals.push(signal);
+        expect(unit).toBe(`paseo-agent-4242-${"a".repeat(12)}.scope`);
+      },
+      readScopePopulation: () => ({ known: true, populated: true, pids: [survivor.pid] }),
+      sleepMs: () => {},
+      termGraceMs: 0,
+      killTimeoutMs: 0,
+    });
+
+    expect(signals.length, "a live scope member must be signalled").toBeGreaterThanOrEqual(1);
+    expect(signals[0]).toBe("SIGTERM");
+    expect(result.removed).toEqual([]);
+    expect(result.kept.map((entry) => entry.pid)).toEqual([gonePid]);
+    expect(readAgentProcessRegistry({ filePath }).map((entry) => entry.pid)).toEqual([gonePid]);
+    expectPidAlive(survivor.pid, "the survivor the record exists for is untouched");
+  });
+
+  test("escalates to SIGKILL when the scope still has members after SIGTERM", async () => {
+    const survivor = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
+    await waitUntilProbeReady(survivor);
+    const gonePid = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" }).pid as number;
+
+    recordAgentProcess(
+      buildExpiredOrphanEntry({ pid: gonePid, ownerDaemonId: "previous-daemon-generation" }),
+      { filePath, logger },
+    );
+
+    const signals: string[] = [];
+    // A member that ignores SIGTERM: it is still there after the grace period,
+    // so the fix must escalate rather than report success.
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger,
+      killScope: (_unit, signal) => {
+        signals.push(signal);
+      },
+      readScopePopulation: () => ({ known: true, populated: true, pids: [survivor.pid] }),
+      sleepMs: () => {},
+      termGraceMs: 0,
+      killTimeoutMs: 0,
+    });
+
+    expect(signals).toContain("SIGTERM");
+    expect(signals, "a surviving member must be escalated to SIGKILL").toContain("SIGKILL");
+    // Only once the scope is actually empty may the record go; it never is here.
+    expect(result.removed).toEqual([]);
+    expect(readAgentProcessRegistry({ filePath })).toHaveLength(1);
+    expectPidAlive(survivor.pid, "a SIGTERM-ignoring member survives the failed escalation");
+  });
+
+  test("drops the record once the scope empties, not before", async () => {
+    const survivor = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
+    await waitUntilProbeReady(survivor);
+    const gonePid = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" }).pid as number;
+
+    recordAgentProcess(
+      buildExpiredOrphanEntry({ pid: gonePid, ownerDaemonId: "previous-daemon-generation" }),
+      { filePath, logger },
+    );
+
+    // The kill only empties the scope at SIGKILL, not at SIGTERM.
+    let stillPopulated = true;
+    const signals: string[] = [];
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger,
+      killScope: (_unit, signal) => {
+        signals.push(signal);
+        if (signal === "SIGKILL") stillPopulated = false;
+      },
+      readScopePopulation: () =>
+        stillPopulated
+          ? { known: true, populated: true, pids: [survivor.pid] }
+          : { known: true, populated: false, pids: [] },
+      sleepMs: () => {},
+      termGraceMs: 0,
+      killTimeoutMs: 0,
+    });
+
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(result.removed.map((entry) => entry.pid)).toEqual([gonePid]);
+    expect(readAgentProcessRegistry({ filePath })).toEqual([]);
+  });
+
+  test("never signals an entry whose unit name is untrusted, and keeps it while its scope reads populated", async () => {
+    const survivor = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
+    await waitUntilProbeReady(survivor);
+    const gonePid = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" }).pid as number;
+
+    // A tampered unit name is never a signalling target, whatever the scope
+    // reader says. It must also not be dropped on the strength of a population
+    // reading, because an untrusted name cannot be resolved to a cgroup we own.
+    recordAgentProcess(
+      {
+        ...buildExpiredOrphanEntry({ pid: gonePid, ownerDaemonId: "previous-daemon-generation" }),
+        unit: "sshd.service",
+      },
+      { filePath, logger },
+    );
+    let killCalls = 0;
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger,
+      killScope: () => {
+        killCalls += 1;
+      },
+      readScopePopulation: () => ({ known: true, populated: true, pids: [survivor.pid] }),
+      sleepMs: () => {},
+      termGraceMs: 0,
+      killTimeoutMs: 0,
+    });
+    expect(killCalls, "an untrusted unit name never authorises a signal").toBe(0);
+    expect(result.removed).toEqual([]);
+    expect(result.kept.map((entry) => entry.pid)).toEqual([gonePid]);
+    expectPidAlive(survivor.pid, "an untrusted entry never authorises a signal");
+
+    // With the REAL reader an untrusted name resolves to no cgroup at all, so it
+    // is dropped on pid liveness alone and still never signalled.
+    const dropped = reapStaleAgentProcesses({ filePath, logger, sleepMs: () => {} });
+    expect(dropped.removed.map((entry) => entry.pid)).toEqual([gonePid]);
+  });
+
+  test("keeps entries past the wall-clock budget and retries them on the next pass", async () => {
+    const first = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
+    const second = spawnProbe(tmpDir, liveChildren, ["--provider-marker=opencode"]);
+    await waitUntilProbeReady(first);
+    await waitUntilProbeReady(second);
+
+    recordAgentProcess(
+      buildExpiredOrphanEntry({ pid: first.pid, ownerDaemonId: "previous-daemon-generation" }),
+      { filePath, logger },
+    );
+    recordAgentProcess(
+      buildExpiredOrphanEntry({ pid: second.pid, ownerDaemonId: "previous-daemon-generation" }),
+      { filePath, logger },
+    );
+
+    const logs: string[] = [];
+    const captureLogger = pino({ level: "warn" }, { write: (line) => logs.push(line) });
+    // Budget already spent: the reaper must not start signalling at all, must
+    // keep both records, and must say so. Without this a registry full of stuck
+    // entries would block the daemon's event loop indefinitely.
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger: captureLogger,
+      budgetMs: 0,
+      killScope: () => {
+        throw new Error("must not signal past the budget");
+      },
+      readScopePopulation: () => ({ known: true, populated: true, pids: [first.pid] }),
+      sleepMs: () => {},
+    });
+    expect(result.removed).toEqual([]);
+    expect(result.kept.map((entry) => entry.pid)).toEqual([first.pid, second.pid]);
+    expect(readAgentProcessRegistry({ filePath })).toHaveLength(2);
+    expect(logs.some((line) => line.includes("wall-clock budget"))).toBe(true);
+  });
 });
 
 // The detach-stop flush is liveness-only: it must keep whatever is still
@@ -756,24 +1081,52 @@ describe("agent process flush (detach stop)", () => {
   });
 });
 
-// Real-systemd proof of the #42-B1 kill path. `systemctl --user stop` is a
-// no-op for scope units (verified on systemd 259: exits 0, process keeps
-// running), so this exercises the primitive that actually stops one:
-// `systemctl --user kill --kill-whom=all`. Skipped where there is no real
-// systemd user session — it is NOT a CI gate on such runners.
-describe.skipIf(process.platform !== "linux")("expired orphan stop (real systemd)", () => {
+// Real-systemd proof of the scope-membership contract. Everything above runs
+// against an injected reader; these run against a real `systemd --user` session
+// and a real `KillMode=process` scope, because the whole defect lives in how
+// systemd reports a scope, not in how this code reads a fake one.
+//
+// They skip where there is no systemd user session (a typical CI runner) and say
+// so out loud. Set PASEO_REQUIRE_SYSTEMD_TESTS=1 to turn a skip into a failure,
+// so a run that is supposed to have exercised the real path cannot report green
+// without having done so.
+describe.skipIf(process.platform !== "linux")("scope membership (real systemd)", () => {
   let tmpDir: string;
   let filePath: string;
   let spawnedChild: ReturnType<typeof spawn> | null = null;
   let canScope = false;
+  let unitName = "";
+  let grandchildPid: number | null = null;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(path.join(os.tmpdir(), "agent-process-orphan-kill-"));
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), "agent-process-scope-members-"));
     filePath = path.join(tmpDir, "agent-processes.json");
     canScope = probeAgentScopeRoundTrip().ok;
+    grandchildPid = null;
   });
 
   afterEach(() => {
+    // Unconditional: a fixture that timed out would otherwise leave a real,
+    // heartbeat-writing process in a real scope on the host.
+    if (grandchildPid !== null) {
+      try {
+        process.kill(grandchildPid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    if (unitName) {
+      try {
+        spawnSync(
+          "systemctl",
+          ["--user", "kill", "--kill-whom=all", "--signal=SIGKILL", "--", unitName],
+          { stdio: "ignore" },
+        );
+      } catch {
+        // unit already collected
+      }
+      unitName = "";
+    }
     if (spawnedChild && spawnedChild.exitCode === null && spawnedChild.signalCode === null) {
       spawnedChild.kill("SIGKILL");
     }
@@ -784,64 +1137,244 @@ describe.skipIf(process.platform !== "linux")("expired orphan stop (real systemd
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test.runIf(process.platform === "linux")(
-    "stops a real scoped orphan and only then drops its record",
-    async () => {
-      if (!canScope) {
-        // No systemd user session here (typical CI runner): say so out loud
-        // instead of pretending the real kill path was exercised.
-        console.warn(
-          "[agent-process-registry] real systemd scope unavailable; orphan kill e2e skipped",
-        );
-        return;
-      }
-      setAgentProcessRegistryHome(tmpDir);
-      __setAgentProcessScopeDetectionForTests({ available: true, reason: "forced by test" });
-      __setAgentProcessScopeProbeForTests(() => ({ ok: true, reason: "forced by test" }));
+  /** Skip loudly rather than pretending the real path ran. */
+  function requireRealScope(): boolean {
+    if (canScope) return true;
+    const message =
+      "[agent-process-registry] real systemd scope unavailable; scope-membership e2e skipped";
+    if (process.env.PASEO_REQUIRE_SYSTEMD_TESTS === "1") {
+      throw new Error(message);
+    }
+    console.warn(message);
+    return false;
+  }
 
-      spawnedChild = spawnInAgentScope(
-        process.execPath,
-        ["-e", "setInterval(() => {}, 1000)"],
-        { stdio: "ignore" },
-        { provider: "orphan-kill-test", logger },
-      );
-      const pid = spawnedChild.pid;
-      expect(typeof pid).toBe("number");
+  /**
+   * A scope whose main process runs `process.execPath` and spawns a grandchild
+   * that IGNORES SIGTERM. That is the real-world shape this defect is about: an
+   * ACP adapter exits on stdin EOF when the daemon dies, and the dev servers it
+   * started stay in the scope. Measured on systemd 259: `systemctl kill
+   * --kill-whom=all --signal=SIGTERM` leaves the grandchild running with
+   * `cgroup.procs` non-empty, and only SIGKILL clears it.
+   *
+   * `exitMain` decides whether the main process outlives the grandchild's start
+   * (so the SIGTERM escalation is what has to do the work) or exits on its own
+   * (so the classification of a dead main pid is what has to do the work).
+   */
+  function spawnScopeWithSurvivingGrandchild(exitMain: boolean): Promise<{ mainPid: number }> {
+    const gcPidFile = path.join(tmpDir, "grandchild.pid");
+    const beatFile = path.join(tmpDir, "grandchild.beat");
+    const mainReadyFile = path.join(tmpDir, "main.pid");
+    const grandchildCode = [
+      'const fs = require("node:fs");',
+      // Installing a SIGTERM listener suppresses node's default terminate
+      // action, so this process provably survives a scope-wide SIGTERM.
+      'process.on("SIGTERM", () => {});',
+      `fs.writeFileSync(${JSON.stringify(gcPidFile)}, String(process.pid));`,
+      // A heartbeat proves the process is not merely present but still running,
+      // which `kill(pid, 0)` alone cannot show and which survives pid reuse.
+      `setInterval(() => fs.writeFileSync(${JSON.stringify(beatFile)}, String(Date.now())), 100);`,
+    ].join("");
+    const mainCode = [
+      'const { spawn } = require("node:child_process");',
+      'const fs = require("node:fs");',
+      // detached so the grandchild sits in its own process group and is
+      // reparented to systemd --user when the main dies, rather than lingering
+      // as a zombie child of the test process.
+      `const gc = spawn(process.execPath, ["-e", ${JSON.stringify(grandchildCode)}],`,
+      '  { stdio: "ignore", detached: true });',
+      "gc.unref();",
+      `fs.writeFileSync(${JSON.stringify(mainReadyFile)}, String(process.pid));`,
+      exitMain
+        ? `const w = setInterval(() => { if (fs.existsSync(${JSON.stringify(gcPidFile)})) { clearInterval(w); process.exit(0); } }, 25);`
+        : "setInterval(() => {}, 1000);",
+    ].join("");
 
+    setAgentProcessRegistryHome(tmpDir);
+    __setAgentProcessScopeDetectionForTests({ available: true, reason: "forced by test" });
+    __setAgentProcessScopeProbeForTests(() => ({ ok: true, reason: "forced by test" }));
+
+    spawnedChild = spawnInAgentScope(
+      process.execPath,
+      ["-e", mainCode, "--", "--provider-marker=orphan"],
+      { stdio: "ignore" },
+      { provider: "scope-membership-test", logger },
+    );
+    const mainPid = spawnedChild.pid as number;
+    unitName = "";
+
+    return (async () => {
+      // systemd-run execs the target into the scope asynchronously; wait for the
+      // real fixture, not for the spawn call to return.
+      await expect.poll(() => existsSync(gcPidFile), { timeout: 15_000, interval: 50 }).toBe(true);
+      await expect
+        .poll(() => existsSync(mainReadyFile), { timeout: 15_000, interval: 50 })
+        .toBe(true);
+      grandchildPid = Number(readFileSync(gcPidFile, "utf8"));
+      expectPidAlive(grandchildPid, "the grandchild must be running before the assertions start");
+      expect(isPidRunning(grandchildPid), "the grandchild is not a zombie").toBe(true);
+      return { mainPid };
+    })().then(async (result) => {
       const recorded = readAgentProcessRegistry({ filePath, logger });
       expect(recorded).toHaveLength(1);
+      unitName = recorded[0].unit;
       expect(isSignalableAgentScopeUnit(recorded[0])).toBe(true);
+      return result;
+    });
+  }
 
-      // systemd-run execs the target into the scope asynchronously; wait for the
-      // real cgroup membership instead of assuming it exists at spawn time.
-      await expect
-        .poll(() => classifyAgentProcessEntry(readAgentProcessRegistry({ filePath, logger })[0]), {
-          timeout: 10_000,
-          interval: 100,
-        })
-        .toBe("live-matching");
+  /** Prove a process is gone without racing pid reuse: pid absent AND heartbeat frozen. */
+  async function expectProcessStopped(
+    pid: number,
+    beatFile: string,
+    context: string,
+  ): Promise<void> {
+    await expect.poll(() => isPidAlive(pid), { timeout: 10_000, interval: 50 }).toBe(false);
+    const before = readFileSync(beatFile, "utf8");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(readFileSync(beatFile, "utf8"), `${context}: the heartbeat must be frozen`).toBe(before);
+  }
 
-      // Age the entry into an orphan from a previous daemon generation.
-      recordAgentProcess(
-        {
-          ...readAgentProcessRegistry({ filePath, logger })[0],
-          ownerDaemonId: "previous-daemon-generation",
-          orphanedAt: new Date(
-            Date.now() - AGENT_PROCESS_UNOWNED_RECORD_TTL_MS - 60_000,
-          ).toISOString(),
-        },
-        { filePath, logger },
-      );
-      expect(classifyAgentProcessEntry(readAgentProcessRegistry({ filePath, logger })[0])).toBe(
-        "live-matching",
-      );
+  function ageIntoExpiredOrphan(): AgentProcessEntry {
+    const entry = readAgentProcessRegistry({ filePath, logger })[0];
+    recordAgentProcess(
+      {
+        ...entry,
+        ownerDaemonId: "previous-daemon-generation",
+        orphanedAt: new Date(
+          Date.now() - AGENT_PROCESS_UNOWNED_RECORD_TTL_MS - 60_000,
+        ).toISOString(),
+      },
+      { filePath, logger },
+    );
+    return readAgentProcessRegistry({ filePath, logger })[0];
+  }
 
-      // No killScope seam: this drives the real systemctl path.
-      const result = reapStaleAgentProcesses({ filePath, logger });
+  test("SIGKILLs a scope member that ignores SIGTERM and only then drops its record", async () => {
+    if (!requireRealScope()) return;
+    const beatFile = path.join(tmpDir, "grandchild.beat");
+    const { mainPid } = await spawnScopeWithSurvivingGrandchild(false);
+    const entry = ageIntoExpiredOrphan();
 
-      expect(result.removed.map((entry) => entry.pid)).toEqual([pid]);
-      expect(readAgentProcessRegistry({ filePath, logger })).toEqual([]);
-      expect(isPidRunning(pid as number), "the real scoped orphan is stopped").toBe(false);
-    },
-  );
+    // Real cgroup identity with no seam: the scope genuinely holds both the main
+    // process and the grandchild.
+    expect(readAgentScopePopulation(entry)).toMatchObject({
+      known: true,
+      populated: true,
+    });
+    expect(classifyAgentProcessEntry(entry)).toBe("live-matching");
+    expectPidAlive(grandchildPid as number, "the grandchild is running before the reap");
+
+    const logs: string[] = [];
+    const captureLogger = pino({ level: "warn" }, { write: (line) => logs.push(line) });
+    // No killScope and no sleepMs: this drives the real `systemctl kill` path and
+    // the real bounded wait. The grace is shortened but NOT set to zero — a zero
+    // timeout re-checks immediately and would report a successful SIGKILL as a
+    // failure.
+    const result = reapStaleAgentProcesses({
+      filePath,
+      logger: captureLogger,
+      termGraceMs: 500,
+      killTimeoutMs: 5_000,
+    });
+
+    // The ONLY discriminating assertion: on the pid-only code this reap reported
+    // "terminated with SIGTERM" the moment the main pid died, removed the record,
+    // and left this grandchild running.
+    await expectProcessStopped(
+      grandchildPid as number,
+      beatFile,
+      "a scope member that ignores SIGTERM must still be killed",
+    );
+
+    // The stop can only have been reported after SIGKILL, because SIGTERM
+    // provably cannot clear a scope whose member ignores it.
+    const stopped = logs.find((line) => line.includes("orphan-stopped"));
+    expect(stopped, "the reap logs the stopped orphan").toBeTruthy();
+    expect(stopped).toContain("scope cgroup emptied after SIGKILL");
+
+    expect(result.removed.map((entry2) => entry2.pid)).toEqual([mainPid]);
+    expect(readAgentProcessRegistry({ filePath, logger })).toEqual([]);
+    expect(isPidRunning(mainPid), "the scope's main process is stopped too").toBe(false);
+  });
+
+  test("keeps the record of a scope whose main exited while a member survived, then kills the member", async () => {
+    if (!requireRealScope()) return;
+    const beatFile = path.join(tmpDir, "grandchild.beat");
+    const { mainPid } = await spawnScopeWithSurvivingGrandchild(true);
+
+    // The main process exits on its own. The grandchild is still in the scope:
+    // under KillMode=process nothing else is killed, which is the real-world
+    // orphan shape.
+    await expect.poll(() => isPidAlive(mainPid), { timeout: 15_000, interval: 50 }).toBe(false);
+    const entry = readAgentProcessRegistry({ filePath, logger })[0];
+
+    // A dead main pid with a populated scope is NOT dead. Pinning the exact value
+    // matters: anything else is dropped by the reaper without a signal.
+    expect(classifyAgentProcessEntry(entry)).toBe("live-matching");
+    expect(readAgentScopePopulation(entry)).toMatchObject({
+      known: true,
+      populated: true,
+    });
+    expectPidAlive(grandchildPid as number, "the survivor outlives the main process");
+
+    // So a fresh reap keeps the record and signals nothing.
+    const fresh = reapStaleAgentProcesses({ filePath, logger });
+    expect(fresh.removed).toEqual([]);
+    expect(fresh.kept.map((kept) => kept.pid)).toEqual([mainPid]);
+    expect(readAgentProcessRegistry({ filePath, logger })).toHaveLength(1);
+    expectPidAlive(grandchildPid as number, "a reap inside the window never signals");
+
+    // Past the window the survivor is killed for real and only then is the
+    // record dropped.
+    ageIntoExpiredOrphan();
+    const expired = reapStaleAgentProcesses({
+      filePath,
+      logger,
+      termGraceMs: 500,
+      killTimeoutMs: 5_000,
+    });
+    await expectProcessStopped(
+      grandchildPid as number,
+      beatFile,
+      "the orphan the record existed for must be killed",
+    );
+    expect(expired.removed.map((removed) => removed.pid)).toEqual([mainPid]);
+    expect(readAgentProcessRegistry({ filePath, logger })).toEqual([]);
+  });
+
+  test("reports a collected scope as unpopulated instead of reading the cgroup root", async () => {
+    if (!requireRealScope()) return;
+    // A collected unit reports an EMPTY ControlGroup. Joining that onto the
+    // cgroup mount point would resolve to the cgroup ROOT, which holds every
+    // process on the host — so every scope would look permanently populated and
+    // no record would ever be dropped again.
+    const scopeId = `paseo-agent-${process.pid}-0123456789ab`;
+    const population = readAgentScopePopulation({
+      scopeId,
+      unit: `${scopeId}.scope`,
+      pid: process.pid,
+      provider: "never-spawned",
+      startedAt: new Date().toISOString(),
+    });
+    expect(population).toMatchObject({ known: true, populated: false, pids: [] });
+    expect(population.pids, "the cgroup root must never be read as this scope").not.toContain(
+      process.pid,
+    );
+  });
+
+  test("keeps the record when the scope of a dead main pid is still populated", async () => {
+    if (!requireRealScope()) return;
+    const { mainPid } = await spawnScopeWithSurvivingGrandchild(true);
+    await expect.poll(() => isPidAlive(mainPid), { timeout: 15_000, interval: 50 }).toBe(false);
+
+    // The detach-stop flush is the other pid-only deletion path: on the old code
+    // it dropped the record of a dead main pid even with a live member, which is
+    // how a detach-stop used to orphan a survivor permanently.
+    const flush = flushLiveAgentProcesses({ filePath, logger });
+    expect(flush.removed).toEqual([]);
+    expect(flush.kept.map((kept) => kept.pid)).toEqual([mainPid]);
+    expect(readAgentProcessRegistry({ filePath, logger })).toHaveLength(1);
+    expectPidAlive(grandchildPid as number, "the survivor stays tracked across a flush");
+  });
 });

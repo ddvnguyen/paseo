@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import pino from "pino";
 
@@ -55,6 +56,7 @@ describe("spawnInAgentScope", () => {
   let previousPaseoHome: string | undefined;
   let fixtureChild: ReturnType<typeof spawn> | null = null;
   let grandchildPid: number | null = null;
+  let unitUnderTest = "";
 
   beforeEach(() => {
     tmpDir = mkdtempSync(path.join(os.tmpdir(), "agent-process-scope-"));
@@ -62,18 +64,29 @@ describe("spawnInAgentScope", () => {
     process.env.PASEO_HOME = tmpDir;
     fixtureChild = null;
     grandchildPid = null;
+    unitUnderTest = "";
   });
 
   afterEach(() => {
     if (fixtureChild && fixtureChild.exitCode === null) {
       fixtureChild.kill("SIGKILL");
     }
+    // Unconditional cleanup: a test that timed out would otherwise leave a real
+    // SIGTERM-ignoring process in a real scope on this host.
     if (grandchildPid !== null) {
       try {
         process.kill(grandchildPid, "SIGKILL");
       } catch {
         // already gone
       }
+    }
+    if (unitUnderTest) {
+      spawnSync(
+        "systemctl",
+        ["--user", "kill", "--kill-whom=all", "--signal=SIGKILL", "--", unitUnderTest],
+        { stdio: "ignore" },
+      );
+      unitUnderTest = "";
     }
     __setAgentProcessScopeDetectionForTests(null);
     __setAgentProcessScopeProbeForTests(null);
@@ -389,10 +402,94 @@ describe("spawnInAgentScope", () => {
     const closed = once(child, "close");
     child.kill("SIGKILL");
     await closed;
-    const flush = flushLiveAgentProcesses({ filePath: registryPath, logger });
-    expect(flush.removed.map((entry) => entry.pid)).toContain(pid);
+    // Polled, not asserted immediately: the flush now also requires the scope
+    // cgroup to be empty, and systemd tears a collected scope down a few
+    // milliseconds after the last member dies. Asserting synchronously would be
+    // asserting the absence of a race rather than the behaviour.
+    await expect
+      .poll(() => flushLiveAgentProcesses({ filePath: registryPath, logger }).removed.length, {
+        timeout: 5_000,
+        interval: 50,
+      })
+      .toBe(1);
     expect(readAgentProcessRegistry({ filePath: registryPath })).toEqual([]);
   });
+
+  // The third pid-only site: the spawn-time `forget` handler. libuv emits `exit`
+  // AFTER waitpid, so on the old code `isPidAlive(pid)` was already false when
+  // the handler ran and it dropped the record — even though the child the
+  // provider itself spawned was still running in the scope.
+  test.skipIf(!realScopeProbe.ok)(
+    "keeps the registry record when the scoped main process exits but a child it spawned survives",
+    async () => {
+      if (!realScopeProbe.ok && process.env.PASEO_REQUIRE_SYSTEMD_TESTS === "1") {
+        throw new Error("real systemd scope required but unavailable");
+      }
+      __setAgentProcessScopeDetectionForTests({ available: true, reason: "forced by test" });
+      __setAgentProcessScopeProbeForTests(() => ({ ok: true, reason: "forced by test" }));
+      const registryPath = path.join(tmpDir, "agent-processes.json");
+      const grandchildPidFile = path.join(tmpDir, "survivor.pid");
+      const beatFile = path.join(tmpDir, "survivor.beat");
+
+      // The main process spawns a SIGTERM-ignoring child and then exits on its
+      // own: the real ACP-adapter shape, where the adapter goes away on stdin
+      // EOF but the dev server it started keeps running.
+      const grandchildCode = [
+        'const fs = require("node:fs");',
+        'process.on("SIGTERM", () => {});',
+        `fs.writeFileSync(${JSON.stringify(grandchildPidFile)}, String(process.pid));`,
+        `setInterval(() => fs.writeFileSync(${JSON.stringify(beatFile)}, String(Date.now())), 100);`,
+      ].join("");
+      const mainCode = [
+        'const { spawn } = require("node:child_process");',
+        'const fs = require("node:fs");',
+        `const gc = spawn(process.execPath, ["-e", ${JSON.stringify(grandchildCode)}],`,
+        '  { stdio: "ignore", detached: true });',
+        "gc.unref();",
+        `const w = setInterval(() => { if (fs.existsSync(${JSON.stringify(grandchildPidFile)})) { clearInterval(w); process.exit(0); } }, 25);`,
+      ].join("");
+
+      const child = spawnInAgentScope(
+        process.execPath,
+        ["-e", mainCode, "--", "--provider-marker=claude-acp"],
+        { stdio: "ignore" },
+        { provider: "scope-test", logger },
+      );
+      const mainPid = child.pid as number;
+      unitUnderTest = readAgentProcessRegistry({ filePath: registryPath })[0]?.unit ?? "";
+
+      await expect
+        .poll(() => existsSync(grandchildPidFile), { timeout: 15_000, interval: 50 })
+        .toBe(true);
+      const survivorPid = Number(readFileSync(grandchildPidFile, "utf8"));
+
+      // The REAL exit, not a synthetic emit: `child.emit("exit")` fires while the
+      // main pid is still alive, which the old handler also handled, so it would
+      // pass on the buggy code. Polled off the ChildProcess state rather than
+      // awaited via `once`, because the exit can land before a listener is even
+      // attached — the grandchild's readiness file appears within one poll
+      // interval of the main process's own exit.
+      await expect
+        .poll(() => child.exitCode !== null || child.signalCode !== null, {
+          timeout: 15_000,
+          interval: 50,
+        })
+        .toBe(true);
+      await expect.poll(() => isPidAlive(mainPid), { timeout: 5_000, interval: 50 }).toBe(false);
+
+      // The record must survive: it is the only handle on the survivor.
+      const remaining = readAgentProcessRegistry({ filePath: registryPath });
+      expect(remaining.map((entry) => entry.pid)).toEqual([mainPid]);
+      expect(classifyAgentProcessEntry(remaining[0])).toBe("live-matching");
+      expect(isPidAlive(survivorPid), "the survivor is still running").toBe(true);
+      // The heartbeat is written on a timer, so wait for the first beat before
+      // using "still beating" as the liveness assertion.
+      await expect.poll(() => existsSync(beatFile), { timeout: 5_000, interval: 50 }).toBe(true);
+      const beat = readFileSync(beatFile, "utf8");
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(readFileSync(beatFile, "utf8"), "the survivor is still beating").not.toBe(beat);
+    },
+  );
 });
 
 const GRANDCHILD_SOURCE = `

@@ -132,10 +132,12 @@ import { createSpeechService } from "./speech/speech-runtime.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { AgentStorage } from "./agent/agent-storage.js";
 import {
+  AGENT_PROCESS_REAP_BOOTSTRAP_BUDGET_MS,
   flushLiveAgentProcesses,
   reapStaleAgentProcesses,
   setAgentProcessRegistryHome,
 } from "./agent/agent-process-registry.js";
+import { createAgentProcessReaper } from "./agent/agent-process-reaper.js";
 import { beginAgentDetachStop, isDetachAgentsOnStopEnabled } from "./agent/agent-detach.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
@@ -632,8 +634,18 @@ export async function createPaseoDaemon(
   // entries; live matching records are left alone (adoption is a later slice).
   // Pin the registry to this daemon's home first so spawn-side recording and
   // reaping agree even when config.paseoHome came from an explicit test harness.
+  //
+  // The FIRST pass is synchronous on purpose: the registry is a read-modify-write
+  // JSON file with no cross-process lock, and `recordAgentProcess` runs inline on
+  // the spawn path, so a reap that yielded between its read and its write-back
+  // could clobber a record a spawn had just written. It runs before anything is
+  // being served and gets a generous budget. Later passes run on an unref'd
+  // timer with a small budget, because a daemon that stays up for weeks must
+  // still reap and a reaper must never stall the event loop.
   setAgentProcessRegistryHome(config.paseoHome);
-  reapStaleAgentProcesses({ logger });
+  reapStaleAgentProcesses({ logger, budgetMs: AGENT_PROCESS_REAP_BOOTSTRAP_BUDGET_MS });
+  const agentProcessReaper = createAgentProcessReaper({ logger });
+  agentProcessReaper.start();
   if (isDetachAgentsOnStopEnabled()) {
     logger.info(
       { env: "PASEO_DETACH_AGENTS_ON_STOP" },
@@ -1810,6 +1822,7 @@ export async function createPaseoDaemon(
     await hubRelationships.stop();
     workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
+    agentProcessReaper.stop();
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();

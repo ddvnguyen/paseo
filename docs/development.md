@@ -85,7 +85,7 @@ What survival is actually proven:
   observes EOF and stays alive; the scope is not torn down).
 - **ACP stdio children — no.** An ACP child talks over anonymous stdio pipes
   owned by the dying daemon. Those pipes are gone, so it sees EOF/EPIPE and
-  exits; it cannot be re-attached. "Agent turns survive" is *not* a claim about
+  exits; it cannot be re-attached. "Agent turns survive" is _not_ a claim about
   ACP-backed agents.
 - Adapters that exit on EOF still exit — now without taking siblings down.
 
@@ -106,23 +106,40 @@ Rules:
 
 Scoped children live in transient `systemd --user --scope` units, so they are
 siblings of `paseo.service`'s cgroup and survive every kind of daemon death —
-which means systemd no longer kills them for us. Two bounded paths replace that:
+which means systemd no longer kills them for us. One bounded path replaces that,
+and **the scope's cgroup is the only liveness authority**: under
+`KillMode=process` neither `systemctl stop` nor `RuntimeMaxSec` kills anything
+(measured on systemd 259: both leave the process running), so a record is only
+ever dropped once the scope's own `cgroup.procs` is empty. A dead _main_ pid
+proves nothing — a child the provider spawned routinely outlives it.
 
-- **Startup reaper (always on).** Each daemon bootstrap reaps
-  `$PASEO_HOME/agent-processes.json`. An entry whose owning daemon generation is
-  gone is stamped with `orphanedAt` and kept for a full
-  `AGENT_PROCESS_UNOWNED_RECORD_TTL_MS` (24 h) adoption window measured from
-  that stamp — not from the child's age, so a long-running agent is not expired
-  by being old. Past the window the orphan is stopped for real
-  (`systemctl --user kill --kill-whom=all`, SIGTERM → grace → SIGKILL) and only
-  then is its record dropped. A record is never deleted while its process is
-  alive: if the kill fails the record is kept and logged at error level so the
-  next reap retries. Entries this daemon owns are never signalled.
-- **`PASEO_AGENT_SCOPE_MAX_RUNTIME_SEC` (opt-in).** Adds
-  `--property=RuntimeMaxSec=<n>` to every scope so systemd itself caps runaway
-  children. Off by default: a fixed ceiling would SIGTERM a legitimately
-  long-lived agent this daemon still owns, which is worse than a slow orphan
-  bound. Set it only if you accept that ceiling.
+- **Reaper (always on).** Every daemon bootstrap, and every 5 minutes after
+  that, reaps `$PASEO_HOME/agent-processes.json`. Each pass has a wall-clock
+  budget (2 s periodically, 15 s at bootstrap) so a reaper can never stall the
+  daemon; entries not reached inside the budget keep their records for the next
+  pass.
+- An entry whose owning daemon generation is gone is stamped with `orphanedAt`
+  and kept for a full `AGENT_PROCESS_UNOWNED_RECORD_TTL_MS` (24 h) adoption
+  window measured from that stamp — not from the child's age, so a long-running
+  agent is not expired by being old. Past the window the orphan is stopped for
+  real: SIGTERM the whole scope → grace → SIGKILL via
+  `systemctl --user kill --kill-whom=all` → and, only if the cgroup is still
+  populated, one direct write of the scope's own `cgroup.kill`. Only then is the
+  record dropped.
+- A failed kill **keeps** the record and logs at error level so the next pass
+  retries, and a scope whose cgroup cannot be read is reported as _populated_:
+  the record is the only handle on a survivor, so an unreadable scope must never
+  be the reason one is deleted. Entries this daemon owns are never signalled.
+- `PASEO_AGENT_SCOPE_MAX_RUNTIME_SEC` (opt-in) adds
+  `--property=RuntimeMaxSec=<n>` to every scope. **It does not bound the child's
+  lifetime.** Measured on systemd 259 with this feature's own
+  `KillMode=process`: with `RuntimeMaxSec=3` the unit goes `failed`
+  (`Result=timeout`) after 6 s and the process is _still running_ — systemd
+  abandons the processes rather than killing them. What it does give you is a
+  visible trigger: an over-long scope shows up as `failed` in
+  `systemctl --user status` instead of looking healthy forever. Off by default; a
+  low ceiling would fail a legitimately long-lived owned agent, which is worse
+  than a slow orphan bound.
 
 ### Daemon endpoints
 
