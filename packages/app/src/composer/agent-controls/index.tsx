@@ -440,6 +440,16 @@ function resolveSnapshotModeIds(
   return entry.modes.map((mode) => mode.id);
 }
 
+function resolveSelectableModels(
+  entry: ReturnType<typeof resolveSnapshotSelectedEntry>,
+  excludedByProvider: ReadonlyMap<string, ReadonlySet<string>>,
+) {
+  return filterSelectableModels(
+    entry?.models ?? null,
+    entry ? excludedByProvider.get(entry.provider) : undefined,
+  );
+}
+
 function buildAgentProviderDefinitions(
   agentProvider: string | undefined,
   snapshotEntries: ReturnType<typeof useProvidersSnapshot>["entries"],
@@ -1582,10 +1592,7 @@ export const AgentControls = memo(function AgentControls({
   // Disabled models stay hidden from new selection (C2); the running model
   // keeps displaying via the C1 raw-id fallback.
   const excludedByProvider = useExcludedModelIdsByProvider(serverId);
-  const models = filterSelectableModels(
-    snapshotSelectedEntry?.models ?? null,
-    snapshotSelectedEntry ? excludedByProvider.get(snapshotSelectedEntry.provider) : undefined,
-  );
+  const models = resolveSelectableModels(snapshotSelectedEntry, excludedByProvider);
   const selectedProviderIsLoading = snapshotSelectedEntry?.status === "loading";
 
   const agentProviderDefinitions = useMemo(

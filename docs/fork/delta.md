@@ -635,7 +635,6 @@ Treat absence as a value. A plain `git rev-parse` that fails on a path the fork
 _deleted_ silently undercounts — that is exactly how `package-lock.json` gets
 missed, and it is the single most consequential entry in this ledger.
 
-
 ## pnpm-vs-npm adaptation: root `pino` devDependency
 
 Upstream is an npm-workspaces repo (no pnpm-workspace.yaml); the fork is pnpm

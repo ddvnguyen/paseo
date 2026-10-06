@@ -1067,6 +1067,9 @@ importers:
       wrangler:
         specifier: ^4.75.0
         version: 4.105.0(@cloudflare/workers-types@4.20260627.1)
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.1.8
