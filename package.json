@@ -137,11 +137,11 @@
     "oxlint": "1.61.0",
     "oxlint-tsgolint": "^0.22.1",
     "patch-package": "^8.0.1",
+    "pino": "^10.2.0",
     "playwright": "^1.56.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "ws": "^8.20.0",
-    "pino": "^10.2.0"
+    "ws": "^8.20.0"
   },
   "overrides": {
     "@codemirror/language": "6.12.4",
