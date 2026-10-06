@@ -1023,11 +1023,11 @@ export const fr: TranslationResources = {
             failure: "{{count}} en échec",
             pending: "{{count}} en cours",
             manual: "{{count}} manuels",
-            success: "{{count}} réussis",
-            ignored: "{{count}} ignorés",
+            success: "{{count}} réussie(s)",
+            ignored: "{{count}} ignorée(s)",
           },
-          detailOne: "{{parts}} : vérification",
-          detailMany: "{{parts}} : vérifications",
+          detailOne: "Vérification : {{parts}}",
+          detailMany: "Vérifications : {{parts}}",
           groupOne: {
             actionRequired: "{{count}} vérification nécessitant une action",
             warning: "{{count}} vérification avec avertissement",
@@ -1173,9 +1173,9 @@ export const fr: TranslationResources = {
   sidebar: {
     statusGroupAccessibility: "Groupe {{label}}",
     statusBucket: {
-      needsInput: "Nécessite une action",
-      failed: "En échec",
-      readyToReview: "Prêt à réviser",
+      needsInput: "Attend une réponse",
+      failed: "Échec",
+      readyToReview: "À relire",
       working: "En cours",
       done: "Terminé",
     },
