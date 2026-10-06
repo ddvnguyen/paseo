@@ -1604,6 +1604,10 @@ export class OpenCodeAgentClient implements AgentClient {
       events: acquisition.events,
       environment: acquisition.environment,
       url: acquisition.server.url,
+      // Fork lifecycle: the detach gate accounts the server generation by pid,
+      // so it must ride along with the connection — upstream's converter drops
+      // it, which leaves every session pid-less (zombie pid).
+      pid: acquisition.server.pid,
       release: acquisition.release,
     };
   }
@@ -3447,7 +3451,7 @@ class OpenCodeAgentSession implements AgentSession {
   private readonly unrelatedSessionIds = new Set<string>();
   private selectedModelContextWindowMaxTokens: number | undefined;
   /** Pid of the opencode server generation backing this session, for the detach gate. */
-  private readonly serverPid: number | undefined;
+  private serverPid: number | undefined;
   private releaseBridge: (() => void) | null;
   private ingress = Promise.resolve();
   private gapRepairRevision = 0;
@@ -3563,6 +3567,10 @@ class OpenCodeAgentSession implements AgentSession {
       return;
     }
     this.server = next;
+    // Fork lifecycle: close() gates detach on serverPid, so it must follow the
+    // live generation across a reconnect — otherwise the gate consults the dead
+    // pid after the session moves to a new server.
+    this.serverPid = next.pid;
     this.serverExited = false;
     this.recoveryAbortController = new AbortController();
     this.mcpSetup = null;

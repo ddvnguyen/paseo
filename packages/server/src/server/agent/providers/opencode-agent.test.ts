@@ -7049,6 +7049,7 @@ describe("OpenCode session close under detach-stop", () => {
       { session: sessionApi } as never,
       "ses_unit_test",
       createTestLogger(),
+      {}, // harnessEnvironment (ctor position 5; the fork's helper predates it)
       new Map(),
       undefined, // events
       undefined, // releaseServer
@@ -7176,5 +7177,38 @@ describe("OpenCode session close under detach-stop", () => {
       sessionID: "ses_unit_test",
       directory: "/tmp/test",
     });
+  });
+
+  test("a provider-created session carries the server pid into the detach gate", async () => {
+    // Regression guard for the half-merged toServerConnection, which dropped
+    // acquisition.server.pid: without it every session is pid-less, so a
+    // daemon-stop close can never detach (zombie pid).
+    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
+    const cwd = tmpCwd();
+    const runtime = new TestOpenCodeHarness();
+    runtime.server = { ...runtime.server, pid: 515160 };
+    const upstream = new TestOpenCodeClient();
+    runtime.enqueueClient(upstream);
+    const client = new OpenCodeAgentClient(createTestLogger(), undefined, {
+      serverManager: runtime,
+      createClient: runtime.createClient,
+    });
+    const session = await client.createSession({
+      provider: "opencode",
+      cwd,
+      model: TEST_MODEL,
+    });
+    try {
+      registerServerPid(515160);
+
+      await expect(session.close({ reason: DAEMON_STOP_CLOSE_REASON })).resolves.toEqual({
+        detached: true,
+      });
+
+      expect(upstream.calls.sessionAbort).toHaveLength(0);
+      expect(upstream.calls.sessionDelete).toHaveLength(0);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });
