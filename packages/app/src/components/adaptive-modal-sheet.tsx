@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Modal, Platform, Pressable, Text, View } from "react-native";
+import { Keyboard, Pressable, Text, View } from "react-native";
 import type { DimensionValue, StyleProp, ViewStyle } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -13,13 +13,11 @@ import {
   useWebOverlayRegistration,
 } from "../lib/overlay-root";
 import {
-  BottomSheetBackdrop,
   KEYBOARD_STATUS,
   useBottomSheetInternal,
   type BottomSheetBackgroundProps,
 } from "@gorhom/bottom-sheet";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
-import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { ArrowLeft, Search, X } from "lucide-react-native";
 import {
   IsolatedBottomSheetModal,
@@ -95,10 +93,14 @@ export interface SheetHeader {
 
 const SCROLL_CONTENT_GROW = { flexGrow: 1 };
 const ABSOLUTE_FILL_STYLE = { ...StyleSheet.absoluteFillObject };
+const NATIVE_DIALOG_SNAP_POINTS = ["100%"];
 
 const styles = StyleSheet.create((theme) => ({
-  nativeModalRoot: {
+  nativeDialogSurface: {
     flex: 1,
+  },
+  nativeDialogBackground: {
+    backgroundColor: "transparent",
   },
   desktopOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -170,6 +172,32 @@ const styles = StyleSheet.create((theme) => ({
   floatingClosePressed: {
     backgroundColor: theme.colors.interactionHighlight,
   },
+  // Edge-to-edge reset: only zeroes the sheet's own inset, and a caller's own
+  // padding still wins because it is applied after this. Scoped to the mode so
+  // every other sheet keeps the inset it had.
+  edgeToEdgeContent: {
+    padding: 0,
+  },
+  edgeToEdgeOverlay: {
+    padding: 0,
+  },
+  // Positioning layer for the edge-to-edge close control. It spans the card's
+  // top edge and lays the button out with padding, so the button needs no
+  // offsets of its own. box-none lets touches fall through to the content
+  // underneath; zIndex keeps it painted above the body and footer, which are
+  // its later siblings and would otherwise cover it. The top padding is added
+  // by SheetHeaderView, which owns the safe-area inset.
+  floatingCloseLayer: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 1,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    paddingRight: theme.spacing[FLOATING_CLOSE_EDGE_INSET_SCALE],
+    pointerEvents: "box-none" as const,
+  },
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -231,32 +259,6 @@ const styles = StyleSheet.create((theme) => ({
   sheetContent: {
     padding: theme.spacing[SHEET_HORIZONTAL_PADDING_SCALE],
     gap: theme.spacing[4],
-  },
-  // Edge-to-edge reset: only zeroes the sheet's own inset, and a caller's own
-  // padding still wins because it is applied after this. Scoped to the mode so
-  // every other sheet keeps the inset it had.
-  edgeToEdgeContent: {
-    padding: 0,
-  },
-  edgeToEdgeOverlay: {
-    padding: 0,
-  },
-  // Positioning layer for the edge-to-edge close control. It spans the card's
-  // top edge and lays the button out with padding, so the button needs no
-  // offsets of its own. box-none lets touches fall through to the content
-  // underneath; zIndex keeps it painted above the body and footer, which are
-  // its later siblings and would otherwise cover it. The top padding is added
-  // by SheetHeaderView, which owns the safe-area inset.
-  floatingCloseLayer: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 1,
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    paddingRight: theme.spacing[FLOATING_CLOSE_EDGE_INSET_SCALE],
-    pointerEvents: "box-none" as const,
   },
   contentGrow: {
     flexGrow: 1,
@@ -560,6 +562,48 @@ export function InlineHeaderView({ header }: { header: SheetHeader }) {
   );
 }
 
+/**
+ * The compact sheet's body. Split out of AdaptiveModalSheet so the scrollable
+ * and host-owned branches do not sit inside the component that already carries
+ * every presentation decision; the two branches are identical in both modes.
+ */
+function CompactSheetBody({
+  scrollable,
+  bodyStyle,
+  bodyClearanceStyle,
+  contentStyle,
+  children,
+}: {
+  scrollable: boolean;
+  bodyStyle: StyleProp<ViewStyle>;
+  bodyClearanceStyle: StyleProp<ViewStyle>;
+  contentStyle: StyleProp<ViewStyle>[];
+  children: ReactNode;
+}) {
+  return (
+    <View style={[styles.compactStaticContent, bodyStyle]}>
+      {scrollable ? (
+        <ScrollView
+          style={styles.bottomSheetVisibleScroll}
+          contentContainerStyle={SCROLL_CONTENT_GROW}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={[styles.contentGrow, bodyClearanceStyle]}>
+            <SheetContent style={[styles.contentGrow, contentStyle]}>{children}</SheetContent>
+          </View>
+        </ScrollView>
+      ) : (
+        <View style={[styles.compactStaticContent, bodyClearanceStyle]}>
+          <SheetContent style={[styles.compactStaticContent, contentStyle]}>
+            {children}
+          </SheetContent>
+        </View>
+      )}
+    </View>
+  );
+}
+
 export interface AdaptiveModalSheetProps {
   header: SheetHeader;
   visible: boolean;
@@ -584,7 +628,7 @@ export interface AdaptiveModalSheetProps {
   contentStyle?: StyleProp<ViewStyle>;
   /** Size compact sheet content to the live snap height instead of its largest snap point. */
   sizeContentToCurrentSnapPoint?: boolean;
-  /** Re-establishes caller-owned contexts inside the compact bottom-sheet portal. */
+  /** Re-establishes caller-owned contexts inside the native or compact sheet portal. */
   contextBridge?: ContextBridge | null;
   /**
    * Render the body flush to the card edges with no header bar: the close
@@ -652,7 +696,10 @@ export function AdaptiveModalSheet({
   );
   // Safe-area clearance is a separate layer: it must not replace the caller's
   // padding (including an explicit zero), and the footer owns it when present.
-  const bodyClearanceStyle = { paddingBottom: compactSafeAreaPadding.contentPaddingBottom ?? 0 };
+  const bodyClearanceStyle = useMemo(
+    () => ({ paddingBottom: compactSafeAreaPadding.contentPaddingBottom ?? 0 }),
+    [compactSafeAreaPadding.contentPaddingBottom],
+  );
   const footerClearanceStyle = useMemo(
     () => ({ paddingBottom: compactSafeAreaPadding.footerPaddingBottom ?? 0 }),
     [compactSafeAreaPadding.footerPaddingBottom],
@@ -666,33 +713,26 @@ export function AdaptiveModalSheet({
     () => ({ backgroundColor: theme.colors.palette.zinc[600] }),
     [theme.colors.palette.zinc],
   );
+  useEffect(() => {
+    if (!isWeb && visible) {
+      // A newly opened sheet owns input. A keyboard belonging to the sheet below
+      // would cover controls in the new sheet, which has no focused input yet.
+      Keyboard.dismiss();
+    }
+  }, [visible]);
+
   const { sheetRef, handleSheetChange, handleSheetDismiss } = useIsolatedBottomSheetVisibility({
     visible,
-    isEnabled: isMobile,
+    isEnabled: isMobile || !isWeb,
     onClose,
   });
   const [shouldRenderWeb, setShouldRenderWeb] = useState(visible);
   const [isWebClosing, setIsWebClosing] = useState(false);
   const modalLayer = useGlobalWebOverlayLayer("modal", isWeb && !isMobile && shouldRenderWeb);
-  const nativeModalDismissNotifiedRef = useRef(!visible);
   const handleDismiss = useCallback(() => {
     handleSheetDismiss();
     onDismiss?.();
   }, [handleSheetDismiss, onDismiss]);
-  const notifyNativeModalDismiss = useCallback(() => {
-    if (nativeModalDismissNotifiedRef.current) {
-      return;
-    }
-    nativeModalDismissNotifiedRef.current = true;
-    onDismiss?.();
-  }, [onDismiss]);
-
-  const renderBackdrop = useCallback(
-    (props: React.ComponentProps<typeof BottomSheetBackdrop>) => (
-      <BottomSheetBackdrop {...props} disappearsOnIndex={-1} appearsOnIndex={0} opacity={0.45} />
-    ),
-    [],
-  );
 
   const desktopCardStyle = useMemo(
     () => [
@@ -738,12 +778,6 @@ export function AdaptiveModalSheet({
   });
 
   useEffect(() => {
-    if (visible) {
-      nativeModalDismissNotifiedRef.current = false;
-    }
-  }, [visible]);
-
-  useEffect(() => {
     if (!isWeb || isMobile) return;
     if (visible) {
       setShouldRenderWeb(true);
@@ -760,47 +794,19 @@ export function AdaptiveModalSheet({
     return () => window.clearTimeout(timeout);
   }, [visible, isMobile, onDismiss, shouldRenderWeb]);
 
-  useEffect(() => {
-    if (isWeb || isMobile || visible || Platform.OS !== "android") return;
-    const timeout = setTimeout(notifyNativeModalDismiss, 0);
-    return () => clearTimeout(timeout);
-  }, [visible, isMobile, notifyNativeModalDismiss]);
-
   const edgeToEdgeContentStyle = useMemo(
     () => (edgeToEdge ? styles.edgeToEdgeContent : undefined),
     [edgeToEdge],
+  );
+  const compactContentStyle = useMemo(
+    () => [contentStyle, edgeToEdgeContentStyle],
+    [contentStyle, edgeToEdgeContentStyle],
   );
   // A surface that draws its own close does so on EVERY form factor. See
   // `surfaceOwnsClose` for why the compact exception was a mistake.
   const showSheetClose = surfaceOwnsClose !== true;
 
   if (isMobile) {
-    const body = (
-      <View style={[styles.compactStaticContent, bodyStyle]}>
-        {scrollable ? (
-          <ScrollView
-            style={styles.bottomSheetVisibleScroll}
-            contentContainerStyle={SCROLL_CONTENT_GROW}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            <View style={[styles.contentGrow, bodyClearanceStyle]}>
-              <SheetContent style={[styles.contentGrow, contentStyle, edgeToEdgeContentStyle]}>
-                {children}
-              </SheetContent>
-            </View>
-          </ScrollView>
-        ) : (
-          <View style={[styles.compactStaticContent, bodyClearanceStyle]}>
-            <SheetContent
-              style={[styles.compactStaticContent, contentStyle, edgeToEdgeContentStyle]}
-            >
-              {children}
-            </SheetContent>
-          </View>
-        )}
-      </View>
-    );
     // In edge-to-edge the bar is gone, so the layer it would have rendered in
     // takes over the compact branch's testID and keeps the sheet queryable.
     const sheetContent = (
@@ -813,7 +819,14 @@ export function AdaptiveModalSheet({
           layerTestID={testID}
           showCloseButton={showSheetClose}
         />
-        {body}
+        <CompactSheetBody
+          scrollable={scrollable}
+          bodyStyle={bodyStyle}
+          bodyClearanceStyle={bodyClearanceStyle}
+          contentStyle={compactContentStyle}
+        >
+          {children}
+        </CompactSheetBody>
         {footerView}
       </>
     );
@@ -827,7 +840,7 @@ export function AdaptiveModalSheet({
         enableDynamicSizing={false}
         onChange={handleSheetChange}
         onDismiss={handleDismiss}
-        backdropComponent={renderBackdrop}
+        backdropOpacity={0.45}
         enablePanDownToClose
         backgroundComponent={SheetBackground}
         handleIndicatorStyle={handleIndicatorStyle}
@@ -903,18 +916,28 @@ export function AdaptiveModalSheet({
   }
 
   return (
-    <Modal
-      transparent
-      animationType="fade"
-      visible={visible}
-      onRequestClose={onClose}
-      onDismiss={notifyNativeModalDismiss}
-      hardwareAccelerated
+    // Both native presentations share Gorhom's app-wide stack. Independent RN Modals
+    // present from their React ancestor's controller, so a root-owned sibling dialog
+    // cannot present while that controller already has a dialog open on iOS.
+    <IsolatedBottomSheetModal
+      ref={sheetRef}
+      contextBridge={contextBridge}
+      snapPoints={NATIVE_DIALOG_SNAP_POINTS}
+      index={0}
+      enableDynamicSizing={false}
+      onChange={handleSheetChange}
+      onDismiss={handleDismiss}
+      handleComponent={null}
+      backgroundStyle={styles.nativeDialogBackground}
+      enablePanDownToClose={false}
+      enableHandlePanningGesture={false}
+      enableContentPanningGesture={false}
+      keyboardBehavior="extend"
+      keyboardBlurBehavior="restore"
+      accessible={false}
+      presentation={presentation}
     >
-      {/* Android Modal opens a separate window outside the app's gesture root. */}
-      <GestureHandlerRootView style={styles.nativeModalRoot}>
-        {desktopContent}
-      </GestureHandlerRootView>
-    </Modal>
+      <View style={styles.nativeDialogSurface}>{desktopContent}</View>
+    </IsolatedBottomSheetModal>
   );
 }

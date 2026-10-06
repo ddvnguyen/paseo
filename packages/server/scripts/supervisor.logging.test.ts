@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -9,11 +9,6 @@ import { resolveSupervisorLogFile } from "./supervisor-log-config.js";
 
 const repoRoot = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const supervisorPath = fileURLToPath(new URL("./supervisor.ts", import.meta.url));
-// The fixture spawns from the repo root, so `--import tsx` has to resolve from
-// there. The root package declares tsx for exactly that reason. Passing a
-// resolved absolute loader path instead works on Linux but breaks on Windows,
-// where the runner never starts and the fixture then reads a daemon.log that
-// was never created.
 
 function isProcessRunning(pid: number): boolean {
   try {
@@ -28,6 +23,10 @@ async function runSupervisorFixture(options: {
   workerSource: string;
   restartOnCrash?: boolean;
   timeoutMs?: number;
+  /** POSIX RLIMIT_FSIZE for the supervisor, in 512-byte blocks: writes past it fail like a full disk. */
+  fileSizeLimitBlocks?: number;
+  /** Occupy the log path with a directory so the supervisor cannot open daemon.log. */
+  blockLogPath?: boolean;
 }): Promise<{
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -41,6 +40,9 @@ async function runSupervisorFixture(options: {
   const workerPath = path.join(tempDir, "worker.mjs");
   const runnerPath = path.join(tempDir, "runner.mjs");
 
+  if (options.blockLogPath) {
+    await mkdir(logPath);
+  }
   await writeFile(
     workerPath,
     `process.send?.({ type: "paseo:ready", listen: "fixture", serverId: "srv_fixture" });\n${options.workerSource}`,
@@ -67,7 +69,18 @@ async function runSupervisorFixture(options: {
   );
 
   const startedAt = Date.now();
-  const child = spawn(process.execPath, ["--import", "tsx", runnerPath], {
+  const runnerArgs = [process.execPath, "--import", "tsx", runnerPath];
+  const [command, ...args] =
+    options.fileSizeLimitBlocks === undefined
+      ? runnerArgs
+      : [
+          "/bin/sh",
+          "-c",
+          `ulimit -f ${options.fileSizeLimitBlocks} && exec "$@"`,
+          "sh",
+          ...runnerArgs,
+        ];
+  const child = spawn(command, args, {
     cwd: repoRoot,
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
@@ -103,18 +116,7 @@ async function runSupervisorFixture(options: {
     });
   });
 
-  // A runner that never starts leaves no log file, and "ENOENT daemon.log"
-  // says nothing about why. Report the child's own output instead.
-  let log: string;
-  try {
-    log = await readFile(logPath, "utf8");
-  } catch (error) {
-    throw new Error(
-      `supervisor fixture wrote no log (exit ${code}/${signal})\n` +
-        `stdout: ${stdout}\nstderr: ${stderr}`,
-      { cause: error },
-    );
-  }
+  const log = await readFile(logPath, "utf8");
   return { code, signal, elapsedMs: Date.now() - startedAt, log, stdout, stderr };
 }
 
@@ -261,7 +263,7 @@ describe("supervisor durable logging", () => {
     expect(descendantSurvived).toBe(false);
   });
 
-  test("does not restart a responsive worker that outlives the hang window", async () => {
+  test("does not restart a worker based on heartbeat absence", async () => {
     const result = await runSupervisorFixture({
       timeoutMs: 20_000,
       workerSource: `
@@ -269,10 +271,6 @@ describe("supervisor durable logging", () => {
 
         process.on("message", (message) => {
           if (message?.type === "paseo:graceful-shutdown") process.exit(0);
-          // The daemon worker answers every supervisor heartbeat. A worker that
-          // keeps answering must survive past the hang window.
-          if (message?.type === "paseo:supervisor-heartbeat")
-            process.send?.({ type: "paseo:worker-heartbeat" });
         });
         const marker = process.argv[1] + ".started";
         if (!existsSync(marker)) {
@@ -369,80 +367,54 @@ describe("supervisor durable logging", () => {
     },
   );
 
-  test("force-restarts a worker that stops replying to heartbeats", async () => {
-    const markerFile = path.join(tmpdir(), `paseo-supervisor-hang-${process.pid}.marker`);
-    const originalTimeout = process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS;
-    try {
-      // Shorten the hang timeout so the test does not wait the 10s default.
-      process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS = "1500";
-
+  // POSIX-only: RLIMIT_FSIZE is how the test makes daemon.log writes fail.
+  test.skipIf(isPlatform("win32"))(
+    "keeps supervising the worker when daemon.log can no longer be written",
+    async () => {
       const result = await runSupervisorFixture({
-        restartOnCrash: true,
+        fileSizeLimitBlocks: 128,
         workerSource: `
-        import { existsSync, writeFileSync } from "node:fs";
-
-        // First run wedges the event loop so heartbeats are never answered.
-        // After the watchdog force-restarts us, exit cleanly so the
-        // supervisor can shut down and the fixture can finish.
-        const marker = ${JSON.stringify(markerFile)};
-        if (existsSync(marker)) {
-          process.exit(0);
-        }
-        writeFileSync(marker, "1");
-        process.on("message", () => {
-          while (true) {}
-        });
-      `,
+          process.on("message", (message) => {
+            if (message?.type === "paseo:graceful-shutdown") process.exit(0);
+          });
+          const line = '{"level":30,"msg":"' + "x".repeat(1000) + '"}\\n';
+          for (let i = 0; i < 200; i += 1) process.stdout.write(line);
+          setTimeout(() => {
+            process.send?.({ type: "paseo:shutdown", reason: "log_write_failure_probe" });
+          }, 1000);
+          setInterval(() => {}, 1000);
+        `,
       });
 
+      expect(result.stderr).not.toContain("Unhandled 'error' event");
       expect(result.code).toBe(0);
       expect(result.signal).toBeNull();
-      expect(result.log).toContain('"msg":"Worker considered hung; force-restarting"');
-      expect(result.log).toContain('"signal":"SIGKILL"');
-      expect(result.log).toContain("Worker crashed");
-      expect(result.log).toContain("Restarting worker");
-    } finally {
-      if (originalTimeout === undefined) {
-        delete process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS;
-      } else {
-        process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS = originalTimeout;
-      }
-    }
-  });
+    },
+  );
 
-  test("responsive worker survives past the hang window", async () => {
-    const originalTimeout = process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS;
-    try {
-      process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS = "1500";
+  test("resumes writing daemon.log once the log path is writable again", async () => {
+    const result = await runSupervisorFixture({
+      blockLogPath: true,
+      workerSource: `
+        import { rmdirSync } from "node:fs";
 
-      const result = await runSupervisorFixture({
-        restartOnCrash: true,
-        timeoutMs: 15_000,
-        workerSource: `
         process.on("message", (message) => {
-          if (message?.type === "paseo:supervisor-heartbeat") {
-            process.send?.({ type: "paseo:worker-heartbeat" });
-          }
-          if (message?.type === "paseo:graceful-shutdown") {
-            process.exit(0);
-          }
+          if (message?.type === "paseo:graceful-shutdown") process.exit(0);
         });
+        process.stdout.write("line while daemon.log is blocked\\n");
         setTimeout(() => {
-          process.send?.({ type: "paseo:shutdown", reason: "responsive_worker_test_complete" });
-        }, 4_000);
+          rmdirSync(process.argv[1].replace(/worker\\.mjs$/, "daemon.log"));
+          process.stdout.write("line after daemon.log is writable\\n");
+          setTimeout(() => {
+            process.send?.({ type: "paseo:shutdown", reason: "log_recovery_probe" });
+          }, 200);
+        }, 500);
+        setInterval(() => {}, 1000);
       `,
-      });
+    });
 
-      expect(result.code).toBe(0);
-      expect(result.signal).toBeNull();
-      expect(result.log).toContain('"reason":"responsive_worker_test_complete"');
-      expect(result.log).not.toContain('"msg":"Worker considered hung; force-restarting"');
-    } finally {
-      if (originalTimeout === undefined) {
-        delete process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS;
-      } else {
-        process.env.PASEO_SUPERVISOR_WORKER_HANG_TIMEOUT_MS = originalTimeout;
-      }
-    }
-  }, 20_000);
+    expect(result.code).toBe(0);
+    expect(result.log).toContain("line after daemon.log is writable\n");
+    expect(result.log).toContain('"reason":"log_recovery_probe"');
+  });
 });

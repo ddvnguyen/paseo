@@ -44,27 +44,6 @@ export interface SettingsActionProps extends SettingsRowProps {
   onPress(): void;
   disabled?: boolean;
 }
-export interface SettingsIconButtonProps {
-  /** Lucide icon name. Unknown names render nothing. */
-  icon: string;
-  accessibilityLabel: string;
-  onPress(): void;
-  disabled?: boolean;
-  destructive?: boolean;
-  testID?: string;
-}
-export interface SettingsIconRowProps {
-  /** Lucide icon name rendered in the row's leading slot. Unknown names render nothing. */
-  icon: string;
-  label: string;
-  hint?: string;
-  error?: string | null;
-  /** Content below the label. */
-  children?: ReactNode;
-  /** Trailing controls slot (for example SettingsIconButton). Stacks below the content on compact layouts. */
-  trailing?: ReactNode;
-  testID?: string;
-}
 export declare const SettingsGroup: ComponentType<SettingsSectionProps>;
 export declare const SettingsSection: ComponentType<SettingsSectionProps>;
 export declare const SettingsCard: ComponentType<{ children: ReactNode; testID?: string }>;
@@ -75,8 +54,6 @@ export declare function SettingsSelect<Value extends string>(
 ): ReactNode;
 export declare const SettingsInput: ComponentType<SettingsInputProps>;
 export declare const SettingsAction: ComponentType<SettingsActionProps>;
-export declare const SettingsIconButton: ComponentType<SettingsIconButtonProps>;
-export declare const SettingsIconRow: ComponentType<SettingsIconRowProps>;
 
 export interface ExternalLinkProps {
   href: string;
@@ -86,3 +63,24 @@ export interface ExternalLinkProps {
   onError?: (error: unknown) => void;
 }
 export declare const ExternalLink: ComponentType<ExternalLinkProps>;
+
+export type SidebarIcon = string | ComponentType<{ size: number; color: string }>;
+export interface SidebarRowProps {
+  /**
+   * Tells rows of one item apart when the item renders several: "bot-2". Unique within the item.
+   * Omit it when the item renders one row.
+   */
+  id?: string;
+  /** A Lucide icon name or a component. */
+  icon?: SidebarIcon;
+  /** Defaults to the item's registered title. */
+  label?: string;
+  onPress(): void;
+  active?: boolean;
+  /** Right slot. Renders beside the row's pressable, so a button here presses on its own. */
+  trailing?: ReactNode;
+}
+/** A sidebar navigation row. Render it from a sidebar item's `Component`. */
+export declare const SidebarRow: ComponentType<SidebarRowProps>;
+/** A line between groups of rows. Render it from a sidebar item's `Component`. */
+export declare const SidebarSeparator: ComponentType;

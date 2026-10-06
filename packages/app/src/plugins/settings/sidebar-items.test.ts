@@ -1,5 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
+import type { PaseoApi } from "@getpaseo/client";
 import type { InstalledPlugin } from "../types";
 import { PLUGIN_SETTINGS_SIDEBAR_GROUP, derivePluginSettingsSidebarItems } from "./sidebar-items";
 
@@ -10,17 +11,20 @@ function installed(serverId: string, id = "example"): InstalledPlugin {
     serverId,
     clientBundle: serverId,
     lifetime: new AbortController(),
+    paseo: { dispose: async () => undefined } as PaseoApi,
+    invoke: async () => undefined,
     queryClient: new QueryClient(),
     settingsScreens: [
       {
         id: "main",
-        title: "Freebuff",
+        title: "Deploys",
         icon: "Wallet",
         Component: () => null,
       },
     ],
     surfaces: [],
-    sidebarItems: [],
+    sidebarItems: { header: [], footer: [] },
+    legacySidebarItems: [],
     workspacePanels: [],
     commandCenterItems: [],
     clientSlashCommands: [],
@@ -43,7 +47,7 @@ describe("derivePluginSettingsSidebarItems", () => {
         serverId: "host-a",
         pluginId: "example",
         screenId: "main",
-        title: "Freebuff",
+        title: "Deploys",
         icon: "Wallet",
         key: "plugin-settings-example-main",
       },

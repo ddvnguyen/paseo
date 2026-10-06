@@ -9,6 +9,14 @@
 //   also fire. Matcher + extension set + allowlist MUST stay identical to
 //   packages/fleet-backend/tests/gates/turso-import.test.ts.
 //
+// Rule 3 (owner decision 2026-10-05, "version stamping is KEPT-VIA-SCRIPT"):
+//   the fork version stamp is reproduced by running
+//   scripts/sync-workspace-versions.mjs, never re-applied by hand during the merge.
+//   Fails when that script is missing, is upstream's non-stamping copy, carries an
+//   identifier other than "hub", no longer runs, or has not been run against this
+//   tree. Delegates to scripts/check-fork-version-stamp.mjs so there is exactly one
+//   implementation of the rule.
+//
 // Usage:
 //   node scripts/fleet-merge-safety.mjs --base <sha> --head <sha>
 //   node scripts/fleet-merge-safety.mjs --files $'a\nb\nc'   (porcelain list)
@@ -102,6 +110,32 @@ function checkTursoImport() {
   return { ok: true };
 }
 
+// Rule 3 delegates rather than reimplementing: the stamp rule needs to run the
+// stamp script against a throwaway replica of the tree, which is too much state
+// to carry inside this file. Subprocess keeps one source of truth for the rule
+// and lets it print its own remediation.
+function checkForkVersionStamp() {
+  const check = path.join(ROOT, "scripts", "check-fork-version-stamp.mjs");
+  if (!existsSync(check)) {
+    return {
+      ok: false,
+      message:
+        "fork-version-stamp: scripts/check-fork-version-stamp.mjs is missing. Rule 3 has no " +
+        "implementation, which would make the stamp gate a silent pass. Restore it.",
+    };
+  }
+  try {
+    execFileSync(process.execPath, [check], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
+    return { ok: true };
+  } catch (error) {
+    const output = `${error?.stdout ?? ""}${error?.stderr ?? ""}`.trim();
+    return {
+      ok: false,
+      message: output || `fork-version-stamp: check exited non-zero: ${error?.message ?? error}`,
+    };
+  }
+}
+
 const argv = process.argv.slice(2);
 const flag = (name) => {
   const i = argv.indexOf(name);
@@ -173,9 +207,12 @@ if (!hasFiles && !hasBase) {
   }
   if (!r.ok) failures++;
 }
-// Rule 2 scans the WORKING TREE, not the changeset, so nothing about --files
-// should suppress it. The old `if (flag("--files") === null)` guard made
-// `--files <list>` print "PASS" and exit 0 with a live
+// Rules 2 and 3 scan the WORKING TREE, not the changeset, so nothing about
+// --files should suppress them. The old `if (flag("--files") === null)` guard
+// made `--files <list>` print "PASS" and exit 0 with a live
 // @tursodatabase/database import still in the tree (measured, seeded probe).
 if (!reportTursoImport()) failures++;
+const stamp = checkForkVersionStamp();
+console.log(stamp.ok ? "fork-version-stamp: PASS" : `fork-version-stamp: FAIL\n${stamp.message}`);
+if (!stamp.ok) failures++;
 process.exit(failures ? 1 : 0);
