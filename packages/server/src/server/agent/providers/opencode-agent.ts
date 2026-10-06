@@ -3446,7 +3446,6 @@ class OpenCodeAgentSession implements AgentSession {
   private childHydrationCompleted = false;
   private readonly unrelatedSessionIds = new Set<string>();
   private selectedModelContextWindowMaxTokens: number | undefined;
-  private releaseServer: ((options?: AgentCloseOptions) => Promise<void>) | null;
   /** Pid of the opencode server generation backing this session, for the detach gate. */
   private readonly serverPid: number | undefined;
   private releaseBridge: (() => void) | null;
@@ -3470,7 +3469,7 @@ class OpenCodeAgentSession implements AgentSession {
     persistSession = true,
     private readonly agentId?: string,
     serverPid?: number,
-    private readonly serverUrl?: string,
+    serverUrl?: string,
     private readonly externallyDriven = false,
     releaseBridge?: () => void,
     connectServer?: () => Promise<OpenCodeServerConnection>,
@@ -3490,7 +3489,6 @@ class OpenCodeAgentSession implements AgentSession {
     this.modelContextWindowsByModelKey = modelContextWindowsByModelKey;
     this.currentMode = normalizeOpenCodeModeId(config.modeId);
     this.autoAcceptEnabled = !config.toolPolicy && isOpenCodeAutoAcceptEnabled(config);
-    this.releaseServer = releaseServer ?? null;
     this.serverPid = serverPid;
     this.releaseBridge = releaseBridge ?? null;
     this.persistSession = persistSession;
@@ -5108,9 +5106,8 @@ class OpenCodeAgentSession implements AgentSession {
       // a captured release would be stale here. The close reason rides along so
       // killServer applies the same per-pid detach gate close() already consulted.
       await this.server.release(options);
-      this.releaseServer = null;
     }
-    // Whether the server process itself lives is decided by releaseServer ->
+    // Whether the server process itself lives is decided by this.server.release ->
     // killServer, which applies the same per-pid gate with this same reason.
     return { detached: detachChild };
   }
