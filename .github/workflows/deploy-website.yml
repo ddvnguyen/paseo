@@ -7,6 +7,7 @@ on:
       - "CHANGELOG.md"
       - "public-docs/**"
       - "packages/website/**"
+      - "packages/protocol/**"
       - "package.json"
       - "pnpm-lock.yaml"
       - "patches/**"
@@ -33,6 +34,12 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # packages/protocol exports only ./dist/*, so the website typecheck below
+      # cannot resolve @getpaseo/protocol until protocol is built. pnpm does not
+      # build it on install either: protocol has no prepare/prepublishOnly.
+      - name: Build protocol
+        run: npm run build:protocol
 
       - name: Typecheck
         run: npm run typecheck --workspace=@getpaseo/website

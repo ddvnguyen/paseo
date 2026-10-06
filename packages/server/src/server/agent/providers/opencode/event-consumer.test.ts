@@ -77,9 +77,11 @@ describe("OpenCodeEventConsumer", () => {
     const upstream = await createSseUpstream();
     const timing = new ControlledTiming();
     const processExit = deferred<Error>();
+    const listening = deferred<void>();
     const consumer = new OpenCodeEventConsumer({
       serverUrl: upstream.url,
       processExit: processExit.promise,
+      listening: listening.promise,
       logger: createRecordingLogger(),
       timing,
     });
@@ -90,6 +92,10 @@ describe("OpenCodeEventConsumer", () => {
     const inputs: OpenCodeEventSourceInput[] = [];
     consumer.subscribe((input) => inputs.push(input));
 
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(upstream.requests).toHaveLength(0);
+    expect(consumer.diagnostics().attempt).toBe(0);
+    listening.resolve();
     await upstream.connected(1);
     expect(await promiseState(consumer.ready())).toBe("pending");
     upstream.send(0, arbitraryRecord("/one"));
@@ -134,10 +140,7 @@ describe("OpenCodeEventConsumer", () => {
     await consumer.ready();
 
     timing.expireWatchdog();
-    expect(timing.watchdogDelays).toEqual([
-      EXPECTED_STREAM_WATCHDOG_MS,
-      EXPECTED_STREAM_WATCHDOG_MS,
-    ]);
+    expect(timing.watchdogDelays).toEqual([5_000, EXPECTED_STREAM_WATCHDOG_MS]);
     await timing.waiting();
     timing.advanceWait();
     await upstream.connected(2);
@@ -148,6 +151,7 @@ describe("OpenCodeEventConsumer", () => {
 
   test("retries a first-record watchdog and exposes the recovery attempt", async () => {
     const upstream = await createSseUpstream();
+    upstream.stallNext(1);
     const timing = new ControlledTiming();
     const logger = createRecordingLogger();
     const consumer = new OpenCodeEventConsumer({
@@ -155,6 +159,12 @@ describe("OpenCodeEventConsumer", () => {
       processExit: new Promise<Error>(() => undefined),
       logger,
       timing,
+      createClient: (baseUrl) =>
+        createOpencodeClient({
+          baseUrl,
+          // Keep the abandoned socket open to reproduce a fetch that does not unwind on abort.
+          fetch: (request) => fetch(new Request(request, { signal: null })),
+        }),
     });
     cleanups.push(async () => {
       await consumer.close();
@@ -162,6 +172,7 @@ describe("OpenCodeEventConsumer", () => {
     });
 
     await upstream.connected(1);
+    expect(timing.watchdogDelays).toEqual([5_000]);
     timing.expireWatchdog();
     await timing.waiting();
     expect(consumer.diagnostics()).toMatchObject({
@@ -184,7 +195,18 @@ describe("OpenCodeEventConsumer", () => {
     await upstream.connected(2);
     upstream.send(1, connectedRecord("/recovered"));
     await consumer.ready();
-    expect(consumer.diagnostics()).toMatchObject({ attempt: 2, phase: "stream" });
+    expect(consumer.diagnostics()).toMatchObject({
+      attempt: 2,
+      phase: "stream",
+    });
+    expect(upstream.isOpen(0)).toBe(true);
+    upstream.resume(0);
+    upstream.send(0, connectedRecord("/abandoned"));
+    upstream.send(0, arbitraryRecord("/abandoned"));
+    const inputs: OpenCodeEventSourceInput[] = [];
+    consumer.subscribe((input) => inputs.push(input));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(inputs).toEqual([]);
   });
 
   test("publishes one terminal and stops reconnecting on process exit", async () => {
@@ -469,6 +491,16 @@ describe("OpenCodeEventConsumer", () => {
     await consumer.close();
 
     expect(inputs).toEqual([]);
+
+    const waitingConsumer = new OpenCodeEventConsumer({
+      serverUrl: upstream.url,
+      processExit: new Promise<Error>(() => undefined),
+      listening: new Promise<void>(() => undefined),
+      logger: createRecordingLogger(),
+    });
+    await waitingConsumer.close();
+    await expect(waitingConsumer.ready()).rejects.toThrow("OpenCode event source closed");
+    expect(upstream.requests).toHaveLength(1);
   });
 });
 
@@ -546,8 +578,14 @@ async function createSseUpstream() {
   const responses: ServerResponse[] = [];
   const requests: Array<{ url: string | undefined }> = [];
   let failuresRemaining = 0;
+  let stallsRemaining = 0;
   const server = createServer((request, response) => {
     requests.push({ url: request.url });
+    if (stallsRemaining > 0) {
+      stallsRemaining -= 1;
+      responses.push(response);
+      return;
+    }
     if (failuresRemaining > 0) {
       failuresRemaining -= 1;
       response.writeHead(503).end();
@@ -580,7 +618,21 @@ async function createSseUpstream() {
     failNext(count: number) {
       failuresRemaining = count;
     },
-    close: async () => new Promise<void>((resolve) => server.close(() => resolve())),
+    stallNext(count: number) {
+      stallsRemaining = count;
+    },
+    isOpen(index: number) {
+      return responses[index]?.socket?.destroyed === false;
+    },
+    resume(index: number) {
+      responses[index]?.writeHead(200, { "content-type": "text/event-stream" });
+      responses[index]?.flushHeaders();
+    },
+    close: async () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      }),
   };
 }
 

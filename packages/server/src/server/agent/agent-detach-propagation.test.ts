@@ -197,6 +197,7 @@ describe("daemon-stop reason propagation, end to end", () => {
       { session: sessionApi } as never,
       "ses_detach_e2e",
       logger,
+      {}, // harnessEnvironment (ctor position 5; the fork's helper predates it)
       new Map(),
       undefined, // events
       (closeOptions) => acquisition.release(closeOptions),

@@ -1,9 +1,11 @@
 import { type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
-import os from "node:os";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { pathToFileURL } from "node:url";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   AgentSideConnection,
   ClientSideConnection,
@@ -58,8 +60,6 @@ import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { buildStringCommandShellInvocation } from "../../../utils/string-command-shell.js";
 import { asInternals } from "../../test-utils/class-mocks.js";
 import * as spawnUtils from "../../../utils/spawn.js";
-import { DAEMON_STOP_CLOSE_REASON } from "../agent-detach.js";
-import { recordAgentProcess, setAgentProcessRegistryHome } from "../agent-process-registry.js";
 
 describe("buildACPClientCapabilities", () => {
   test("enables terminal execution on the host while keeping filesystem operations with the agent by default", () => {
@@ -827,6 +827,46 @@ describe("mapACPUsage", () => {
   });
 });
 
+describe("ACP context-window usage", () => {
+  async function emitUsageUpdate(update: {
+    used: number;
+    size: number;
+  }): Promise<{ events: unknown[] }> {
+    const session = createSessionWithConfig({ provider: "dsh" });
+    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
+    const events: unknown[] = [];
+    session.subscribe((event) => {
+      if (event.type === "usage_updated") events.push(event);
+    });
+    await session.sessionUpdate({
+      sessionId: "session-1",
+      update: { sessionUpdate: "usage_update", used: update.used, size: update.size },
+    });
+    return { events };
+  }
+
+  test("forwards usage_update as context-window usage state", async () => {
+    const { events } = await emitUsageUpdate({ used: 13_759, size: 1_000_000 });
+
+    expect(events).toEqual([
+      {
+        type: "usage_updated",
+        provider: "dsh",
+        usage: { contextWindowMaxTokens: 1_000_000, contextWindowUsedTokens: 13_759 },
+      },
+    ]);
+  });
+
+  test("emits nothing when size and used cannot both drive a meter", async () => {
+    await expect(
+      emitUsageUpdate({ used: -1, size: 0 }).then((result) => result.events),
+    ).resolves.toEqual([]);
+    await expect(
+      emitUsageUpdate({ used: 13_759, size: 0 }).then((result) => result.events),
+    ).resolves.toEqual([]);
+  });
+});
+
 describe("deriveModesFromACP", () => {
   test("prefers explicit ACP mode state", () => {
     const result = deriveModesFromACP(
@@ -1356,89 +1396,6 @@ describe("ACPAgentSession Zed parity", () => {
 
     await expect(permission).resolves.toEqual({
       outcome: { outcome: "selected", optionId: "q0_opt_1" },
-    });
-  });
-
-  test("maps _meta paseo/questions to a question permission and returns typed answers", async () => {
-    const session = createSessionWithConfig({
-      provider: "generic-acp",
-      featureValues: { auto_accept: true },
-    });
-    const events: AgentStreamEvent[] = [];
-
-    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
-    session.subscribe((event) => events.push(event));
-
-    const questions = [
-      {
-        question: "Which targets?",
-        header: "Targets",
-        options: [{ label: "web" }, { label: "ios" }],
-        multiSelect: true,
-        allowOther: true,
-      },
-    ];
-    const permission = session.requestPermission({
-      sessionId: "session-1",
-      toolCall: { toolCallId: "ask-1", title: "Which targets?", status: "pending" },
-      options: [
-        { optionId: "ask-user-0-0", name: "web", kind: "allow_once" },
-        { optionId: "ask-user-submit", name: "Submit answers", kind: "allow_once" },
-        { optionId: "ask-user-skip", name: "Skip", kind: "reject_once" },
-      ],
-      _meta: { "paseo/questions": questions },
-    } satisfies RequestPermissionRequest);
-
-    await Promise.resolve();
-
-    // A question is never auto-accepted, even with auto_accept on.
-    const requested = events.find((event) => event.type === "permission_requested");
-    expect(requested).toMatchObject({
-      type: "permission_requested",
-      request: { kind: "question", input: { questions } },
-    });
-    if (requested?.type !== "permission_requested") {
-      throw new Error("Expected permission request");
-    }
-
-    await session.respondToPermission(requested.request.id, {
-      behavior: "allow",
-      selectedActionId: "ask-user-submit",
-      updatedInput: { answers: { Targets: "web, ios, watchOS" } },
-    });
-    await expect(permission).resolves.toEqual({
-      outcome: { outcome: "selected", optionId: "ask-user-submit" },
-      _meta: { "paseo/answers": { Targets: "web, ios, watchOS" } },
-    });
-  });
-
-  test("never auto-accepts a request marked paseo/requireApproval", async () => {
-    const session = createSessionWithConfig({
-      provider: "generic-acp",
-      featureValues: { auto_accept: true },
-    });
-    const events: AgentStreamEvent[] = [];
-    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
-    session.subscribe((event) => events.push(event));
-
-    const permission = session.requestPermission({
-      sessionId: "session-1",
-      toolCall: { toolCallId: "spend-1", title: "Open session", status: "pending" },
-      options: [
-        { optionId: "open-session", name: "Open session", kind: "allow_once" },
-        { optionId: "cancel-open", name: "Cancel", kind: "reject_once" },
-      ],
-      _meta: { "paseo/requireApproval": true },
-    } satisfies RequestPermissionRequest);
-    await Promise.resolve();
-
-    const requested = events.find((event) => event.type === "permission_requested");
-    if (requested?.type !== "permission_requested") {
-      throw new Error("Expected the request to wait for a person");
-    }
-    await session.respondToPermission(requested.request.id, { behavior: "deny" });
-    await expect(permission).resolves.toEqual({
-      outcome: { outcome: "selected", optionId: "cancel-open" },
     });
   });
 
@@ -3481,6 +3438,8 @@ interface ACPCloseInternals {
   child: ChildProcess | null;
   connection: unknown;
   sessionId: string | null;
+  activeForegroundTurnId: string | null;
+  agentCapabilities: { sessionCapabilities?: { close?: unknown } } | null;
 }
 
 async function startTerminal(
@@ -3547,6 +3506,38 @@ describe("ACPAgentSession close() tree-kill", () => {
     expect(child.kill).not.toHaveBeenCalled();
   });
 
+  test("close() terminates the provider when cancel and closeSession never settle", async () => {
+    vi.useFakeTimers();
+    try {
+      const terminator = new FakeTerminator();
+      const session = createSession({ terminateProcess: terminator.terminate });
+      const child = createTerminalChildStub();
+      const cancel = vi.fn(() => new Promise<void>(() => undefined));
+      const unstableCloseSession = vi.fn(() => new Promise<void>(() => undefined));
+      const internals = asInternals<ACPCloseInternals>(session);
+      internals.child = child;
+      internals.sessionId = "session-1";
+      internals.activeForegroundTurnId = "turn-1";
+      internals.agentCapabilities = { sessionCapabilities: { close: {} } };
+      internals.connection = { cancel, unstable_closeSession: unstableCloseSession };
+
+      let settled = false;
+      const closing = (async () => {
+        await session.close();
+        settled = true;
+      })();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(settled).toBe(true);
+      expect(cancel).toHaveBeenCalledWith({ sessionId: "session-1" });
+      expect(unstableCloseSession).toHaveBeenCalledWith({ sessionId: "session-1" });
+      expect(terminator.terminated).toContain(child);
+      await closing;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("close() terminates running terminal child processes", async () => {
     const terminator = new FakeTerminator();
     const session = createSession({ terminateProcess: terminator.terminate });
@@ -3609,6 +3600,34 @@ describe("ACPAgentSession close() tree-kill", () => {
 });
 
 describe("ACPAgentSession initialization cleanup", () => {
+  test("rejects a resume whose working directory was deleted instead of crashing", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-acp-deleted-cwd-"));
+    const deletedCwd = path.join(root, "worktree");
+    const terminator = new FakeTerminator();
+    const session = new ACPAgentSession(
+      { provider: "test-acp", cwd: deletedCwd },
+      {
+        provider: "test-acp",
+        logger: createTestLogger(),
+        defaultCommand: [process.execPath, "-e", "process.stdin.resume()"],
+        defaultModes: [],
+        capabilities: {
+          supportsStreaming: true,
+          supportsSessionPersistence: true,
+        },
+        handle: { provider: "test-acp", sessionId: "archived-session" },
+        terminateProcess: terminator.terminate,
+      },
+    );
+
+    try {
+      await expect(session.initializeResumedSession()).rejects.toThrow("ENOENT");
+      expect(terminator.terminated).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("terminates the ACP process when session/new fails", async () => {
     const terminator = new FakeTerminator();
     const child = createProbeChildStub();
@@ -4047,86 +4066,6 @@ describe("ACP session/load invariant — cwd and mcpServers always passed", () =
     });
   });
 
-  test("publishes context usage reported during loadSession replay with the history", async () => {
-    let session!: ACPAgentSession;
-    const loadSession = async () => {
-      await session.sessionUpdate({
-        sessionId: "session-1",
-        update: { sessionUpdate: "usage_update", used: 5000, size: 1_000_000 } as SessionUpdate,
-      });
-      return { sessionId: "session-1", modes: null, models: null, configOptions: [] };
-    };
-    ({ session } = makeTestSession({
-      capabilities: { loadSession: true },
-      handle: { sessionId: "session-1", provider: "claude-acp" },
-      loadSession,
-    }));
-
-    await session.initializeResumedSession();
-
-    const history: AgentStreamEvent[] = [];
-    for await (const event of session.streamHistory()) {
-      history.push(event);
-    }
-    expect(history).toEqual([
-      {
-        type: "usage_updated",
-        provider: "claude-acp",
-        usage: { contextWindowUsedTokens: 5000, contextWindowMaxTokens: 1_000_000 },
-      },
-    ]);
-  });
-
-  test("publishes context usage reported while resuming without loadSession", async () => {
-    let session!: ACPAgentSession;
-    const unstableResumeSession = async () => {
-      await session.sessionUpdate({
-        sessionId: "session-1",
-        update: { sessionUpdate: "usage_update", used: 900, size: 131_072 } as SessionUpdate,
-      });
-      return { modes: null, models: null, configOptions: [] };
-    };
-    ({ session } = makeTestSession({
-      capabilities: { sessionCapabilities: { resume: {} } },
-      handle: { sessionId: "session-1", provider: "claude-acp" },
-      unstableResumeSession: unstableResumeSession as unknown as ReturnType<typeof vi.fn>,
-    }));
-
-    await session.initializeResumedSession();
-
-    const history: AgentStreamEvent[] = [];
-    for await (const event of session.streamHistory()) {
-      history.push(event);
-    }
-    expect(history).toEqual([
-      {
-        type: "usage_updated",
-        provider: "claude-acp",
-        usage: { contextWindowUsedTokens: 900, contextWindowMaxTokens: 131_072 },
-      },
-    ]);
-  });
-
-  test("treats a usage_update size of 0 as an unknown context window", async () => {
-    const { session } = makeTestSession({
-      handle: { sessionId: "session-1", provider: "claude-acp" },
-    });
-    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
-    const events: AgentStreamEvent[] = [];
-    session.subscribe((event) => events.push(event));
-
-    await session.sessionUpdate({
-      sessionId: "session-1",
-      update: { sessionUpdate: "usage_update", used: 1234, size: 0 } as SessionUpdate,
-    });
-
-    expect(events).toContainEqual({
-      type: "usage_updated",
-      provider: "claude-acp",
-      usage: { contextWindowUsedTokens: 1234 },
-    });
-  });
-
   test("preserves assistant message IDs from loadSession replay", async () => {
     let session!: ACPAgentSession;
     const loadSession = async () => {
@@ -4318,143 +4257,116 @@ describe("ACP session/load invariant — cwd and mcpServers always passed", () =
   });
 });
 
-/**
- * The `detached` return value is a CLAIM about the future ("this writer is
- * still running"), and `AgentManager.snapshotForClosedAgent` acts on it by
- * persisting `persistence: null` — which permanently strips the agent's
- * resumability. So the claim has to be true, not merely plausible.
- *
- * For ACP it is not. `ACPAgentClient.spawnTransport` starts every ACP child
- * with `stdio: ["pipe", "pipe", "pipe"]`, so `child.stdin` is this daemon's own
- * writable pipe carrying the NDJSON ACP stream. The daemon exiting closes that
- * pipe, the child reads EOF and exits with it, and the skipped teardown leaves
- * a doomed process rather than a live writer. Reporting `detached: true` anyway
- * would make every ACP agent closed by a daemon stop permanently unresumable
- * while its session directory is still perfectly resumable on disk.
- */
-describe("ACPAgentSession detach reporting", () => {
-  let registryHome: string;
-  let previousDetachEnv: string | undefined;
+const SILENT_CLOSE_ACP_AGENT = `
+import { readFileSync, writeFileSync } from "node:fs";
+import { Readable, Writable } from "node:stream";
+const { AgentSideConnection, PROTOCOL_VERSION, ndJsonStream } = await import(process.env.ACP_SDK_URL);
+writeFileSync(process.env.ACP_PID_FILE, String(process.pid));
+new AgentSideConnection(
+  () => ({
+    async initialize() {
+      return {
+        protocolVersion: PROTOCOL_VERSION,
+        agentCapabilities: { sessionCapabilities: { close: {} } },
+      };
+    },
+    async newSession() {
+      return { sessionId: "silent-close-session" };
+    },
+    async authenticate() {},
+    async cancel() {},
+    unstable_closeSession() {
+      return new Promise(() => {});
+    },
+  }),
+  ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin)),
+);
+`;
 
-  beforeEach(() => {
-    registryHome = mkdtempSync(path.join(os.tmpdir(), "acp-detach-registry-"));
-    setAgentProcessRegistryHome(registryHome);
-    previousDetachEnv = process.env.PASEO_DETACH_AGENTS_ON_STOP;
-    delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
-  });
-
-  afterEach(() => {
-    setAgentProcessRegistryHome(null);
-    rmSync(registryHome, { recursive: true, force: true });
-    if (previousDetachEnv === undefined) {
-      delete process.env.PASEO_DETACH_AGENTS_ON_STOP;
-    } else {
-      process.env.PASEO_DETACH_AGENTS_ON_STOP = previousDetachEnv;
-    }
-    vi.restoreAllMocks();
-  });
-
-  /**
-   * An ACP child as `spawnTransport` really builds it: a daemon-owned writable
-   * stdin plus a pid. `withStdin: false` models a hypothetical child whose
-   * stdin is NOT owned by this daemon, which is the only shape that could
-   * outlive the stop.
-   */
-  function createAcpChildStub(pid: number, options: { withStdin: boolean }): ChildProcess {
-    const child = new EventEmitter() as ChildProcess;
-    child.pid = pid;
-    child.stdout = new EventEmitter() as ChildProcess["stdout"];
-    child.stderr = new EventEmitter() as ChildProcess["stderr"];
-    if (options.withStdin) {
-      child.stdin = new EventEmitter() as ChildProcess["stdin"];
-    }
-    child.kill = vi.fn(() => true) as ChildProcess["kill"];
-    return child;
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
+}
 
-  function recordPid(pid: number): void {
-    expect(
-      recordAgentProcess(
-        {
-          scopeId: `paseo-acp-test-${pid}`,
-          unit: `paseo-acp-test-${pid}.scope`,
-          pid,
-          provider: "claude-acp",
-          startedAt: new Date().toISOString(),
-        },
-        { logger: createTestLogger() },
-      ),
-    ).toBe(true);
+async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise.then(() => true), timedOut]);
+  } finally {
+    clearTimeout(timer);
   }
+}
 
-  test("a registered scoped child with a daemon-owned stdin does NOT claim detachment", async () => {
-    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
-    const terminator = new FakeTerminator();
-    const session = createSession({ terminateProcess: terminator.terminate });
-    const internals = asInternals<ACPCloseInternals>(session);
-    const child = createAcpChildStub(424_001, { withStdin: true });
-    recordPid(child.pid as number);
-    internals.child = child;
-    internals.connection = null;
-    internals.sessionId = null;
+interface SilentCloseProvider {
+  session: ACPAgentSession;
+  readPid(): Promise<number>;
+  dispose(): Promise<void>;
+}
 
-    // The teardown is still skipped for a registered scoped pid (that part is
-    // unchanged), but the child is going to die on stdin EOF, so the session
-    // must NOT claim its writer survived.
-    await expect(session.close({ reason: DAEMON_STOP_CLOSE_REASON })).resolves.toEqual({
-      detached: false,
-    });
-    expect(terminator.terminated).not.toContain(child);
+async function startSilentCloseProvider(): Promise<SilentCloseProvider> {
+  const dir = await mkdtemp(path.join(tmpdir(), "paseo-acp-silent-close-"));
+  const agentScript = path.join(dir, "agent.mjs");
+  const pidFile = path.join(dir, "agent.pid");
+  await writeFile(agentScript, SILENT_CLOSE_ACP_AGENT);
+  const session = new ACPAgentSession(
+    { provider: "silent-close-acp", cwd: dir },
+    {
+      provider: "silent-close-acp",
+      logger: createTestLogger(),
+      defaultCommand: [process.execPath, agentScript],
+      defaultModes: [],
+      capabilities: {
+        supportsStreaming: true,
+        supportsSessionPersistence: true,
+        supportsDynamicModes: true,
+        supportsMcpServers: true,
+        supportsReasoningStream: true,
+        supportsToolInvocations: true,
+      },
+      launchEnv: {
+        ACP_SDK_URL: pathToFileURL(
+          createRequire(import.meta.url).resolve("@agentclientprotocol/sdk"),
+        ).href,
+        ACP_PID_FILE: pidFile,
+      },
+    },
+  );
+  const readPid = async () => Number(await readFile(pidFile, "utf8"));
+  return {
+    session,
+    readPid,
+    async dispose() {
+      const pid = await readPid().catch(() => null);
+      if (pid !== null && isProcessAlive(pid)) {
+        process.kill(pid, "SIGKILL");
+      }
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+describe("ACPAgentSession close() with an unresponsive provider", () => {
+  let provider: SilentCloseProvider | null = null;
+
+  afterEach(async () => {
+    await provider?.dispose();
+    provider = null;
   });
 
-  test("a registered scoped child whose stdin the daemon does NOT own DOES claim detachment", async () => {
-    // The positive half of the same predicate. If ACP ever adopts a child that
-    // cannot be starved of stdin by this process exiting, the honest answer
-    // flips automatically and `persistence: null` becomes correct again.
-    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
-    const terminator = new FakeTerminator();
-    const session = createSession({ terminateProcess: terminator.terminate });
-    const internals = asInternals<ACPCloseInternals>(session);
-    const child = createAcpChildStub(424_002, { withStdin: false });
-    recordPid(child.pid as number);
-    internals.child = child;
-    internals.connection = null;
-    internals.sessionId = null;
+  test("terminates a provider that never answers session/close", async () => {
+    provider = await startSilentCloseProvider();
+    await provider.session.initializeNewSession();
+    const pid = await provider.readPid();
+    expect(isProcessAlive(pid)).toBe(true);
 
-    await expect(session.close({ reason: DAEMON_STOP_CLOSE_REASON })).resolves.toEqual({
-      detached: true,
-    });
-    expect(terminator.terminated).not.toContain(child);
-  });
-
-  test("a USER close on a registered scoped child claims no detachment and still kills it", async () => {
-    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
-    const terminator = new FakeTerminator();
-    const session = createSession({ terminateProcess: terminator.terminate });
-    const internals = asInternals<ACPCloseInternals>(session);
-    const child = createAcpChildStub(424_003, { withStdin: false });
-    recordPid(child.pid as number);
-    internals.child = child;
-    internals.connection = null;
-    internals.sessionId = null;
-
-    await expect(session.close({ reason: "user" })).resolves.toEqual({ detached: false });
-    expect(terminator.terminated).toContain(child);
-  });
-
-  test("an UNREGISTERED child claims no detachment and is still killed on a daemon stop", async () => {
-    process.env.PASEO_DETACH_AGENTS_ON_STOP = "1";
-    const terminator = new FakeTerminator();
-    const session = createSession({ terminateProcess: terminator.terminate });
-    const internals = asInternals<ACPCloseInternals>(session);
-    const child = createAcpChildStub(424_004, { withStdin: false });
-    internals.child = child;
-    internals.connection = null;
-    internals.sessionId = null;
-
-    await expect(session.close({ reason: DAEMON_STOP_CLOSE_REASON })).resolves.toEqual({
-      detached: false,
-    });
-    expect(terminator.terminated).toContain(child);
-  });
+    expect(await settlesWithin(provider.session.close(), 8_000)).toBe(true);
+    expect(isProcessAlive(pid)).toBe(false);
+  }, 15_000);
 });

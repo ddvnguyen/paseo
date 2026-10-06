@@ -44,6 +44,7 @@ jobs:
       browser: ${{ steps.filter.outputs.browser }}
       relay: ${{ steps.filter.outputs.relay }}
       cli: ${{ steps.filter.outputs.cli }}
+      bun-runtime: ${{ steps.filter.outputs.bun-runtime }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -60,7 +61,44 @@ jobs:
           filters: .github/ci-paths.yml
 
       - name: Validate CI contracts
-        run: node --test scripts/ci-workflow.test.mjs scripts/daemon-launch-contract.test.mjs scripts/sync-fdroid-changelogs.test.mjs scripts/upload-release-assets.test.mjs scripts/verify-closure-entry.test.mjs
+        run: node --test scripts/ci-workflow.test.mjs scripts/daemon-launch-contract.test.mjs scripts/sync-fdroid-changelogs.test.mjs scripts/upload-release-assets.test.mjs scripts/verify-closure-entry.test.mjs scripts/runtime-pin.test.mjs
+
+  # The daemon runs on bun in dev and in production, but every other daemon test
+  # in this file runs on node (vitest executes it, and those tests spawn the
+  # daemon through process.execPath). They can all be green while production is
+  # broken on bun. This job is the one that actually starts the daemon on the
+  # pinned runtime, using the exact flags deploy/systemd/paseo.service passes.
+  bun-runtime:
+    name: bun runtime
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.bun-runtime != 'false') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      # pnpm still resolves the graph; this only installs the runtime that
+      # executes it. The literal is asserted against .tool-versions by
+      # scripts/runtime-pin.test.mjs, so the two cannot drift apart silently.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the daemon entrypoints
+        run: npm run build:server
+
+      - name: Boot the daemon on the pinned bun
+        run: ./scripts/verify-bun-runtime.sh
 
   format:
     name: format
@@ -131,8 +169,14 @@ jobs:
       - name: Build server stack
         run: npm run build:server
 
+      - name: Verify built-in plugins from built output
+        run: node --test scripts/builtin-plugins-dist.test.mjs
+
       - name: Typecheck all packages
         run: npm run typecheck
+
+      - name: Run website tests
+        run: npx vitest run packages/website/src --bail=1
 
       - name: Install website test browsers
         run: npx playwright install --with-deps chromium webkit
@@ -185,6 +229,10 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Run built-in plugin tests
+        if: ${{ needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' }}
+        run: npm run test --workspace=@getpaseo/builtin-plugins
 
       - name: Run Hub CLI/daemon contract
         if: ${{ needs.changes.outputs.full == 'false' && needs.changes.outputs.server == 'false' && needs.changes.outputs.hub != 'false' }}
@@ -254,7 +302,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Install dependencies with retry
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Build server stack
@@ -273,7 +321,7 @@ jobs:
 
       - name: Verify Windows daemon process control
         if: ${{ runner.os == 'Windows' }}
-        run: pnpm --filter @getpaseo/cli exec vitest run src/commands/daemon/lifecycle.e2e.test.ts --bail=1 --maxWorkers=1 -t "Windows unbound|managed two-home"
+        run: npx vitest run packages/cli/src/commands/daemon/lifecycle.e2e.test.ts --bail=1 --maxWorkers=1 -t "Windows unbound|managed two-home"
 
       - name: Run desktop lifecycle E2E (Linux)
         if: ${{ runner.os == 'Linux' }}
@@ -341,7 +389,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Install dependencies with retry
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright browsers
@@ -394,33 +442,6 @@ jobs:
       - name: Typecheck client examples
         run: npm run typecheck:examples --workspace=@getpaseo/client
 
-  fleet-backend:
-    name: fleet-backend tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - run: pnpm install --frozen-lockfile
-
-      # No workspace deps (MCP SDK + Turso only), so no cross-package build
-      # step is needed here. Covers tests/unit, tests/concurrency and
-      # tests/gates. tests/parity stays out on purpose -- it is ~5 min and
-      # boots two servers over stdio, gated behind `pnpm parity`
-      # (see packages/fleet-backend/tests/parity/HARNESS.md).
-      - name: Run fleet-backend tests
-        run: npm run test --workspace=@getpaseo/fleet-backend
-
-      - name: Typecheck fleet-backend
-        run: npm run typecheck --workspace=@getpaseo/fleet-backend
-
   playwright-1:
     name: playwright (shard 1/4)
     needs: changes
@@ -440,7 +461,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Install dependencies with retry
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright browsers

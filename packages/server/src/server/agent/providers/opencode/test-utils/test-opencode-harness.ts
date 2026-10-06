@@ -27,7 +27,10 @@ export class TestOpenCodeHarness implements OpenCodeServerManagerLike {
     },
   };
 
-  server = { port: 1234, url: "http://127.0.0.1:1234" };
+  server: { port: number; url: string; pid?: number } = {
+    port: 1234,
+    url: "http://127.0.0.1:1234",
+  };
 
   enqueueClient(client: TestOpenCodeClient): void {
     client.observeEvents((event) => {
@@ -74,6 +77,7 @@ export class TestOpenCodeHarness implements OpenCodeServerManagerLike {
     return {
       server: this.server,
       events: this.events,
+      environment: input.env ?? {},
       release: async () => {
         acquisition.releaseCount += 1;
       },

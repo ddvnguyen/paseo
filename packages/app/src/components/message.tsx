@@ -1,3 +1,4 @@
+import { ASSISTANT_IMAGE_DEFAULT_ASPECT_RATIO } from "@/utils/assistant-image-metadata";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { TaskListRow } from "@/components/task-list-row";
 import {
@@ -56,13 +57,7 @@ import Animated, {
 } from "react-native-reanimated";
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from "react-native-svg";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
-import {
-  MarkdownRenderer,
-  MarkdownPart,
-  type MarkdownPartRendererProps,
-  type MarkdownStyles,
-} from "@/components/markdown/renderer";
-import { splitHtmlishMarkdown, type MarkdownDisplayPart } from "@/components/markdown/html-ish";
+import { MarkdownRenderer, type MarkdownStyles } from "@/components/markdown/renderer";
 import type { TaskActivity, TodoEntry, UserMessageImageAttachment } from "@/types/stream";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
@@ -79,13 +74,14 @@ import { useRevealedText } from "@/hooks/use-revealed-text";
 import { colorMarkdownLinkChildren } from "@/components/markdown/link-children";
 import { createAssistantMarkdownParser } from "@/utils/assistant-markdown-parser";
 import { formatDuration, formatMessageTimestamp } from "@/utils/time";
+import { getTurnDurationLabel } from "./assistant-turn-footer-label";
 import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
 import { getDefaultMarkdownClipboardEnvironment } from "@/utils/rich-clipboard-default-environment";
 import { setAssistantMarkdownBlockHeight } from "@/utils/assistant-message-height-estimate";
 import { isRenderProfileEnabled } from "@/utils/render-profiler";
 import { getAgentAttachmentPillContent } from "@/attachments/attachment-pill-content";
 import { PlanCard } from "./plan-card";
-import { useToolCallSheet, type ToolCallSheetData } from "./tool-call-sheet";
+import { useToolCallSheet } from "./tool-call-sheet";
 import { ToolCallDetailsContent } from "./tool-call-details";
 import {
   AssistantInlineCodePathLink,
@@ -113,6 +109,7 @@ import { AssistantForkMenu, type AssistantForkTarget } from "@/components/assist
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import {
   markdownCopyDataSet,
+  markdownCopyImageDataSet,
   markdownCopyOrderedListDataSet,
   markdownCopyTableCellDataSet,
   type MarkdownCopyInlineTag,
@@ -633,6 +630,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   durationMs,
   onFork,
 }: AssistantTurnFooterProps) {
+  const { t } = useTranslation();
   const [hovered, setHovered] = useState(false);
   const [pressedReveal, setPressedReveal] = useState(false);
   const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -648,10 +646,8 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
 
   const durationLabel = useMemo(
     () =>
-      durationMs !== undefined && durationMs !== null
-        ? `Worked for ${formatDuration(durationMs)}`
-        : "",
-    [durationMs],
+      durationMs !== undefined && durationMs !== null ? getTurnDurationLabel(durationMs, t) : "",
+    [durationMs, t],
   );
   const timestampLabel = useMemo(
     () => (completedAt ? formatMessageTimestamp(completedAt) : ""),
@@ -769,15 +765,12 @@ export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
   container: {
     paddingVertical: theme.spacing[3],
     ...(isWeb ? { userSelect: "text" as const } : {}),
-    ...(theme.debugConversationSpacing ? { backgroundColor: "rgba(255,0,0,0.10)" } : {}),
   },
   containerCompactTop: {
     paddingTop: 0,
-    ...(theme.debugConversationSpacing ? { backgroundColor: "rgba(255,192,203,0.6)" } : {}),
   },
   containerCompactBottom: {
     paddingBottom: 0,
-    ...(theme.debugConversationSpacing ? { backgroundColor: "rgba(255,192,203,0.6)" } : {}),
   },
   cappedNotice: {
     marginTop: theme.spacing[3],
@@ -823,8 +816,6 @@ export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
   },
 }));
 
-const ASSISTANT_IMAGE_MIN_HEIGHT = 160;
-
 function AssistantMarkdownImage({
   source,
   occurrenceKey,
@@ -869,11 +860,9 @@ function AssistantMarkdownImage({
     [containerStyle],
   );
   const imageSizeStyle = useMemo<ViewStyle>(() => {
-    if (aspectRatio) {
-      return { aspectRatio };
-    }
-    return { height: ASSISTANT_IMAGE_MIN_HEIGHT };
-  }, [aspectRatio]);
+    if (image.status === "failed") return { height: 160 };
+    return { aspectRatio: aspectRatio ?? ASSISTANT_IMAGE_DEFAULT_ASPECT_RATIO };
+  }, [aspectRatio, image.status]);
   const surfaceStyle = useMemo<StyleProp<ViewStyle>>(
     () => [assistantMessageStylesheet.imageSurface, imageSizeStyle],
     [imageSizeStyle],
@@ -891,15 +880,16 @@ function AssistantMarkdownImage({
     () => [
       assistantMessageStylesheet.imageFrame,
       containerStyle,
-      { height: ASSISTANT_IMAGE_MIN_HEIGHT },
+      imageSizeStyle,
       assistantMessageStylesheet.imageState,
     ],
-    [containerStyle],
+    [containerStyle, imageSizeStyle],
   );
+  const copyDataSet = useMemo(() => markdownCopyImageDataSet(source, alt), [source, alt]);
 
   if (image.status === "failed") {
     return (
-      <View style={stateFrameStyle}>
+      <View style={stateFrameStyle} dataSet={copyDataSet}>
         <Text style={assistantMessageStylesheet.imageErrorText}>{image.message}</Text>
       </View>
     );
@@ -907,14 +897,14 @@ function AssistantMarkdownImage({
 
   if (!binding) {
     return (
-      <View style={stateFrameStyle}>
+      <View style={stateFrameStyle} dataSet={copyDataSet}>
         <ThemedLoadingSpinner size="small" uniProps={foregroundMutedColorMapping} />
       </View>
     );
   }
 
   return (
-    <View style={frameStyle}>
+    <View style={frameStyle} dataSet={copyDataSet}>
       <Pressable
         accessibilityLabel={t("composer.attachments.openImage")}
         accessibilityRole="button"
@@ -1372,27 +1362,18 @@ function NativeShimmerPeakSvg({ gradientId }: { gradientId: string }) {
   );
 }
 
-const assistantMessageBlockContainerStylesheet = StyleSheet.create((theme) => ({
-  gap: {
-    marginBottom: Math.round(theme.spacing[3] * (theme.contentSpacingScale ?? 0.75)),
-    backgroundColor: theme.debugConversationSpacing ? "rgba(255,0,0,0.18)" : undefined,
-  },
-  debugOnly: {
-    backgroundColor: theme.debugConversationSpacing ? "rgba(255,0,0,0.18)" : undefined,
-  },
-}));
-
 interface AssistantMessageBlockContainerProps {
   block: string;
-  hasGap: boolean;
+  marginBottom: number;
   children: ReactNode;
 }
 
 function AssistantMessageBlockContainer({
   block,
-  hasGap,
+  marginBottom,
   children,
 }: AssistantMessageBlockContainerProps) {
+  const style = useMemo(() => (marginBottom > 0 ? { marginBottom } : undefined), [marginBottom]);
   const handleLayout = useCallback(
     (event: LayoutChangeEvent) => {
       const { width, height } = event.nativeEvent.layout;
@@ -1400,15 +1381,6 @@ function AssistantMessageBlockContainer({
     },
     [block],
   );
-  // Gap and debug wash are both derived from the theme via StyleSheet
-  // (Unistyles ShadowRegistry) — no useUnistyles()/UnistylesRuntime. See
-  // docs/unistyles.md "STOP — useUnistyles() Is Banned". The gap is
-  // Math.round(spacing[3] * contentSpacingScale) so appearance font/spacing
-  // changes repaint without a React re-render; the red wash appears only
-  // when theme.debugConversationSpacing is true.
-  const style = hasGap
-    ? assistantMessageBlockContainerStylesheet.gap
-    : assistantMessageBlockContainerStylesheet.debugOnly;
   return (
     <View style={style} onLayout={isWeb ? handleLayout : undefined}>
       {children}
@@ -1441,45 +1413,6 @@ const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
     />
   );
 });
-
-type AssistantRenderUnit =
-  | { kind: "markdown"; key: string; text: string }
-  | { kind: "part"; key: string; part: MarkdownDisplayPart };
-
-function assistantPartIdentity(part: MarkdownDisplayPart): string {
-  if (part.kind === "markdown") {
-    return `markdown:${part.text}`;
-  }
-  if (part.kind === "inlineImage") {
-    return `inlineImage:${part.src}:${part.alt}`;
-  }
-  return `details:${part.summary}:${part.body}`;
-}
-
-// Runs html-ish extraction once over the whole message, then chunks only the
-// resulting plain-markdown segments with splitMarkdownBlocks — the block-level
-// memoization/height-caching scheme AssistantMessage already relies on.
-// Structured parts (details, inline images) become their own render unit so
-// they're never split across a markdown-block boundary. MemoizedMarkdownBlock
-// renders with enableHtmlish={false}: per-block html-ish parsing would only see
-// a fragment of e.g. a <details>...</details> block (its blank-line-separated
-// body lands in a different chunk) and fail to find the matching close tag.
-function buildAssistantRenderUnits(revealedMessage: string): AssistantRenderUnit[] {
-  const units: AssistantRenderUnit[] = [];
-  let unitIndex = 0;
-  for (const part of splitHtmlishMarkdown(revealedMessage)) {
-    if (part.kind === "markdown") {
-      for (const block of splitMarkdownBlocks(part.text)) {
-        units.push({ kind: "markdown", key: `block:${unitIndex}`, text: block });
-        unitIndex += 1;
-      }
-      continue;
-    }
-    units.push({ kind: "part", key: `block:${unitIndex}`, part });
-    unitIndex += 1;
-  }
-  return units;
-}
 
 interface MarkdownInheritedTextProps {
   inheritedStyles: TextStyle;
@@ -2024,16 +1957,10 @@ export const AssistantMessage = memo(function AssistantMessage({
     };
   }, [client, fileLinkActions, markdownParser, occurrenceKey, phase, serverId, workspaceRoot]);
 
-  const renderUnits = useMemo(() => buildAssistantRenderUnits(revealedMessage), [revealedMessage]);
-  const markdownPartRendererProps = useMemo<MarkdownPartRendererProps>(
-    () => ({
-      rules: markdownRules,
-      markdownit: markdownParser,
-      onLinkPress: handleMarkdownLinkPress,
-      allowedImageHandlers: MARKDOWN_ALLOWED_IMAGE_HANDLERS,
-      topLevelMaxExceededItem: MARKDOWN_TOP_LEVEL_MAX_EXCEEDED_ITEM,
-    }),
-    [handleMarkdownLinkPress, markdownParser, markdownRules],
+  const blocks = useMemo(() => splitMarkdownBlocks(revealedMessage), [revealedMessage]);
+  const keyedBlocks = useMemo(
+    () => blocks.map((block, index) => ({ key: `block:${index}`, block })),
+    [blocks],
   );
 
   const assistantContainerStyle = useMemo(
@@ -2060,26 +1987,22 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   return (
     <View testID="assistant-message" dataSet={revealDataSet} style={assistantContainerStyle}>
-      {renderUnits.map((unit, index) => (
+      {keyedBlocks.map(({ key, block }, index) => (
         <AssistantMessageBlockContainer
-          key={unit.key}
-          block={unit.kind === "markdown" ? unit.text : assistantPartIdentity(unit.part)}
-          hasGap={index < renderUnits.length - 1}
+          key={key}
+          block={block}
+          marginBottom={index < keyedBlocks.length - 1 ? 12 : 0}
         >
-          {unit.kind === "markdown" ? (
-            <MemoizedMarkdownBlock
-              text={unit.text}
-              rules={markdownRules}
-              parser={
-                phase === "streaming" && index === renderUnits.length - 1
-                  ? streamingMarkdownParser
-                  : markdownParser
-              }
-              onLinkPress={handleMarkdownLinkPress}
-            />
-          ) : (
-            <MarkdownPart part={unit.part} rendererProps={markdownPartRendererProps} />
-          )}
+          <MemoizedMarkdownBlock
+            text={block}
+            rules={markdownRules}
+            parser={
+              phase === "streaming" && index === keyedBlocks.length - 1
+                ? streamingMarkdownParser
+                : markdownParser
+            }
+            onLinkPress={handleMarkdownLinkPress}
+          />
         </AssistantMessageBlockContainer>
       ))}
       {fullMessageByteLength !== null ? (
@@ -3135,8 +3058,7 @@ export const ToolCall = memo(function ToolCall({
   forceInline = false,
   maxDetailHeight = 400,
 }: ToolCallProps) {
-  const { openToolCall, updateToolCall } = useToolCallSheet();
-  const sheetOwnerRef = useRef<object>({});
+  const { openToolCall } = useToolCallSheet();
   const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false);
 
   const isMobile = useIsCompactFormFactor();
@@ -3177,41 +3099,31 @@ export const ToolCall = memo(function ToolCall({
     return () => onOpenFilePath(openFilePath);
   }, [presentation.openFilePath, onOpenFilePath]);
 
-  const sheetData = useMemo<ToolCallSheetData>(
-    () => ({
-      toolName,
-      displayName: presentation.displayName,
-      summary: presentation.summary,
-      detail: effectiveDetail,
-      errorText: presentation.errorText,
-      icon: presentation.icon,
-      showLoadingSkeleton: presentation.isLoadingDetails,
-    }),
-    [
-      toolName,
-      presentation.displayName,
-      presentation.summary,
-      presentation.errorText,
-      presentation.icon,
-      presentation.isLoadingDetails,
-      effectiveDetail,
-    ],
-  );
-
   const handleToggle = useCallback(() => {
     if (!shouldRenderInline) {
-      openToolCall(sheetData, sheetOwnerRef.current);
+      openToolCall({
+        toolName,
+        displayName: presentation.displayName,
+        summary: presentation.summary,
+        detail: effectiveDetail,
+        errorText: presentation.errorText,
+        icon: presentation.icon,
+        showLoadingSkeleton: presentation.isLoadingDetails,
+      });
     } else {
       setIsExpanded((prev) => !prev);
     }
-  }, [shouldRenderInline, openToolCall, sheetData]);
-
-  // The sheet holds a copy of the data from when it was opened. Keep it current while this row
-  // streams (thinking text, running command output); a no-op unless this row owns the open sheet.
-  useEffect(() => {
-    if (shouldRenderInline) return;
-    updateToolCall(sheetOwnerRef.current, sheetData);
-  }, [shouldRenderInline, updateToolCall, sheetData]);
+  }, [
+    shouldRenderInline,
+    openToolCall,
+    toolName,
+    presentation.displayName,
+    presentation.summary,
+    presentation.errorText,
+    presentation.icon,
+    presentation.isLoadingDetails,
+    effectiveDetail,
+  ]);
 
   useEffect(() => {
     if (!onInlineDetailsHoverChange || !shouldRenderInline || isExpanded) {

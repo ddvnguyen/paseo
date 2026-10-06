@@ -9,7 +9,6 @@ interface FreebuffACPAgentClientOptions {
   env?: Record<string, string>;
   providerId?: string;
   label?: string;
-  providerParams?: unknown;
 }
 
 // Read-only: the adapter puts "<account> · <remaining>/<limit> daily" in the
@@ -32,7 +31,15 @@ export const FREEBUFF_CONFIRM_OPEN_FEATURE_OPTION: ACPConfigFeatureOption = {
   icon: "shield-check",
 };
 
-/** Freebuff ACP adapter: generic ACP plus the account/quota and confirm-open features. */
+/**
+ * Freebuff ACP adapter: generic ACP plus the account/quota and confirm-open features.
+ *
+ * Per-provider settings (supportsMcpServers, clientCapabilities) are NOT passed to the
+ * constructor. They arrive per session on `config.providerOptions` and are parsed by
+ * ACPProviderOptionsSchema inside ACPAgentClient, which is the single mechanism shared
+ * with the pi and omp adapters. A provider override's `options` or legacy `params`
+ * record reaches it through ResolvedProvider.providerOptions.
+ */
 export class FreebuffACPAgentClient extends GenericACPAgentClient {
   constructor(options: FreebuffACPAgentClientOptions) {
     super({
@@ -41,7 +48,6 @@ export class FreebuffACPAgentClient extends GenericACPAgentClient {
       env: options.env,
       providerId: options.providerId,
       label: options.label,
-      providerParams: options.providerParams,
       configFeatureOptions: [FREEBUFF_ACCOUNT_FEATURE_OPTION, FREEBUFF_CONFIRM_OPEN_FEATURE_OPTION],
     });
   }

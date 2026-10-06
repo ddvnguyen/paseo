@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawnProcess, terminateProcess } from "../process.js";
 import { Readable, Writable } from "node:stream";
 import {
   ClientSideConnection,
@@ -42,6 +43,7 @@ import {
   type ProviderConnection,
   type ProviderEvent,
   type ProviderInput,
+  type ProviderLaunch,
   type ProviderPermissionResponse,
   type ProviderPersistence,
   type ProviderSessionConfig,
@@ -75,6 +77,7 @@ export async function createAcpProviderConnection(
   }
   const probe = await AcpRuntime.start({
     options,
+    launch: request.launch,
     boundarySessionId: "capability-probe",
     env: {},
     emit: () => undefined,
@@ -103,6 +106,7 @@ export async function createAcpProviderConnection(
   };
   const state: AcpConnectionState = {
     options,
+    launch: request.launch,
     capabilities,
     sessions,
     emit,
@@ -147,6 +151,7 @@ export async function createAcpProviderConnection(
 }
 
 interface AcpConnectionState {
+  launch?: ProviderLaunch;
   options: RunAcpProviderOptions;
   capabilities: readonly ProviderCapability[];
   sessions: Map<string, AcpBoundarySession>;
@@ -251,8 +256,8 @@ async function dispatch(input: ProviderInput, state: AcpConnectionState): Promis
  * Conversation rewind: translate the host's revert token into the adapter's
  * user-turn ordinal and drive freebuff/rewindToUserTurn. The adapter swaps
  * the conversation state and replays the restored history through the normal
- * session-update lane; the runtime resets its timeline bookkeeping first so
- * the replay rebuilds a clean, post-rewind view for hydration.
+ * session-update lane; the runtime resets its timeline bookkeeping first so the
+ * replay rebuilds a clean, post-rewind view for hydration.
  */
 async function revertSession(
   input: Extract<ProviderInput, { type: "session.revert" }>,
@@ -294,6 +299,7 @@ async function discover(
 ): Promise<void> {
   const runtime = await AcpRuntime.start({
     options: state.options,
+    launch: state.launch,
     boundarySessionId: "catalog",
     env: {},
     emit: state.emit,
@@ -318,6 +324,7 @@ async function listSessions(
 ): Promise<void> {
   const runtime = await AcpRuntime.start({
     options: state.options,
+    launch: state.launch,
     boundarySessionId: "sessions",
     env: {},
     emit: state.emit,
@@ -348,6 +355,7 @@ async function openSession(
     throw new Error(`Session already exists: ${input.sessionId}`);
   const runtime = await AcpRuntime.start({
     options: state.options,
+    launch: state.launch,
     boundarySessionId: input.sessionId,
     env: input.config.env,
     emit: state.emit,
@@ -385,6 +393,7 @@ function requireSession(state: AcpConnectionState, sessionId: string): AcpBounda
 }
 
 interface StartRuntimeOptions {
+  launch?: ProviderLaunch;
   options: RunAcpProviderOptions;
   boundarySessionId: string;
   env: Readonly<Record<string, string>>;
@@ -395,13 +404,6 @@ class AcpRuntime {
   readonly connection: ClientSideConnection;
   agentCapabilities: AgentCapabilities = {};
   nativeSessionId = "";
-  /**
-   * Notifications that arrive while `session/new` is still in flight. The
-   * session id is only known once the response lands, and agents announce
-   * their commands right behind it, so these would otherwise be dropped as
-   * "another session" and the composer would never learn the slash commands.
-   */
-  private earlyUpdates: SessionNotification[] | null = null;
   private readonly child: ChildProcessWithoutNullStreams | null;
   private emit: (event: ProviderEvent) => void;
   private readonly messages = new Map<string, string>();
@@ -426,10 +428,16 @@ class AcpRuntime {
     "agent_message_chunk" | "agent_thought_chunk",
     string
   >();
+  /**
+   * Notifications that arrive while `session/new` is still in flight. The
+   * session id is only known once the response lands, and agents announce
+   * their commands right behind it, so these would otherwise be dropped as
+   * "another session" and the composer would never learn the slash commands.
+   */
+  private earlyUpdates: SessionNotification[] | null = null;
   private closing = false;
   private processFailed = false;
   private configTransaction = false;
-  private stagedTransformerConfig: ProviderConfigState | null = null;
   /**
    * Conversation rewind bookkeeping: the revert token the host hands back on
    * session.revert, keyed by its stable JSON form → user-turn ordinal
@@ -438,6 +446,7 @@ class AcpRuntime {
    */
   private readonly userTurnTokens = new Map<string, number>();
   private userTurnCount = 0;
+  private stagedTransformerConfig: ProviderConfigState | null = null;
   private readonly closeConnector: () => Promise<void>;
   private notificationLane: Promise<void> = Promise.resolve();
   private promptLane: Promise<void> = Promise.resolve();
@@ -449,10 +458,16 @@ class AcpRuntime {
     let stream: Stream;
     let closeConnector = async () => {};
     if (options.options.command) {
-      const [executable, ...args] = options.options.command;
-      child = spawn(executable, args, {
-        env: { ...process.env, ...options.env },
-        stdio: ["pipe", "pipe", "pipe"],
+      // COMPAT(pluginProviderLaunch): added in v0.10.0, remove after 2027-03-29 once plugin host floor >= v0.10.0.
+      // Standalone callers and older hosts do not send a daemon-resolved launch.
+      const launch = options.launch ?? {
+        command: options.options.command[0],
+        args: options.options.command.slice(1),
+        env: process.env,
+      };
+      child = spawnProcess(launch.command, launch.args, {
+        env: { ...launch.env, ...options.env },
+        stdio: "pipe",
       });
       spawnFailure = new Promise<never>((_resolve, reject) => child!.once("error", reject));
       child.stderr.on("data", () => undefined);
@@ -560,6 +575,16 @@ class AcpRuntime {
           _meta: metadata,
         }),
       );
+      // Rewind tokens from a previous adapter process are meaningless here.
+      this.userTurnTokens.clear();
+      this.userTurnCount = 0;
+      // `session/load` resumes replay notifications (history) BEFORE its
+      // response, but they travel through the serialized notification lane,
+      // not the response path. Drain the lane before signaling ready so the
+      // host sees the full replayed history when it starts reading the
+      // session — otherwise hydration can observe an empty history and
+      // render the conversation as blank.
+      await this.drainNotifications();
     } else {
       this.earlyUpdates = [];
       let newSession: NewSessionResponse;
@@ -582,17 +607,7 @@ class AcpRuntime {
     }
     this.modes = response.modes;
     this.configOptions = response.configOptions ?? [];
-    // Rewind tokens from a previous adapter process are meaningless here.
-    this.userTurnTokens.clear();
-    this.userTurnCount = 0;
     await this.applyInitialConfig(input.config);
-    // `session/load` resumes replay notifications (history) BEFORE its
-    // response, but they travel through the serialized notification lane,
-    // not the response path. Drain the lane before signaling ready so the
-    // host sees the full replayed history when it starts reading the
-    // session — otherwise hydration can observe an empty history and
-    // render the conversation as blank.
-    await this.drainNotifications();
     const sessionCapabilities = connectionCapabilities.filter(
       (capability) =>
         capability !== "session.configure" ||
@@ -833,24 +848,11 @@ class AcpRuntime {
 
   async closeSession(): Promise<void> {
     if (this.nativeSessionId) {
-      // COMPAT(acp-sdk-0.17): the flat TEST/PROD runtime node_modules resolve
-      // @agentclientprotocol/sdk 0.17 (required by @getpaseo/server), where the
-      // method is `unstable_closeSession`. Remove once the plugin package gets
-      // its own ACP SDK 1.x copy there.
-      const connection = this.connection as unknown as {
-        closeSession?: ClientSideConnection["closeSession"];
-        unstable_closeSession?: ClientSideConnection["closeSession"];
-      };
-      const closeNativeSession = (
-        connection.closeSession ?? connection.unstable_closeSession
-      )?.bind(connection);
-      if (closeNativeSession) {
-        await withTimeout(
-          this.call(closeNativeSession({ sessionId: this.nativeSessionId })),
-          1_000,
-          `ACP session ${this.nativeSessionId} did not close`,
-        ).catch(() => undefined);
-      }
+      await withTimeout(
+        this.call(this.connection.closeSession({ sessionId: this.nativeSessionId })),
+        1_000,
+        `ACP session ${this.nativeSessionId} did not close`,
+      ).catch(() => undefined);
     }
     await this.close();
   }
@@ -864,9 +866,9 @@ class AcpRuntime {
     if (!child || this.processFailed) return;
     if (child.exitCode !== null || child.signalCode !== null) return;
     const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
-    child.kill("SIGTERM");
+    await terminateProcess(child, "SIGTERM");
     if (await settlesWithin(closed, 1_000)) return;
-    child.kill("SIGKILL");
+    await terminateProcess(child);
     if (!(await settlesWithin(closed, 1_000))) {
       throw new Error(`ACP provider ${this.options.options.id} did not terminate after SIGKILL`);
     }

@@ -27,13 +27,14 @@ export const fr: TranslationResources = {
     total: "{{total}} résultats",
   },
   common: {
-    back: "Dos",
+    bottomSheetBackdrop: "Arrière-plan du panneau inférieur",
+    back: "Retour",
     loading: "Chargement...",
     actions: {
-      back: "Dos",
+      back: "Retour",
       cancel: "Annuler",
       close: "Fermer",
-      copy: "Copie",
+      copy: "Copier",
       copyLine: "Copier la ligne",
       dismiss: "Rejeter",
       reload: "Recharger",
@@ -51,9 +52,9 @@ export const fr: TranslationResources = {
     },
     states: {
       loading: "Chargement...",
-      starting: "Départ...",
+      starting: "Démarrage…",
       copied: "Copié",
-      copiedLabel: "{{label}}copié",
+      copiedLabel: "{{label}} copié",
       downloadComplete: "Téléchargement terminé",
       downloadFailed: "Le téléchargement a échoué",
     },
@@ -65,13 +66,13 @@ export const fr: TranslationResources = {
       daemonUnavailable: "Daemonindisponible",
       daemonClientUnavailable: "ClientDaemonindisponible",
       daemonClientDisconnected: "Le clientDaemonest déconnecté",
-      noFileFound: "Aucun fichier trouvé pour{{token}}",
+      noFileFound: "Aucun fichier trouvé pour {{token}}",
       unexpectedDictationError:
         "Une erreur inattendue s'est produite lors du traitement de la dictée.",
     },
     connectionStatus: {
       online: "En ligne",
-      connecting: "De liaison",
+      connecting: "Connexion…",
       offline: "Hors ligne",
       error: "Erreur",
       idle: "Inactif",
@@ -125,7 +126,7 @@ export const fr: TranslationResources = {
     input: {
       accessibilityLabel: "Agent de messagerie...",
       terminalAccessibilityLabel: "Terminal prompt",
-      focusHint: "{{shortcut}}pour se concentrer",
+      focusHint: "{{shortcut}} pour se concentrer",
       addAttachment: "Ajouter une pièce jointe",
       interruptAgent: "Agent d'interruption",
       queueMessage: "Message de file d'attente",
@@ -263,14 +264,14 @@ export const fr: TranslationResources = {
     unavailable: {
       selectedHost: "Hôte sélectionné",
       unknownHost:
-        "Impossible d'ouvrir cet agent car{{serverLabel}}n'est pas configuré sur ce périphérique.",
+        "Impossible d'ouvrir cet agent car {{serverLabel}} n'est pas configuré sur ce périphérique.",
       addHost:
         "Ajoutez l'hôte dans Paramètres ou ouvrez un agent sur un serveur configuré pour continuer.",
-      preparingSession: "Préparation de la séance{{serverLabel}}...",
-      connecting: "Connexion à{{serverLabel}}...",
+      preparingSession: "Préparation de la séance {{serverLabel}}...",
+      connecting: "Connexion à {{serverLabel}}...",
       showSoon: "Nous montrerons cet agent dans un instant.",
       showWhenOnline: "Nous afficherons cet agent une fois que l'hôte sera en ligne.",
-      reconnectingTo: "Reconnexion à{{serverLabel}}...",
+      reconnectingTo: "Reconnexion à {{serverLabel}}...",
       showAgainWhenReachable: "Nous afficherons à nouveau cet agent dès que l'hôte sera joignable.",
     },
     archived: {
@@ -309,7 +310,7 @@ export const fr: TranslationResources = {
     },
     badges: {
       archived: "Archivé",
-      pending: "{{count}}en attente",
+      pending: "{{count}} en attente",
       attention: "Attention",
     },
     archiveSheet: {
@@ -387,11 +388,14 @@ export const fr: TranslationResources = {
         completed: "Terminée",
       },
     },
+    turnFooter: {
+      workedFor: "A travaillé pendant {{duration}}",
+    },
     compaction: {
       loading: "Compactage...",
       auto: "Contexte automatiquement compacté",
       manual: "Contexte compacté manuellement",
-      withTokens: "Contexte compacté (jetons{{tokens}}K)",
+      withTokens: "Contexte compacté (jetons {{tokens}}K)",
       completed: "Contexte compacté",
     },
   },
@@ -427,7 +431,7 @@ export const fr: TranslationResources = {
       noRecent: "Aucune session récente à importer.",
       noMatches: "Aucune session ne correspond à votre recherche.",
       alreadyImported: "Toutes les sessions récentes sont déjà importées.",
-      noProviderSessions: "Aucune session{{provider}}trouvée.",
+      noProviderSessions: "Aucune session {{provider}} trouvée.",
     },
     row: {
       importing: "Importation...",
@@ -437,15 +441,17 @@ export const fr: TranslationResources = {
     route: {
       loading: "Chargement de l'espace de travail",
       connecting: "De liaison",
-      hostOffline: "{{hostName}}est hors ligne",
-      cannotReachHost: "Impossible d'atteindre{{hostName}}",
+      hostOffline: "{{hostName}} est hors ligne",
+      cannotReachHost: "Impossible d'atteindre {{hostName}}",
       hostStatus: "StatutHost:{{status}}",
       needsHostUpgrade: "Mettez à jour votre hôte pour restaurer cet espace de travail",
       manageHost: "Gérer l'hôte",
       recovery: {
         archivedTitle: "Espace de travail archivé",
         restoreDescription:
-          "{{workspaceName}} a été archivé et son worktree supprimé. Restaurez la branche {{branch}} pour le rouvrir.",
+          "Restaurez {{workspaceName}} pour retrouver ses agents. Son worktree utilisera la branche {{branch}}.",
+        restoreWithoutBranchDescription:
+          "Restaurez {{workspaceName}} pour retrouver ses agents. Une nouvelle branche partira de la base enregistrée ou de la branche par défaut du dépôt.",
         unarchiveDescription: "{{workspaceName}} est archivé. Désarchivez-le pour le rouvrir.",
         restoreAction: "Restaurer",
         unarchiveAction: "Désarchiver",
@@ -571,7 +577,7 @@ export const fr: TranslationResources = {
         title: "Le navigateur est réservé au bureau",
         subtitle: "Ouvrez cet espace de travail dans Electron pour utiliser le navigateur intégré.",
       },
-      session: "Session de navigateur{{browserId}}",
+      session: "Session de navigateur {{browserId}}",
       controls: {
         back: "Dos",
         forward: "Avant",
@@ -624,12 +630,12 @@ export const fr: TranslationResources = {
         workspace: "Workspace",
       },
       switcher: {
-        trigger: "Changer d'onglet ({{count}}ouvert)",
+        trigger: "Changer d'onglet ({{count}} ouvert)",
         title: "Changer d'onglet",
         searchPlaceholder: "Onglets de recherche",
       },
       menu: {
-        openFor: "Ouvrir le menu pour{{label}}",
+        openFor: "Ouvrir le menu pour {{label}}",
         copyResumeCommand: "Copier la commande de reprise",
         copyAgentId: "Copier l'identifiant de l'agent",
         copyTerminalId: "Copier l'identifiant du terminal",
@@ -708,16 +714,16 @@ export const fr: TranslationResources = {
         closeTabsRightTitle: "Fermer les onglets à droite?",
         closeOtherTabsTitle: "Fermer les autres onglets?",
         bulk: {
-          all: "Cela archivera les agents{{agents}}, fermera les terminaux{{terminals}}et fermera les onglets{{tabs}}. Tout processus en cours d’exécution dans un terminal fermé sera immédiatement arrêté.",
+          all: "Cela archivera les agents {{agents}}, fermera les terminaux {{terminals}} et fermera les onglets {{tabs}}. Tout processus en cours d’exécution dans un terminal fermé sera immédiatement arrêté.",
           agentsAndTerminals:
-            "Cela archivera les agents{{agents}}et fermera les terminaux{{terminals}}. Tout processus en cours d’exécution dans un terminal fermé sera immédiatement arrêté.",
+            "Cela archivera les agents {{agents}} et fermera les terminaux {{terminals}}. Tout processus en cours d’exécution dans un terminal fermé sera immédiatement arrêté.",
           terminalsAndTabs:
-            "Cela fermera le(s) terminal(s){{terminals}}et fermera le(s) onglet(s){{tabs}}. Tout processus en cours d’exécution dans un terminal fermé sera immédiatement arrêté.",
-          agentsAndTabs: "Cela archivera les agents{{agents}}et fermera les onglets{{tabs}}.",
+            "Cela fermera le(s) terminal(s) {{terminals}} et fermera le(s) onglet(s) {{tabs}}. Tout processus en cours d’exécution dans un terminal fermé sera immédiatement arrêté.",
+          agentsAndTabs: "Cela archivera les agents {{agents}} et fermera les onglets {{tabs}}.",
           terminals:
             "Cela fermera le(s) terminal(s){{terminals}}. Tout processus en cours d’exécution dans un terminal fermé sera immédiatement arrêté.",
-          tabs: "Cela fermera les onglets{{tabs}}.",
-          agents: "Cela archivera les agents{{agents}}.",
+          tabs: "Cela fermera les onglets {{tabs}}.",
+          agents: "Cela archivera les agents {{agents}}.",
         },
       },
     },
@@ -755,13 +761,13 @@ export const fr: TranslationResources = {
       accessibility: {
         trigger: "ScriptsWorkspace",
         openService: "Voir le service {{scriptName}}",
-        viewTerminal: "Voir le terminal{{scriptName}}",
-        runScript: "Exécuter le script{{scriptName}}",
-        stopScript: "Arrêter{{scriptName}}",
-        restartScript: "Redémarrer{{scriptName}}",
-        copyUrl: "Copier l'URL de{{scriptName}}",
+        viewTerminal: "Voir le terminal {{scriptName}}",
+        runScript: "Exécuter le script {{scriptName}}",
+        stopScript: "Arrêter {{scriptName}}",
+        restartScript: "Redémarrer {{scriptName}}",
+        copyUrl: "Copier l'URL de {{scriptName}}",
         chooseUrl: "Choisir l’URL pour {{scriptName}}",
-        script: "Script{{scriptName}}",
+        script: "Script {{scriptName}}",
       },
       routes: {
         public: "Proxy inverse",
@@ -769,9 +775,9 @@ export const fr: TranslationResources = {
         direct: "Directe",
       },
       states: {
-        exitCode: "quitter{{code}}",
-        startFailed: "Échec du démarrage de{{scriptName}}",
-        stopFailed: "Échec de l'arrêt de{{scriptName}}",
+        exitCode: "quitter {{code}}",
+        startFailed: "Échec du démarrage de {{scriptName}}",
+        stopFailed: "Échec de l'arrêt de {{scriptName}}",
       },
     },
     tree: {
@@ -817,7 +823,7 @@ export const fr: TranslationResources = {
           success: "Fusionné",
         },
         mergeFromBase: {
-          label: "Mise à jour de{{baseRef}}",
+          label: "Mise à jour de {{baseRef}}",
           pending: "Mise à jour...",
           success: "Mis à jour",
         },
@@ -886,7 +892,7 @@ export const fr: TranslationResources = {
           updateDirty:
             "La mise à jour n'est pas disponible tant que vous avez des modifications locales, alors validez-les ou cachez-les d'abord",
           updateCurrent:
-            "La mise à jour n'est pas disponible car cette branche est déjà à jour avec{{baseRef}}",
+            "La mise à jour n'est pas disponible car cette branche est déjà à jour avec {{baseRef}}",
           mergePrNoGithub:
             "La fusionPRn'est pas disponible pour le moment carGitHubn'est pas connecté",
           archiveNotWorktree:
@@ -928,12 +934,12 @@ export const fr: TranslationResources = {
           cancel: "Annuler",
           uncommittedChanges: "Modifications non validées",
           uncommittedChangesWithDiff: "Modifications non validées ({{diffStat}})",
-          addedLine: "Ligne ajoutée{{count}}",
-          addedLines: "{{count}}lignes ajoutées",
-          deletedLine: "Ligne supprimée{{count}}",
-          deletedLines: "{{count}}lignes supprimées",
-          unpushedCommit: "Validation non poussée{{count}}",
-          unpushedCommits: "Validations non poussées{{count}}",
+          addedLine: "Ligne ajoutée {{count}}",
+          addedLines: "{{count}} lignes ajoutées",
+          deletedLine: "Ligne supprimée {{count}}",
+          deletedLines: "{{count}} lignes supprimées",
+          unpushedCommit: "Validation non poussée {{count}}",
+          unpushedCommits: "Validations non poussées {{count}}",
         },
       },
       diff: {
@@ -991,7 +997,7 @@ export const fr: TranslationResources = {
       openInEditor: {
         open: "Ouvrir",
         chooseEditor: "Choisir l'éditeur",
-        openIn: "Espace de travail ouvert dans{{target}}",
+        openIn: "Espace de travail ouvert dans {{target}}",
         openFileIn: "Open {{fileName}} in {{target}}",
         failedOpen: "Échec de l'ouverture de l'espace de travail",
       },
@@ -999,6 +1005,47 @@ export const fr: TranslationResources = {
         actions: {
           viewPullRequest: "Voir",
           openOn: "Ouvrir sur {{brand}}",
+          addToChat: "Ajouter au chat",
+          addAllToChat: "Tout ajouter au chat",
+          addingToChat: "Ajout en cours...",
+        },
+        checksOverview: {
+          headline: {
+            actionRequired: "Certaines vérifications nécessitent votre attention",
+            failure: "Certaines vérifications ont échoué",
+            pending: "Certaines vérifications ne sont pas encore terminées",
+            success: "Toutes les vérifications ont réussi",
+            none: "Aucune vérification",
+          },
+          count: {
+            actionRequired: "{{count}} nécessitent une action",
+            warning: "{{count}} avertissements",
+            failure: "{{count}} en échec",
+            pending: "{{count}} en cours",
+            manual: "{{count}} manuels",
+            success: "{{count}} réussie(s)",
+            ignored: "{{count}} ignorée(s)",
+          },
+          detailOne: "Vérification : {{parts}}",
+          detailMany: "Vérifications : {{parts}}",
+          groupOne: {
+            actionRequired: "{{count}} vérification nécessitant une action",
+            warning: "{{count}} vérification avec avertissement",
+            failure: "{{count}} vérification en échec",
+            pending: "{{count}} vérification en cours",
+            manual: "{{count}} vérification manuelle",
+            success: "{{count}} vérification réussie",
+            ignored: "{{count}} vérification ignorée",
+          },
+          groupMany: {
+            actionRequired: "{{count}} vérifications nécessitant une action",
+            warning: "{{count}} vérifications avec avertissement",
+            failure: "{{count}} vérifications en échec",
+            pending: "{{count}} vérifications en cours",
+            manual: "{{count}} vérifications manuelles",
+            success: "{{count}} vérifications réussies",
+            ignored: "{{count}} vérifications ignorées",
+          },
         },
         checksSummary: {
           passedLabel: "succès",
@@ -1009,20 +1056,24 @@ export const fr: TranslationResources = {
           runningAccessible: "Vérifications en cours",
         },
         sections: {
-          checks: "Chèques",
+          checks: "Vérifications",
           pipeline: "Pipeline",
           reviews: "Avis",
+          activity: "Activité",
         },
         empty: {
           noJobs: "Aucune tâche",
           loadingPipeline: "Chargement du pipeline...",
           pipelineJobsLoadFailed: "Impossible de charger les tâches du pipeline",
           allowedToFail: "autorisé à échouer",
+          noActivity: "Aucune activité pour le moment",
         },
         approvals: "{{given}} sur {{required}} approbations",
         accessibility: {
           pullRequest: "Demande de tirage #{{number}}",
           pullRequest_mr: "Demande de fusion !{{number}}",
+          commentActions: "Actions du commentaire",
+          threadActions: "Actions du fil",
           checkStatus: {
             passed: "Réussi",
             failed: "Échec",
@@ -1120,6 +1171,14 @@ export const fr: TranslationResources = {
     },
   },
   sidebar: {
+    statusGroupAccessibility: "Groupe {{label}}",
+    statusBucket: {
+      needsInput: "Attend une réponse",
+      failed: "Échec",
+      readyToReview: "À relire",
+      working: "En cours",
+      done: "Terminé",
+    },
     display: {
       trigger: "Préférences d'affichage",
       heading: "Affichage",
@@ -1180,6 +1239,9 @@ export const fr: TranslationResources = {
       hosts: "Hôtes",
       settings: "Paramètres",
       closeSidebar: "Fermer la barre latérale",
+    },
+    footer: {
+      usage: "Utilisation",
     },
     help: {
       trigger: "Aide et assistance",
@@ -1250,7 +1312,7 @@ export const fr: TranslationResources = {
         newWorkspace: "Nouvel espace de travail",
         showMore: "Afficher plus",
         showLess: "Afficher moins",
-        createWorkspaceFor: "Créer un nouvel espace de travail pour{{projectName}}",
+        createWorkspaceFor: "Créer un nouvel espace de travail pour {{projectName}}",
         copyPath: "Copier le chemin",
         copyBranchName: "Copier le nom de la branche",
         rename: "Renommer l'espace de travail",
@@ -1348,7 +1410,7 @@ export const fr: TranslationResources = {
         builtInOnly: "Seul le démon de bureau intégré est affiché ici",
         running: "en cours d'exécution",
         notRunning: "ne fonctionne pas",
-        pid: "PID{{pid}}",
+        pid: "PID {{pid}}",
       },
       management: {
         title: "Gérer le démon intégré",
@@ -1423,7 +1485,7 @@ export const fr: TranslationResources = {
         installingAction: "Installation...",
         installAndRestart: "Installer et redémarrer",
         installingDescription: "Installation et redémarrage...",
-        versionReady: "{{version}}est prêt à être installé.",
+        versionReady: "{{version}} est prêt à être installé.",
         newVersionReady: "Une nouvelle version est prête à être installée.",
         restartWarning:
           "La mise à niveau de l'application arrêtera l'exécution des agents et fermera les sessions de terminal.",
@@ -1572,6 +1634,8 @@ export const fr: TranslationResources = {
     noFiles: "Aucun fichier ou répertoire trouvé",
     noCommands: "Aucune commande trouvée",
     failedToLoad: "Échec du chargement",
+    chooseProjectForCommands: "Choisissez un projet pour voir les commandes",
+    chooseModelForCommands: "Sélectionnez un modèle pour voir les commandes",
   },
   loadOlderHistory: {
     failed: "Impossible de charger l'ancien historique",
@@ -1628,7 +1692,7 @@ export const fr: TranslationResources = {
     noMatchesForQuery: "Aucun modèle ne correspond à « {{query}} »",
     searchAllPlaceholder: "Rechercher dans tous les modèles...",
     searchPlaceholder: "Rechercher des modèles...",
-    openProviderSettings: "Ouvrir les paramètres{{provider}}",
+    openProviderSettings: "Ouvrir les paramètres {{provider}}",
   },
   providerCatalog: {
     title: "Ajouter un fournisseur",
@@ -1640,7 +1704,7 @@ export const fr: TranslationResources = {
       installed: "Installé",
       cancel: "Annuler",
       installInstructions: "Instructions d'installation",
-      installInstructionsFor: "Instructions d'installation{{provider}}",
+      installInstructionsFor: "Instructions d'installation {{provider}}",
     },
     errors: {
       unableToInstall: "Impossible d'installer le fournisseur",
@@ -1663,6 +1727,21 @@ export const fr: TranslationResources = {
     },
   },
   pairing: {
+    hostPassword: {
+      title: "Mot de passe pour {{host}}",
+      label: "Mot de passe de l’hôte",
+    },
+    hostConfirmation: {
+      title: "Se connecter à cet hôte ?",
+      description:
+        "Cet hôte pourra exécuter du code dans cette application et accéder à vos autres hôtes connectés. Connectez-vous uniquement si vous le reconnaissez.",
+      descriptionChanged:
+        "Ce lien modifie la façon dont vous vous connectez à cet hôte. L'hôte pourra exécuter du code dans cette application et accéder à vos autres hôtes connectés. Connectez-vous uniquement si vous le reconnaissez.",
+      hostLabel: "Hôte",
+      fingerprintLabel: "Empreinte de la clé",
+      relayLabel: "Relais",
+      connect: "Se connecter",
+    },
     connectionMethods: {
       title: "Ajouter une connexion",
       direct: {
@@ -1712,7 +1791,7 @@ export const fr: TranslationResources = {
         invalidPort: "Le port doit être compris entre 1 et 65535",
         invalidConnection: "Connexion invalide",
         failedTitle: "La connexion a échoué",
-        failedToConnect: "Nous n'avons pas réussi à nous connecter à{{endpoint}}.",
+        failedToConnect: "Nous n'avons pas réussi à nous connecter à {{endpoint}}.",
         noAdditionalDetails: "{{detail}}(aucun détail supplémentaire fourni)",
         timedOut: "La connexion a expiré. Vérifiez l'hôte/portet votre réseau.",
         refused: "Connexion rejetée. Le serveur fonctionne-t-il à cette adresse?",
@@ -1730,6 +1809,12 @@ export const fr: TranslationResources = {
       helper: "Connectez-vous à un daemon Paseo sur l’hôte distant.",
       fields: {
         target: "Hôte SSH",
+        password: "Mot de passe du daemon",
+        optional: "Facultatif",
+      },
+      passwordVisibility: {
+        show: "Afficher le mot de passe",
+        hide: "Masquer le mot de passe",
       },
       actions: {
         cancel: "Annuler",
@@ -1826,7 +1911,7 @@ export const fr: TranslationResources = {
   },
   serviceUrl: {
     title: "Service ouvertURL",
-    message: "Ouvrir{{url}}?",
+    message: "Ouvrir {{url}}?",
     inPaseo: "DansPaseo",
     externalBrowser: "Navigateur externe",
     dontAskAgain: "Ne demande plus",
@@ -1837,7 +1922,7 @@ export const fr: TranslationResources = {
     cancelled: "Le téléchargement a été annulé.",
     failed: "Échec du téléchargement du fichier.",
     shareFile: "Partager un fichier",
-    shareFileNamed: "Partager{{fileName}}",
+    shareFileNamed: "Partager {{fileName}}",
   },
   menu: {
     backdrop: "Toile de fond du menu",
@@ -1853,7 +1938,7 @@ export const fr: TranslationResources = {
     pillLabelReadyToReview: "{{count}} à relire",
     detachAction: "Detacher {{label}}",
     detachTooltip: "Detacher le sous-agent",
-    archiveAction: "Archiver{{label}}",
+    archiveAction: "Archiver {{label}}",
     archiveTooltip: "Sous-agent d'archivage",
     archiveFinishedAction: "Archiver les sous-agents terminés",
     archiveFinishedRetry: "Réessayer ({{failed}}/{{total}})",
@@ -1961,11 +2046,13 @@ export const fr: TranslationResources = {
     dismiss: "Rejeter",
   },
   contextWindow: {
+    noData: "Aucune donnée de contexte",
+    accessibilityNoData: "Fenêtre contextuelle : Aucune donnée de contexte",
     title: "Fenêtre contextuelle",
     used: "{{percentage}}% utilisé",
-    tokens: "Jetons{{used}}/{{max}}",
-    sessionCost: "Coût de la séance{{cost}}",
-    accessibility: "Fenêtre contextuelle{{percentage}}% utilisé",
+    tokens: "Jetons {{used}}/{{max}}",
+    sessionCost: "Coût de la séance {{cost}}",
+    accessibility: "Fenêtre contextuelle {{percentage}}% utilisé",
   },
   review: {
     comment: {
@@ -1996,14 +2083,17 @@ export const fr: TranslationResources = {
     enableBuiltInDaemon: "Activer le démon intégré",
     projects: "Projets",
     projectList: {
-      hostLoadFailed: "Impossible de charger les projets depuis l'hôte{{hostName}}:{{message}}",
-      editProject: "Modifier{{projectName}}",
+      hostLoadFailed: "Impossible de charger les projets depuis l'hôte {{hostName}}:{{message}}",
+      editProject: "Modifier {{projectName}}",
     },
-    groupInfo: "À propos de{{title}}",
+    groupInfo: "À propos de {{title}}",
     sections: {
       general: "Général",
+      chat: "Discussion",
       appearance: "Apparence",
-      layout: en.settings.sections.layout,
+      sidebar: "Barre latérale",
+      terminal: "Terminal",
+      browser: "Navigateur",
       editor: "Éditeur",
       shortcuts: "Raccourcis",
       integrations: "Intégrations",
@@ -2063,6 +2153,7 @@ export const fr: TranslationResources = {
     },
     general: {
       title: "Général",
+      sending: "Envoi",
       browserData: {
         title: "Données du navigateur",
         siteData: "Cookies et données des sites",
@@ -2092,8 +2183,6 @@ export const fr: TranslationResources = {
         },
       },
       serviceUrls: {
-        label: "URL de services",
-        description: "Où ouvrir les URL à partir de scripts en cours d'exécution",
         options: {
           ask: "Demander",
           inApp: "DansPaseo",
@@ -2112,7 +2201,6 @@ export const fr: TranslationResources = {
       toolCallDetail: {
         label: "Affichage des appels d’outils",
         description: "Comment les appels d’outils apparaissent dans la chronologie",
-        accessibilityLabel: "Sélectionner l’affichage des appels d’outils ({{value}})",
         options: {
           overview: "Résumé",
           detailed: "Détails complets",
@@ -2185,7 +2273,7 @@ export const fr: TranslationResources = {
         installMessage: "Cela met à jourPaseosur cet ordinateur",
         installConfirm: "Installer la mise à jour",
         update: "Mise à jour",
-        updateTo: "Mise à jour vers{{version}}",
+        updateTo: "Mise à jour vers {{version}}",
         installing: "Installation...",
         check: "Vérifier",
         checking: "Vérification...",
@@ -2216,8 +2304,16 @@ export const fr: TranslationResources = {
         description: "Afficher un plan pour passer d’une requête à l’autre",
       },
       sidebar: {
-        title: "Barre latérale",
-        description: "Choisissez les éléments affichés en haut de la barre latérale et leur ordre",
+        header: {
+          title: "En-tête",
+          description:
+            "Choisissez les éléments affichés en haut de la barre latérale et leur ordre",
+        },
+        footer: {
+          title: "Pied",
+          description:
+            "Choisissez les lignes affichées en bas de la barre latérale et leur ordre. Ajouter un projet et la rangée d’icônes restent toujours visibles",
+        },
         moveUp: "Déplacer vers le haut",
         moveDown: "Déplacer vers le bas",
       },
@@ -2259,6 +2355,14 @@ export const fr: TranslationResources = {
         contentSpacingScaleAccessibility: "Content spacing",
         resetDefaults: "Reset all to defaults",
         resetDefaultsHint: "Restore all font and spacing settings",
+      },
+      layout: {
+        title: "Mise en page",
+        contentWidth: "Largeur du contenu",
+        contentWidthHint: "Largeur maximale du chat et des fichiers Markdown sur les grands écrans",
+        contentWidthAccessibility: "Largeur du contenu en pixels",
+        reset: "Réinitialiser",
+        resetAccessibility: "Réinitialiser la largeur du contenu",
       },
       syntax: {
         title: "Syntaxe",
@@ -2371,6 +2475,10 @@ export const fr: TranslationResources = {
       },
     },
     host: {
+      password: {
+        guidance:
+          "Supprimez cet hôte puis ajoutez-le à nouveau avec le mot de passe demandé par ce daemon.",
+      },
       appearance: {
         title: "Apparence",
         name: {
@@ -2415,7 +2523,7 @@ export const fr: TranslationResources = {
       connections: {
         title: "Relations",
         removeTitle: "Supprimer la connexion",
-        removeMessage: "Supprimer{{name}}? Cela ne peut pas être annulé.",
+        removeMessage: "Supprimer {{name}}? Cela ne peut pas être annulé.",
         removeAction: "Retirer",
         removeErrorTitle: "Erreur",
         removeErrorMessage: "Impossible de supprimer la connexion",
@@ -2570,7 +2678,7 @@ export const fr: TranslationResources = {
           title: "Redémarrer le démon",
           hint: "Redémarre le processus démon. L'application se reconnectera automatiquement",
           confirm: "Redémarrer",
-          confirmTitle: "Redémarrer{{name}}",
+          confirmTitle: "Redémarrer {{name}}",
           confirmMessage:
             "Cela redémarrera le démon. Les agents qui s'y exécutent continueront à fonctionner; l'application se reconnectera automatiquement.",
           restarting: "Redémarrage...",
@@ -2622,7 +2730,7 @@ export const fr: TranslationResources = {
           hint: "Supprime cet hôte et ses connexions enregistrées de cet appareil",
           localHint: "Removes localhost from this device and stops the built-in daemon",
           localConfirmTitle: "Remove localhost connection and stop daemon?",
-          confirmMessage: "Supprimer{{name}}? Cela supprimera ses connexions enregistrées.",
+          confirmMessage: "Supprimer {{name}}? Cela supprimera ses connexions enregistrées.",
           localConfirmMessage:
             "This will remove the localhost connection, turn off built-in daemon management, and stop the managed daemon. Remote hosts remain connected.",
           errorTitle: "Erreur",
@@ -2634,8 +2742,8 @@ export const fr: TranslationResources = {
     providers: {
       title: "Fournisseurs",
       addProvider: "Ajouter un fournisseur",
-      providerDetails: "Détails du fournisseur{{name}}",
-      enableProvider: "Activer{{name}}",
+      providerDetails: "Détails du fournisseur {{name}}",
+      enableProvider: "Activer {{name}}",
       unavailable: "Connectez-vous à cet hôte pour voir les fournisseurs",
       loading: "Chargement...",
       addErrorTitle: "Unable to add provider",
@@ -2668,7 +2776,7 @@ export const fr: TranslationResources = {
         add: "Ajouter",
         adding: "Ajout...",
         failedToSave: "Échec de l'enregistrement du modèle",
-        removeModel: "Supprimer{{id}}",
+        removeModel: "Supprimer {{id}}",
         searchPlaceholder: "Rechercher des modèles",
         loading: "Chargement des modèles...",
         retry: "Réessayer",
@@ -2681,7 +2789,7 @@ export const fr: TranslationResources = {
         enableModel: "Afficher {{id}} dans les sélecteurs de modèles",
         lastModelHint: "Au moins un modèle reste activé",
 
-        updated: "{{time}}mis à jour",
+        updated: "{{time}} mis à jour",
       },
       diagnostic: {
         title: "Diagnostique",
@@ -2742,10 +2850,10 @@ export const fr: TranslationResources = {
         info: "Services de longue durée et commandes ponctuelles que vous pouvez lancer à partir de n'importe quel agent de ce projet",
         empty: "Pas encore de scripts.",
         untitled: "Script sans titre",
-        port: "port{{port}}",
+        port: "port {{port}}",
         menuAccessibility: "Ouvrir le menu des scripts",
         removeTitle: "Supprimer le script?",
-        removeMessage: "Supprimer{{name}}?",
+        removeMessage: "Supprimer {{name}}?",
         removeFallbackName: "ce scénario",
         name: "Nom",
         command: "Commande",
@@ -2754,7 +2862,7 @@ export const fr: TranslationResources = {
         nameRequired: "Le nom est requis",
         commandRequired: "La commande est requise",
         newScript: "Nouveau scénario",
-        editScript: "Modifier{{name}}",
+        editScript: "Modifier {{name}}",
         runAsService: "Exécuter en tant que service",
         serviceHint: "Paseosupervise le processus et attribue un port via $PASEO_PORT",
         actions: {

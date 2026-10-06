@@ -9,7 +9,7 @@ export function FileMarkdownPreview({ source }: { source: string }) {
 
   return (
     <View style={styles.outerGutter}>
-      <View style={styles.readingFrame}>
+      <View style={styles.readingFrame} testID="markdown-preview-frame">
         {document.frontMatter.length > 0 ? (
           <View style={styles.frontMatterTable} testID="markdown-front-matter">
             {document.frontMatter.map((row, index) => (
@@ -46,11 +46,10 @@ const styles = StyleSheet.create((theme) => ({
     },
     paddingVertical: theme.spacing[4],
   },
-  // Full lane width: the preview surface is the pane itself, so an artificial
-  // reading-measure cap just leaves dead gutters in wide view lanes. Long code
-  // lines keep their own horizontal scrolling inside the renderer.
   readingFrame: {
     width: "100%",
+    maxWidth: theme.contentMaxWidth,
+    alignSelf: "center",
     paddingHorizontal: theme.spacing[2],
   },
   frontMatterTable: {
