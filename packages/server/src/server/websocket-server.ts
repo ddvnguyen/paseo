@@ -421,6 +421,92 @@ function bufferFromWsData(data: Buffer | ArrayBuffer | Buffer[] | string): Buffe
   return Buffer.from(data);
 }
 
+type WsFrameData = Buffer | ArrayBuffer | Buffer[] | string;
+
+/**
+ * True when the socket implements Node-`ws` pause()/resume() backpressure.
+ * Bun 1.4.2 serves `ws`-package upgrades through its native-backed server
+ * socket, which exposes the EventEmitter surface (`on`) but neither method,
+ * so callers must feature-detect instead of assuming the `ws` class.
+ */
+export function socketSupportsPause(ws: WebSocketLike): boolean {
+  const candidate = ws as WebSocketLike & { pause?: unknown; resume?: unknown };
+  return typeof candidate.pause === "function" && typeof candidate.resume === "function";
+}
+
+export interface DeferredSocketMessages {
+  release(): void;
+  discard(): void;
+}
+
+/**
+ * Hold inbound messages in JS until the socket's real message handler is
+ * attached, then replay them in arrival order. This is the fallback for
+ * runtimes whose socket has no pause()/resume() (see socketSupportsPause):
+ * attach the stash synchronously at connection time so an eager client's
+ * first frame cannot slip through before authentication finishes.
+ *
+ * The stash listener is removed on release/discard when the socket offers
+ * `off`/`removeListener`; otherwise a flag keeps it a no-op for the rest of
+ * the socket's life. Both methods are idempotent.
+ */
+export function deferSocketMessages(
+  ws: WebSocketLike,
+  deliver: (data: WsFrameData) => void,
+): DeferredSocketMessages {
+  const queued: WsFrameData[] = [];
+  let holding = true;
+  const stash = (...args: unknown[]): void => {
+    if (holding) {
+      queued.push(args[0] as WsFrameData);
+    }
+  };
+  ws.on("message", stash);
+
+  const detach = (): void => {
+    holding = false;
+    const candidate = ws as WebSocketLike & {
+      off?: unknown;
+      removeListener?: unknown;
+    };
+    type RemoveMessageListener = (event: string, listener: (...args: unknown[]) => void) => void;
+    let off: RemoveMessageListener | null = null;
+    if (typeof candidate.off === "function") {
+      off = candidate.off as RemoveMessageListener;
+    } else if (typeof candidate.removeListener === "function") {
+      off = candidate.removeListener as RemoveMessageListener;
+    }
+    if (off) {
+      try {
+        off.call(ws, "message", stash);
+      } catch {
+        // The holding flag already neutralizes the stash; a socket whose
+        // removal throws is still correct, just one closure heavier.
+      }
+    }
+  };
+
+  return {
+    release(): void {
+      if (!holding && queued.length === 0) {
+        return;
+      }
+      detach();
+      const frames = queued.splice(0, queued.length);
+      for (const data of frames) {
+        deliver(data);
+      }
+    },
+    discard(): void {
+      if (!holding && queued.length === 0) {
+        return;
+      }
+      detach();
+      queued.length = 0;
+    },
+  };
+}
+
 export interface WebSocketLike {
   readyState: number;
   bufferedAmount?: number;
@@ -918,7 +1004,16 @@ export class VoiceAssistantWebSocketServer {
   ): Promise<void> {
     // Header validation is asynchronous. Buffer frames until the socket has a
     // pending hello handler so an eager client cannot lose its first message.
-    ws.pause();
+    // Node's `ws` socket pauses the underlying transport (frames stay in
+    // kernel buffers). Bun 1.4.2 substitutes a native-backed server socket
+    // with no pause()/resume(), so there we hold frames in JS instead.
+    const canPause = socketSupportsPause(ws);
+    const deferred = canPause
+      ? null
+      : deferSocketMessages(ws, (data) => this.handleRawMessage(ws, data));
+    if (canPause) {
+      ws.pause();
+    }
     try {
       // COMPAT(headerAuth): added in v0.9.1, remove after 2027-03-24.
       const protocol = extractWsBearerProtocol(request.headers["sec-websocket-protocol"]);
@@ -934,20 +1029,32 @@ export class VoiceAssistantWebSocketServer {
             { ...requestMetadata, hasToken: true },
             "Rejected WebSocket connection with invalid daemon password",
           );
+          deferred?.discard();
           ws.close(WS_CLOSE_DAEMON_AUTH_FAILED, reason);
           return;
         }
       }
 
-      await this.attachSocket(
+      // attachSocket binds the real message handlers in its synchronous
+      // prefix, so release the held frames synchronously right after: the
+      // bind-flip-drain sequence cannot interleave with an inbound frame,
+      // which means no frame is both delivered live and replayed.
+      const attached = this.attachSocket(
         ws,
         request,
         undefined,
         false,
         hasHeaderCredential ? OWNER_SESSION_ADMISSION : null,
       );
+      deferred?.release();
+      await attached;
     } finally {
-      ws.resume();
+      if (canPause) {
+        ws.resume();
+      } else {
+        // No-op after a successful release; drops held frames if auth threw.
+        deferred?.discard();
+      }
     }
   }
 
