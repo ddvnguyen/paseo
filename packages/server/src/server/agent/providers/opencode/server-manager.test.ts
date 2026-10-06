@@ -335,6 +335,7 @@ describe("OpenCodeAgentSession release hand-off carries the close reason", () =>
       { session: sessionApi } as never,
       "ses_handoff",
       logger,
+      {}, // harnessEnvironment (ctor position 5; the fork's helper predates it)
       new Map(),
       undefined, // events
       (closeOptions?: AgentCloseOptions) => acquisition.release(closeOptions),
