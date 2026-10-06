@@ -34,13 +34,17 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.8",
+    "@types/mdast": "^4.0.4",
     "@types/node": "^22.15.29",
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
+    "@types/unist": "^3.0.0",
     "@vitejs/plugin-react": "^4.5.1",
     "typescript": "^5.9.3",
+    "unified": "^11.0.5",
     "vite": "^7.3.3",
     "vite-tsconfig-paths": "^5.1.4",
-    "vitest": "^4.1.6"
+    "vitest": "^4.1.6",
+    "yaml": "^2.6.0"
   }
 }
