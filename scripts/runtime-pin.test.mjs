@@ -128,10 +128,21 @@ test("every systemd unit reaches the daemon through the pinned runtime", async (
   for (const unit of ["paseo.service", "paseo-test.service"]) {
     const source = await read("deploy", "systemd", unit);
     // The runtime is asserted inside the paseo-bun launcher these units exec, not
-    // inline, so the unit only has to route through it.
+    // inline, so the unit only has to route through it. The launcher ends in
+    // `exec "$BUN" "$DIST" "$@"`, so it checks the pinned version before handing
+    // off and passes the arguments through untouched: which daemon subcommand
+    // follows paseo-bun does not change the runtime that starts.
+    //
+    // PR #59 moved these units from `daemon start --foreground --listen ...` to
+    // `daemon run --home <tier>`, keeping paseo-bun in place. The subcommand is
+    // pinned rather than loosened because it is load-bearing under Type=simple:
+    // `daemon run` is the foreground form, whereas a bare `daemon start` launches
+    // the daemon managed and non-foreground, which the unit's supervision model
+    // does not want. The backreference ties --home to the same tier as the
+    // launcher so a PROD launcher cannot be paired with TEST state.
     assert.match(
       source,
-      /ExecStart=%h\/paseo\/(PROD|TEST)\/paseo-bun daemon start/,
+      /^ExecStart=%h\/paseo\/(PROD|TEST)\/paseo-bun daemon run --home %h\/paseo\/\1$/m,
       `${unit} must start the daemon via the paseo-bun launcher`,
     );
     assert.doesNotMatch(source, /ExecStart=.*\bnode\b/, `${unit} must not exec node directly`);
