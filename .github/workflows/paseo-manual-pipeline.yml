@@ -111,6 +111,33 @@ on:
         type: string
         default: ""
 
+# ── Serialize the shared deploy lanes (D3) ──────────────────────────────────
+# TEST :6868 and BETA :6768 are single shared lanes: one live home, one systemd
+# unit, one port each. Two dispatches racing them interleave their deploys and
+# can leave a lane serving one run's bytes under another run's green check, so
+# runs must take turns.
+#
+# `cancel-in-progress: false` is the whole point — a deploy already mid-restart
+# is never interrupted, and the next dispatch waits its turn rather than racing.
+#
+# Scope note: this is workflow-level and the group is a static string, so it
+# serializes *every* dispatch of this workflow — the web-only, Android-only and
+# PROD stages queue behind each other too. Nothing about which stages a run
+# selects changes; they only wait longer. PROD still only ever runs when an
+# operator ticks it (D5).
+concurrency:
+  # Must be unique across the repo's workflows, or a same-named group in another
+  # workflow would cancel these runs (and vice versa). Verified: no other
+  # workflow in this repo uses this group.
+  group: paseo-deploy-lanes
+  cancel-in-progress: false
+  # Known semantic: `queue` defaults to `single`, so at most ONE run may sit
+  # pending in this group. A third dispatch arriving while a second is pending
+  # CANCELS the pending second and takes its place; the running first is
+  # untouched. `queue: max` (up to 100 pending) would remove that drop, but
+  # widening it is the owner's call, not a silent change in a deploy-affecting
+  # PR — left as a known semantic, documented on the PR.
+
 permissions:
   contents: write
 
@@ -634,6 +661,14 @@ jobs:
     if: ${{ always() && inputs.run_deploy_test }}
     needs: [build-hydra]
     runs-on: [self-hosted, paseo-host]
+    # The workflow grants only `contents: write`, and specifying any permission
+    # sets every unlisted scope to `none` — so the lane-record commit status
+    # below needs `statuses: write` named explicitly. Job-level permissions
+    # REPLACE the workflow-level set for this job, hence `contents: write` is
+    # repeated here so the job keeps what it already had.
+    permissions:
+      contents: write
+      statuses: write
     steps:
       - name: Resolve build ref
         id: ref
@@ -830,6 +865,70 @@ jobs:
           HEALTH=$(curl -sf http://127.0.0.1:6868/api/health 2>/dev/null || echo '{"status":"error"}')
           echo "TEST health: $HEALTH"
           if [ "$HEALTH" = '{"status":"error"}' ]; then echo "::error::TEST health endpoint unreachable after deploy"; exit 1; fi
+
+      # ── Lane record (D3) ────────────────────────────────────────────────
+      # Last step, so it runs only after the health gate passed and records
+      # what :6868 is serving *right now*.
+      #
+      # Two sinks on purpose. The step summary is the human-readable one but it
+      # dies with the run, so it cannot answer "which SHA does TEST serve
+      # today?" — the pre-merge gate needs that question answered per-SHA and
+      # long after the run is gone. A commit status is stored against the SHA
+      # and is queryable later, so it is the durable half.
+      - name: Record TEST lane served SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job never checks the repo out, so `gh` has no git remote to
+          # resolve {owner}/{repo} from and the status path fails to expand
+          # ("unable to expand placeholder in path: ... not a git
+          # repository"). Name the repo explicitly instead.
+          GH_REPO: ${{ github.repository }}
+          LANE: TEST
+          LANE_CONTEXT: lane-serving/test
+          # The SHA this lane was actually given — deliberately NOT
+          # github.sha. A standalone TEST deploy names a past SHA in
+          # test_build_ref, so the run's own SHA is frequently not what :6868
+          # is serving; recording that would make the gate lie.
+          SERVED_SHA: ${{ steps.ref.outputs.sha }}
+        run: |
+          set -euo pipefail
+          SERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          RUN_URL="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+          # The statuses API takes only the full 40-char SHA. Stage 1 always
+          # produces one and reaching this step means a build dir named by this
+          # ref already existed, so the short form should be unreachable —
+          # but a short ref is a 422 here, so expand it instead of failing.
+          FULL_SHA="$SERVED_SHA"
+          if ! printf '%s' "$SERVED_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            RESOLVED="$(gh api "repos/$GH_REPO/commits/$SERVED_SHA" --jq .sha 2>/dev/null || true)"
+            if printf '%s' "$RESOLVED" | grep -Eq '^[0-9a-f]{40}$'; then
+              FULL_SHA="$RESOLVED"
+            fi
+          fi
+          {
+            echo "### $LANE lane record — now serving \`$FULL_SHA\`"
+            echo
+            echo "| lane | sha | run | recorded (UTC) |"
+            echo "| --- | --- | --- | --- |"
+            echo "| \`$LANE_CONTEXT\` | [\`$FULL_SHA\`]($GITHUB_SERVER_URL/$GH_REPO/commit/$FULL_SHA) | [\`$GITHUB_RUN_ID\`]($RUN_URL) | \`$SERVED_AT\` |"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Deliberately non-fatal. A red deploy-test BLOCKS deploy-beta
+          # (needs.deploy-test.result must be 'success'), so a bookkeeping
+          # failure must not block a deploy that already succeeded and passed
+          # its health gate. The failure stays visible as a run annotation and
+          # stays fail-closed on the merge side: with no status on the SHA there
+          # is nothing for the gate to pass on.
+          if gh api "repos/$GH_REPO/statuses/$FULL_SHA" \
+            -f state=success \
+            -f context="$LANE_CONTEXT" \
+            -f target_url="$RUN_URL" \
+            -f description="$LANE serves $FULL_SHA run $GITHUB_RUN_ID at $SERVED_AT" \
+            >/dev/null; then
+            echo "$LANE lane record posted: $LANE_CONTEXT=success on $FULL_SHA"
+          else
+            echo "::warning::could not post commit status $LANE_CONTEXT on $FULL_SHA — the $LANE lane record is in this run's summary but is NOT queryable per-SHA, so the gate must not treat $FULL_SHA as proven"
+          fi
 
   # ═══════════════════════════════════════════════════════════════════════
   # Stage 5 — Deploy PROD daemon
@@ -1060,6 +1159,13 @@ jobs:
       (needs.deploy-test.result == 'success' || needs.deploy-test.result == 'skipped')
     needs: [build-hydra, deploy-test]
     runs-on: [self-hosted, paseo-host]
+    # Same reason as deploy-test: the workflow-level set is `contents: write`
+    # only, and the lane-record commit status below needs `statuses: write`.
+    # Job-level permissions replace the workflow-level set for this job, so
+    # `contents: write` is repeated to keep what the job already had.
+    permissions:
+      contents: write
+      statuses: write
     steps:
       - name: Resolve build ref
         id: ref
@@ -1275,6 +1381,70 @@ jobs:
               exit 1
               ;;
           esac
+
+      # ── Lane record (D3) ────────────────────────────────────────────────
+      # Last step, so it runs only after the health gate AND the unit-identity
+      # assert passed, and records what :6768 is serving *right now*.
+      #
+      # Two sinks on purpose, same as deploy-test: the step summary is the
+      # human-readable one but it dies with the run, so it cannot answer "which
+      # SHA does BETA serve today?" — the pre-merge gate needs that question
+      # answered per-SHA and long after the run is gone. A commit status is
+      # stored against the SHA and is queryable later, so it is the durable
+      # half.
+      - name: Record BETA lane served SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job never checks the repo out, so `gh` has no git remote to
+          # resolve {owner}/{repo} from and the status path fails to expand
+          # ("unable to expand placeholder in path: ... not a git
+          # repository"). Name the repo explicitly instead.
+          GH_REPO: ${{ github.repository }}
+          LANE: BETA
+          LANE_CONTEXT: lane-serving/beta
+          # The SHA this lane was actually given — deliberately NOT
+          # github.sha. A standalone BETA deploy names a past SHA in
+          # beta_build_ref, so the run's own SHA is frequently not what :6768
+          # is serving; recording that would make the gate lie.
+          SERVED_SHA: ${{ steps.ref.outputs.sha }}
+        run: |
+          set -euo pipefail
+          SERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          RUN_URL="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+          # The statuses API takes only the full 40-char SHA. Stage 1 always
+          # produces one and reaching this step means a build dir named by this
+          # ref already existed, so the short form should be unreachable —
+          # but a short ref is a 422 here, so expand it instead of failing.
+          FULL_SHA="$SERVED_SHA"
+          if ! printf '%s' "$SERVED_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            RESOLVED="$(gh api "repos/$GH_REPO/commits/$SERVED_SHA" --jq .sha 2>/dev/null || true)"
+            if printf '%s' "$RESOLVED" | grep -Eq '^[0-9a-f]{40}$'; then
+              FULL_SHA="$RESOLVED"
+            fi
+          fi
+          {
+            echo "### $LANE lane record — now serving \`$FULL_SHA\`"
+            echo
+            echo "| lane | sha | run | recorded (UTC) |"
+            echo "| --- | --- | --- | --- |"
+            echo "| \`$LANE_CONTEXT\` | [\`$FULL_SHA\`]($GITHUB_SERVER_URL/$GH_REPO/commit/$FULL_SHA) | [\`$GITHUB_RUN_ID\`]($RUN_URL) | \`$SERVED_AT\` |"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Deliberately non-fatal: bookkeeping must not fail a deploy that
+          # already passed its health gate and identity assert. The failure
+          # stays visible as a run annotation, and stays fail-closed on the
+          # merge side — with no status on the SHA there is nothing for the
+          # gate to pass on.
+          if gh api "repos/$GH_REPO/statuses/$FULL_SHA" \
+            -f state=success \
+            -f context="$LANE_CONTEXT" \
+            -f target_url="$RUN_URL" \
+            -f description="$LANE serves $FULL_SHA run $GITHUB_RUN_ID at $SERVED_AT" \
+            >/dev/null; then
+            echo "$LANE lane record posted: $LANE_CONTEXT=success on $FULL_SHA"
+          else
+            echo "::warning::could not post commit status $LANE_CONTEXT on $FULL_SHA — the $LANE lane record is in this run's summary but is NOT queryable per-SHA, so the gate must not treat $FULL_SHA as proven"
+          fi
 
   # ═══════════════════════════════════════════════════════════════════════
   # Stage 7 — Deploy freebuff-acp adapter (versioned release + `current` symlink)
