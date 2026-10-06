@@ -1,7 +1,10 @@
 import { describe, expect, test } from "vitest";
 import { fileURLToPath } from "node:url";
 import { createPiExtensionHost } from "../index.js";
-import { readSubagentFixture, verifySubagentFixture } from "../subagent-fixture-test.js";
+import {
+  readSubagentFixture,
+  verifySubagentFixture,
+} from "../../test-utils/subagent-fixture-test.js";
 
 describe("@tintinweb/pi-subagents adapter", () => {
   test("exposes the background output file while the child is running", () => {

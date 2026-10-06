@@ -5,7 +5,7 @@ import type { AgentStreamEvent } from "../../../agent-sdk-types.js";
 import { PiRpcAgentClient } from "../agent.js";
 import { streamPiHistory } from "../history-mapper.js";
 import type { PiAgentMessage, PiAgentSessionEvent } from "../rpc-types.js";
-import { FakePi } from "../test-utils/fake-pi.js";
+import { FakePi } from "./fake-pi.js";
 
 interface Fixture {
   provenance: {

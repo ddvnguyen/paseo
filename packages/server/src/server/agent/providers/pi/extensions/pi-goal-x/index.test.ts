@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { capturedToolCall, verifyTaskFixture } from "../task-fixture-test.js";
+import { capturedToolCall, verifyTaskFixture } from "../../test-utils/task-fixture-test.js";
 import { piGoalX } from "./index.js";
 
 test("pi-goal-x maps captured RPC task tree through live and history", async () => {

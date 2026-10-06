@@ -5,10 +5,10 @@ import type { AgentStreamEvent } from "../../../agent-sdk-types.js";
 import { PiRpcAgentClient } from "../agent.js";
 import { PiHistoryMapper } from "../history-mapper.js";
 import type { PiAgentMessage, PiAgentSessionEvent } from "../rpc-types.js";
-import { FakePi } from "../test-utils/fake-pi.js";
+import { FakePi } from "./fake-pi.js";
 import { parseToolResult } from "../tool-call-mapper.js";
-import { createPiExtensionHost } from "./index.js";
-import type { PiExtensionToolCall } from "./contract.js";
+import { createPiExtensionHost } from "../extensions/index.js";
+import type { PiExtensionToolCall } from "../extensions/contract.js";
 
 interface TaskFixture {
   provenance: {

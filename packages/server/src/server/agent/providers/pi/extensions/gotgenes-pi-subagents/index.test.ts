@@ -1,7 +1,10 @@
 import { describe, expect, test } from "vitest";
 import { fileURLToPath } from "node:url";
 import { createPiExtensionHost } from "../index.js";
-import { readSubagentFixture, verifySubagentFixture } from "../subagent-fixture-test.js";
+import {
+  readSubagentFixture,
+  verifySubagentFixture,
+} from "../../test-utils/subagent-fixture-test.js";
 import { streamPiHistory } from "../../history-mapper.js";
 import { GOTGENES_CHILD_SESSION_MARKER, gotgenesRuntimeBridge } from "./runtime-bridge.js";
 

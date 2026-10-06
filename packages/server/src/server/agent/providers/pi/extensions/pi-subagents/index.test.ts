@@ -11,7 +11,10 @@ import {
   type PiTrackedToolCall,
 } from "../../tool-call-mapper.js";
 import { mapPiChildSession } from "../child-session.js";
-import { readSubagentFixture, verifySubagentFixture } from "../subagent-fixture-test.js";
+import {
+  readSubagentFixture,
+  verifySubagentFixture,
+} from "../../test-utils/subagent-fixture-test.js";
 import pino from "pino";
 import { PiRpcAgentClient } from "../../agent.js";
 import { FakePi } from "../../test-utils/fake-pi.js";
