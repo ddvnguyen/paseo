@@ -634,3 +634,19 @@ git log --cherry-pick --right-only --no-merges --format=%H 97083dd73...HEAD
 Treat absence as a value. A plain `git rev-parse` that fails on a path the fork
 _deleted_ silently undercounts — that is exactly how `package-lock.json` gets
 missed, and it is the single most consequential entry in this ledger.
+
+
+## pnpm-vs-npm adaptation: root `pino` devDependency
+
+Upstream is an npm-workspaces repo (no pnpm-workspace.yaml); the fork is pnpm
+(strict, non-hoisted). `scripts/builtin-plugins-dist.test.mjs` — new from
+upstream, absent on Paseo-hub — does `import pino from "pino"` from the repo
+root, which resolves only under npm hoisting. `packages/server` declares pino
+but the root does not, so the contract test failed in CI with
+`ERR_MODULE_NOT_FOUND` even though no merge dropped the dep. Fix: add `pino`
+(`^10.2.0`, same range as packages/server) to ROOT devDependencies with the
+lockfile reconciled and `pnpm install --frozen-lockfile` exit 0. Zero test
+edits, so drift vs upstream stays minimal. Same hoisting scan: the only other
+bare non-node import in upstream's new root scripts is `@vercel/nft` in
+`scripts/trace-daemon.mjs`, which is already declared and installed — no fix
+needed. Archived on the owner's CI-contract finding for PR #67.
