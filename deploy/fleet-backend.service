@@ -29,8 +29,22 @@ After=default.target
 
 [Service]
 Type=simple
-# TODO(owner): set the checkout path and the node binary for the target host.
-ExecStart=/usr/bin/env node /path/to/paseo/packages/fleet-backend/dist/daemon.js
+# TODO(owner): set the checkout path for the target host.
+#
+# Runtime: bun, the repo's pinned execution runtime (.tool-versions `bun 1.4.2`).
+# The daemon's compiled output is plain ESM with no native steps beyond the
+# Turso client, and the Turso client was verified to load and serve real reads
+# and writes under bun 1.4.2 (packages/fleet-backend config-api-storage tests,
+# which open an actual fleet.db). pnpm still resolves the dependency graph; this
+# only changes who executes it.
+#
+# ExecStartPre asserts the EXACT pinned version and fails the unit on mismatch.
+# There is no node fallback: this daemon takes an exclusive lock on fleet.db and
+# silently running it on a different runtime than the rest of the fleet would
+# make that divergence invisible until a lock or schema behaviour differed.
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/bin/sh -c 'test -x "%h/.bun/bin/bun" || { echo "fleet-backend: pinned bun 1.4.2 not found at %h/.bun/bin/bun" >&2; exit 1; }; v=$("%h/.bun/bin/bun" --version); [ "$v" = "1.4.2" ] || { echo "fleet-backend: bun 1.4.2 required, found $v" >&2; exit 1; }'
+ExecStart=%h/.bun/bin/bun /path/to/paseo/packages/fleet-backend/dist/daemon.js
 WorkingDirectory=/path/to/paseo
 
 # --- state ------------------------------------------------------------------

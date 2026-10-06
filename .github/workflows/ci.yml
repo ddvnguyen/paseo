@@ -44,6 +44,7 @@ jobs:
       browser: ${{ steps.filter.outputs.browser }}
       relay: ${{ steps.filter.outputs.relay }}
       cli: ${{ steps.filter.outputs.cli }}
+      bun-runtime: ${{ steps.filter.outputs.bun-runtime }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -60,7 +61,44 @@ jobs:
           filters: .github/ci-paths.yml
 
       - name: Validate CI contracts
-        run: node --test scripts/ci-workflow.test.mjs scripts/daemon-launch-contract.test.mjs scripts/sync-fdroid-changelogs.test.mjs scripts/upload-release-assets.test.mjs scripts/verify-closure-entry.test.mjs
+        run: node --test scripts/ci-workflow.test.mjs scripts/daemon-launch-contract.test.mjs scripts/sync-fdroid-changelogs.test.mjs scripts/upload-release-assets.test.mjs scripts/verify-closure-entry.test.mjs scripts/runtime-pin.test.mjs
+
+  # The daemon runs on bun in dev and in production, but every other daemon test
+  # in this file runs on node (vitest executes it, and those tests spawn the
+  # daemon through process.execPath). They can all be green while production is
+  # broken on bun. This job is the one that actually starts the daemon on the
+  # pinned runtime, using the exact flags deploy/systemd/paseo.service passes.
+  bun-runtime:
+    name: bun runtime
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.bun-runtime != 'false') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      # pnpm still resolves the graph; this only installs the runtime that
+      # executes it. The literal is asserted against .tool-versions by
+      # scripts/runtime-pin.test.mjs, so the two cannot drift apart silently.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the daemon entrypoints
+        run: npm run build:server
+
+      - name: Boot the daemon on the pinned bun
+        run: ./scripts/verify-bun-runtime.sh
 
   format:
     name: format
