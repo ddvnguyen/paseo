@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { capturedToolCall, verifyTaskFixture } from "../task-fixture-test.js";
+import { capturedToolCall, verifyTaskFixture } from "../../test-utils/task-fixture-test.js";
 import { piExampleTodo } from "./index.js";
 
 test("Pi example todo maps captured RPC tasks through live and history", async () => {

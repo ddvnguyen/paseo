@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { capturedToolCall, verifyTaskFixture } from "../task-fixture-test.js";
+import { capturedToolCall, verifyTaskFixture } from "../../test-utils/task-fixture-test.js";
 import { rpivTodo } from "./index.js";
 
 test("rpiv-todo maps captured RPC tasks through live and history", async () => {
