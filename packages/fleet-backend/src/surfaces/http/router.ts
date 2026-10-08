@@ -27,6 +27,7 @@ import {
 import { handleHealth, handleSchema } from "./health.js";
 import { handleResourcesList, handleResourcesRead } from "./resources.js";
 import { sendJson, sendUnauthorized } from "./responses.js";
+import { handleRoomGet, handleRoomPost, matchTeamsRoom } from "./room.js";
 import { handleCallTool } from "./tools.js";
 import type { Store } from "../../store/store-interface.js";
 
@@ -175,6 +176,16 @@ export function createFleetHttpServer(options: HttpSurfaceOptions): Server {
 
     if (await routeResources(req, res, path, method, url.searchParams)) return;
     if (await routeConfig(req, res, path, method)) return;
+
+    // Team room (#70 T1): GET reads (or long-polls with ?wait_ms), POST is the
+    // owner write. Both sit behind the bearer gate via isProtectedPath.
+    const roomTeam = matchTeamsRoom(path);
+    if (roomTeam !== null) {
+      if (method === "GET") await handleRoomGet(res, store, roomTeam, url.searchParams);
+      else if (method === "POST") await handleRoomPost(req, res, store, roomTeam);
+      else methodNotAllowed(res);
+      return;
+    }
 
     notFound(res);
   }

@@ -1,7 +1,7 @@
 /**
  * Bearer auth for the REST surface — a direct port of backend.py:56-92.
  *
- * Protected: /schema (exact + prefix), /tools*, /resources*. Open: /health and
+ * Protected: /schema (exact + prefix), /tools*, /resources*, /teams*. Open: /health and
  * /health/*. /config is deliberately NOT protected: backend.py comments that it
  * "has the same auth posture as /health", and _is_protected_path does not match
  * it. Keep that asymmetry or the settings page breaks when a token is set.
@@ -12,7 +12,10 @@
 import { timingSafeEqual } from "node:crypto";
 
 const HEALTH_PREFIX = "/health";
-const PROTECTED_PREFIXES = ["/tools", "/resources"] as const;
+// /teams carries the room surface (#70 T1: GET reads/long-polls, POST is the
+// owner write). It is protected like /tools: the owner UI authenticates with
+// the bearer token, and an empty token disables auth, same as everywhere.
+const PROTECTED_PREFIXES = ["/tools", "/resources", "/teams"] as const;
 
 export const UNAUTHORIZED_ERROR = "unauthorized: missing or invalid Authorization header";
 export const UNAUTHORIZED_HINT =
