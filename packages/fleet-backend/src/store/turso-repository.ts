@@ -1440,16 +1440,18 @@ export class TursoRepository implements Store {
 
   async discardRoomMessage(messageId: string, discardedAt: string): Promise<boolean> {
     // The trigger permits ONLY this column's update; the predicate keeps a
-    // second discard from overwriting the first mark.
+    // second discard from overwriting the first mark. Preconditions are read
+    // BEFORE the update so the fallback below cannot mistake a just-written
+    // mark for a pre-existing one.
+    const before = await this.getRoomMessage(messageId);
+    if (!before || before.discarded_at !== null) return false;
     const result = (await this.conn().run(
       "UPDATE room_messages SET discarded_at=? WHERE id=? AND discarded_at IS NULL",
       discardedAt,
       messageId,
     )) as unknown as { rowsAffected?: unknown };
-    const affected = result && typeof result.rowsAffected === "number" ? result.rowsAffected : NaN;
-    if (!Number.isNaN(affected)) return affected > 0;
-    const current = await this.getRoomMessage(messageId);
-    return current !== null && current.discarded_at === null;
+    if (result && typeof result.rowsAffected === "number") return result.rowsAffected > 0;
+    return true;
   }
 }
 

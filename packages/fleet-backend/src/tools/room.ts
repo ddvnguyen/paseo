@@ -354,12 +354,13 @@ async function roomDiscard(
 // ---------------------------------------------------------------------------
 
 const roomSpec: ToolSpec = {
+  // Lean wire shape, matching the base snapshot convention (one-line tool
+  // description, no per-property descriptions): every tier's tools/list
+  // payload counts against the 2000-token budget, and this tool carries 22
+  // properties. Semantics live in the run() errors and in #70, not in the
+  // schema text.
   name: "room",
-  description:
-    "Team room (#70): post/read/subscribe a team's messages. post takes team, agent_id " +
-    "(the seat is resolved from its live seat session; author_* args are rejected) and body; " +
-    "read/subscribe take team plus since_id/since_ts/limit/seat/task_id/kind filters " +
-    "(subscribe long-polls up to wait_ms); discard marks a message obsolete.",
+  description: "Team room (#70): post/read/subscribe/discard a team's messages.",
   inputSchema: {
     type: "object",
     properties: {
@@ -368,28 +369,28 @@ const roomSpec: ToolSpec = {
         enum: ["post", "read", "subscribe", "discard"],
         default: "read",
       },
-      team: { type: "string", description: "team id" },
-      team_id: { type: "string", description: "alias for team" },
-      agent_id: { type: "string", description: "posting agent (post/discard)" },
-      body: { type: "string", description: "message text (post)" },
-      kind: { type: "string", description: "message kind, default chat (post)" },
-      task_id: { type: "string", description: "linked task (post) or filter (read)" },
-      attempt_id: { type: "string", description: "task attempt token (post)" },
-      thread_root: { type: "string", description: "thread root message id (post)" },
-      mentions: { type: "array", items: { type: "string" }, description: "mentioned seats" },
-      artifact_refs: { type: "array", items: { type: "string" }, description: "artifact refs" },
-      correlation_id: { type: "string", description: "correlation id (post)" },
-      author_agent: { type: "string", description: "rejected: derived, never supplied" },
-      author_seat: { type: "string", description: "rejected: derived, never supplied" },
-      since_id: { type: "string", description: "return messages after this id (read)" },
-      since: { type: "string", description: "return messages newer than this ts (read)" },
-      since_ts: { type: "string", description: "alias for since" },
-      limit: { type: "integer", description: "max messages, default 50" },
-      seat: { type: "string", description: "author seat filter (read)" },
-      wait_ms: { type: "integer", description: "long-poll budget, default 5000 (subscribe)" },
-      include_discarded: { type: "boolean", description: "include obsolete messages (read)" },
-      id: { type: "string", description: "message id (discard)" },
-      message_id: { type: "string", description: "alias for id" },
+      team: { type: "string" },
+      team_id: { type: "string" },
+      agent_id: { type: "string" },
+      body: { type: "string" },
+      kind: { type: "string" },
+      task_id: { type: "string" },
+      attempt_id: { type: "string" },
+      thread_root: { type: "string" },
+      mentions: { type: "array", items: { type: "string" } },
+      artifact_refs: { type: "array", items: { type: "string" } },
+      correlation_id: { type: "string" },
+      author_agent: { type: "string" },
+      author_seat: { type: "string" },
+      since_id: { type: "string" },
+      since: { type: "string" },
+      since_ts: { type: "string" },
+      limit: { type: "integer" },
+      seat: { type: "string" },
+      wait_ms: { type: "integer" },
+      include_discarded: { type: "boolean" },
+      id: { type: "string" },
+      message_id: { type: "string" },
     },
     required: ["action"],
   },

@@ -288,15 +288,17 @@ describe("mcp parity (python vs fleet-backend over stdio)", () => {
       expect(diffs).toEqual([]);
       // The default tier is the leader surface: 10 base tools PLUS the owner's
       // TEAM_TOOL_TIERS additions (`team` + `team_resolve`; `team_join` is
-      // call-by-name and must NOT be listed). Asserting 10 encoded "no domain
-      // tools exist yet" and broke the moment Lane T landed.
+      // call-by-name and must NOT be listed) PLUS the #70 T1 room tool.
+      // Asserting 10 encoded "no domain tools exist yet" and broke the moment
+      // Lane T landed; asserting 12 encodes "no room tool yet".
       const tools = (tsList["result"] as Record<string, unknown>)["tools"] as Array<{
         name: string;
       }>;
       const names = tools.map((t) => t.name);
-      expect(names).toHaveLength(12);
+      expect(names).toHaveLength(13);
       expect(names).toContain("team");
       expect(names).toContain("team_resolve");
+      expect(names).toContain("room");
       expect(names).not.toContain("team_join");
     } finally {
       await teardownParity(world);
