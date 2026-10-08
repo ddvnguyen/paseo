@@ -1513,17 +1513,25 @@ export class TursoRepository implements Store {
     at: string,
   ): Promise<number> {
     // Only live attempts move; verified/rejected rows are terminal history.
-    const result = (await this.conn().run(
+    // The count comes from an explicit SELECT, not the driver's
+    // rowsAffected (the Turso driver does not report it): the caller runs
+    // inside lock(), so the read and the update are one atomic step.
+    const priors = (await this.conn().all(
+      `SELECT attempt_id FROM task_attempts
+        WHERE team_id=? AND task_id=? AND attempt_id<>? AND status IN ('started','delivered')`,
+      teamId,
+      taskId,
+      exceptAttemptId,
+    )) as Record<string, unknown>[];
+    await this.conn().run(
       `UPDATE task_attempts SET status='superseded', updated_at=?
         WHERE team_id=? AND task_id=? AND attempt_id<>? AND status IN ('started','delivered')`,
       at,
       teamId,
       taskId,
       exceptAttemptId,
-    )) as unknown as { rowsAffected?: unknown };
-    if (result && typeof result.rowsAffected === "number") return result.rowsAffected;
-    const current = await this.getCurrentTaskAttempt(teamId, taskId);
-    return current && current.attempt_id !== exceptAttemptId ? 1 : 0;
+    );
+    return priors.length;
   }
 
   async markAttemptDelivered(attemptId: string, evidence: string, at: string): Promise<boolean> {
