@@ -89,6 +89,47 @@ export interface RoomReadOptions {
   includeDiscarded?: boolean;
 }
 
+/**
+ * Task attempt row (#70 T2). Shapes are the DDL columns verbatim: `evidence`
+ * is a JSON-encoded object in storage; `decided_at === null` means no
+ * verifier has decided this attempt yet.
+ *
+ * The evidence shape ({acceptanceResults, commandsRun, changedPaths}) follows
+ * dsh-agent-teams src/types.ts (AcceptanceResult, CommandResult,
+ * TaskEvidence — MIT, idea only, no code copied).
+ */
+export type TaskAttemptStatus = "started" | "delivered" | "verified" | "rejected" | "superseded";
+
+export interface AcceptanceResult {
+  criterion: string;
+  status: "passed" | "failed";
+  evidence?: string;
+}
+
+export interface CommandResult {
+  command: string;
+  status: "passed" | "failed";
+  exitCode?: number;
+  evidence?: string;
+}
+
+export interface TaskAttemptRow {
+  attempt_id: string;
+  team_id: string;
+  task_id: string;
+  attempt_no: number;
+  seat: string;
+  agent_id: string;
+  status: TaskAttemptStatus;
+  /** JSON-encoded evidence object ({acceptanceResults, commandsRun, changedPaths}). */
+  evidence: string;
+  verifier_seat: string;
+  verifier_agent: string;
+  created_at: string;
+  updated_at: string;
+  decided_at: string | null;
+}
+
 export function makeRowFilter(init?: Partial<RowFilter>): RowFilter {
   return {
     types: init?.types ?? null,
@@ -224,6 +265,47 @@ export interface Store {
    * by trigger). Returns false when the id is unknown or already discarded.
    */
   discardRoomMessage(messageId: string, discardedAt: string): Promise<boolean>;
+
+  // -- task attempts (#70 T2) --
+  /**
+   * Append one attempt row. attempt_no allocation and superseding are the
+   * caller's job (inside lock); this layer stores the row verbatim.
+   */
+  createTaskAttempt(attempt: TaskAttemptRow): Promise<void>;
+  /** Fetch an attempt by its opaque token, or null when unknown. */
+  getTaskAttempt(attemptId: string): Promise<TaskAttemptRow | null>;
+  /** Every attempt of a task, oldest first (attempt_no ascending). */
+  listTaskAttempts(teamId: string, taskId: string): Promise<TaskAttemptRow[]>;
+  /** The latest attempt of a task (highest attempt_no), or null when none. */
+  getCurrentTaskAttempt(teamId: string, taskId: string): Promise<TaskAttemptRow | null>;
+  /**
+   * Mark every live (started|delivered) prior attempt of a task superseded,
+   * except the named one. Terminal verdicts (verified|rejected) are history
+   * and are never rewritten. Returns the superseded count.
+   */
+  supersedePriorAttempts(
+    teamId: string,
+    taskId: string,
+    exceptAttemptId: string,
+    at: string,
+  ): Promise<number>;
+  /**
+   * Move a started attempt to delivered. Returns false when the attempt is
+   * unknown or no longer started (stale token, superseded, already decided).
+   */
+  markAttemptDelivered(attemptId: string, evidence: string, at: string): Promise<boolean>;
+  /**
+   * Decide a delivered attempt (verified|rejected), recording the verifier.
+   * Returns false when the attempt is unknown or no longer delivered.
+   */
+  decideAttempt(
+    attemptId: string,
+    verdict: "verified" | "rejected",
+    evidence: string,
+    verifierSeat: string,
+    verifierAgent: string,
+    at: string,
+  ): Promise<boolean>;
 }
 
 export type {

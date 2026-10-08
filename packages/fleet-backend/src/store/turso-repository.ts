@@ -20,6 +20,7 @@ import type {
   RoomReadOptions,
   SeatRow,
   SeatSessionRow,
+  TaskAttemptRow,
   TeamRow,
 } from "./store-interface.js";
 import {
@@ -1453,11 +1454,125 @@ export class TursoRepository implements Store {
     if (result && typeof result.rowsAffected === "number") return result.rowsAffected > 0;
     return true;
   }
+
+  // -- task attempts (LLM-Agents-Orchestration#70 T2) ---------------------------
+  // Append-style ledger: rows are never deleted. Status moves are guarded
+  // updates (one legal source status each), mirroring discardRoomMessage's
+  // read-before-write shape so a stale token cannot slip through a race.
+
+  async createTaskAttempt(attempt: TaskAttemptRow): Promise<void> {
+    await this.conn().run(
+      `INSERT INTO task_attempts(attempt_id, team_id, task_id, attempt_no, seat, agent_id,
+        status, evidence, verifier_seat, verifier_agent, created_at, updated_at, decided_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      attempt.attempt_id,
+      attempt.team_id,
+      attempt.task_id,
+      attempt.attempt_no,
+      attempt.seat,
+      attempt.agent_id,
+      attempt.status,
+      attempt.evidence,
+      attempt.verifier_seat,
+      attempt.verifier_agent,
+      attempt.created_at,
+      attempt.updated_at,
+      attempt.decided_at,
+    );
+  }
+
+  async getTaskAttempt(attemptId: string): Promise<TaskAttemptRow | null> {
+    const row = (await this.conn().get(`${ATTEMPT_SELECT} WHERE attempt_id=?`, attemptId)) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? rowToTaskAttempt(row) : null;
+  }
+
+  async listTaskAttempts(teamId: string, taskId: string): Promise<TaskAttemptRow[]> {
+    const rows = (await this.conn().all(
+      `${ATTEMPT_SELECT} WHERE team_id=? AND task_id=? ORDER BY attempt_no ASC`,
+      teamId,
+      taskId,
+    )) as Record<string, unknown>[];
+    return rows.map(rowToTaskAttempt);
+  }
+
+  async getCurrentTaskAttempt(teamId: string, taskId: string): Promise<TaskAttemptRow | null> {
+    const row = (await this.conn().get(
+      `${ATTEMPT_SELECT} WHERE team_id=? AND task_id=? ORDER BY attempt_no DESC LIMIT 1`,
+      teamId,
+      taskId,
+    )) as Record<string, unknown> | undefined;
+    return row ? rowToTaskAttempt(row) : null;
+  }
+
+  async supersedePriorAttempts(
+    teamId: string,
+    taskId: string,
+    exceptAttemptId: string,
+    at: string,
+  ): Promise<number> {
+    // Only live attempts move; verified/rejected rows are terminal history.
+    const result = (await this.conn().run(
+      `UPDATE task_attempts SET status='superseded', updated_at=?
+        WHERE team_id=? AND task_id=? AND attempt_id<>? AND status IN ('started','delivered')`,
+      at,
+      teamId,
+      taskId,
+      exceptAttemptId,
+    )) as unknown as { rowsAffected?: unknown };
+    if (result && typeof result.rowsAffected === "number") return result.rowsAffected;
+    const current = await this.getCurrentTaskAttempt(teamId, taskId);
+    return current && current.attempt_id !== exceptAttemptId ? 1 : 0;
+  }
+
+  async markAttemptDelivered(attemptId: string, evidence: string, at: string): Promise<boolean> {
+    const before = await this.getTaskAttempt(attemptId);
+    if (!before || before.status !== "started") return false;
+    const result = (await this.conn().run(
+      "UPDATE task_attempts SET status='delivered', evidence=?, updated_at=? WHERE attempt_id=? AND status='started'",
+      evidence,
+      at,
+      attemptId,
+    )) as unknown as { rowsAffected?: unknown };
+    if (result && typeof result.rowsAffected === "number") return result.rowsAffected > 0;
+    return true;
+  }
+
+  async decideAttempt(
+    attemptId: string,
+    verdict: "verified" | "rejected",
+    evidence: string,
+    verifierSeat: string,
+    verifierAgent: string,
+    at: string,
+  ): Promise<boolean> {
+    const before = await this.getTaskAttempt(attemptId);
+    if (!before || before.status !== "delivered") return false;
+    const result = (await this.conn().run(
+      `UPDATE task_attempts
+         SET status=?, evidence=?, verifier_seat=?, verifier_agent=?, updated_at=?, decided_at=?
+        WHERE attempt_id=? AND status='delivered'`,
+      verdict,
+      evidence,
+      verifierSeat,
+      verifierAgent,
+      at,
+      at,
+      attemptId,
+    )) as unknown as { rowsAffected?: unknown };
+    if (result && typeof result.rowsAffected === "number") return result.rowsAffected > 0;
+    return true;
+  }
 }
 
 const ROOM_SELECT =
   "SELECT id, team_id, ts, author_seat, author_agent, kind, task_id, attempt_id, " +
   "thread_root, mentions, body, artifact_refs, correlation_id, discarded_at FROM room_messages";
+
+const ATTEMPT_SELECT =
+  "SELECT attempt_id, team_id, task_id, attempt_no, seat, agent_id, status, evidence, " +
+  "verifier_seat, verifier_agent, created_at, updated_at, decided_at FROM task_attempts";
 
 function parseJsonStringArray(raw: unknown): string[] {
   if (raw === null || raw === undefined || raw === "") return [];
@@ -1511,6 +1626,30 @@ function rowToSeatSession(row: Record<string, unknown>): SeatSessionRow {
     started_at: String(row["started_at"]),
     ended_at: ended === null || ended === undefined ? null : String(ended),
     end_reason: String(row["end_reason"] ?? ""),
+  };
+}
+
+function rowToTaskAttempt(row: Record<string, unknown>): TaskAttemptRow {
+  const decided = row["decided_at"];
+  const status = String(row["status"] ?? "");
+  return {
+    attempt_id: String(row["attempt_id"]),
+    team_id: String(row["team_id"]),
+    task_id: String(row["task_id"] ?? ""),
+    attempt_no: Number(row["attempt_no"] ?? 0),
+    seat: String(row["seat"] ?? ""),
+    agent_id: String(row["agent_id"] ?? ""),
+    status: (["started", "delivered", "verified", "rejected", "superseded"] as const).includes(
+      status as TaskAttemptRow["status"],
+    )
+      ? (status as TaskAttemptRow["status"])
+      : "started",
+    evidence: String(row["evidence"] ?? "{}"),
+    verifier_seat: String(row["verifier_seat"] ?? ""),
+    verifier_agent: String(row["verifier_agent"] ?? ""),
+    created_at: String(row["created_at"] ?? ""),
+    updated_at: String(row["updated_at"] ?? ""),
+    decided_at: decided === null || decided === undefined ? null : String(decided),
   };
 }
 

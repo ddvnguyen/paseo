@@ -30,9 +30,15 @@
  *                        v4 is CLAIMED by the room lane: the M2 lane (traj_*
  *                        tables) must take v5 or rebase onto this. Never
  *                        renumber an existing version.
+ *   v5 (task attempts, #70 T2)
+ *                     -> task_attempts (new table, no rename — same reason;
+ *                        team-scoped, so no FK onto orch_tasks/orch_workers)
+ *                        v5 is CLAIMED by the task-attempt lane: later lanes
+ *                        take v6 or rebase onto this. Never renumber an
+ *                        existing version.
  */
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * Versions whose DDL ships in FLEET_SCHEMA_SQL, oldest first. FLEET_SCHEMA_SQL
@@ -41,7 +47,7 @@ export const SCHEMA_VERSION = 4;
  * (`schema_version:<n>` -> applied_at), which is how this DB records the
  * migration history. Never drop a version from this list.
  */
-export const APPLIED_SCHEMA_VERSIONS: readonly number[] = [2, 3, 4];
+export const APPLIED_SCHEMA_VERSIONS: readonly number[] = [2, 3, 4, 5];
 
 export const FLEET_SCHEMA_SQL = `
 PRAGMA journal_mode=WAL;
@@ -326,4 +332,36 @@ CREATE TRIGGER IF NOT EXISTS room_messages_no_delete BEFORE DELETE ON room_messa
 END;
 CREATE INDEX IF NOT EXISTS idx_room_messages_team_ts ON room_messages(team_id, ts, id);
 CREATE INDEX IF NOT EXISTS idx_room_messages_team_task ON room_messages(team_id, task_id);
+
+-- task_attempts (#70 T2, schema v5). The team's attempt ledger: one row per
+-- execution generation of a task, team-scoped so there is no FK onto
+-- orch_tasks or orch_workers (saveTrack() rewrites those rows; anything
+-- anchoring on them would be wiped — #70 finding 9, same reason team_tracks
+-- and room_messages avoid them).
+--
+-- Append-style: a new start marks live older attempts superseded and NEVER
+-- deletes. attempt_no is monotonic per (team_id, task_id); attempt_id is the
+-- opaque capability token the worker must present on report (the fencing idea
+-- follows dsh-agent-teams src/types.ts TeamTask.attempt/attemptId — MIT, idea
+-- only, no code copied). status transitions are enforced in the tool layer;
+-- the CHECK below only pins the vocabulary. evidence is JSON
+-- ({acceptanceResults, commandsRun, changedPaths}); verifier_* record who
+-- decided a delivered attempt, decided_at when.
+CREATE TABLE IF NOT EXISTS task_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL DEFAULT '',
+    attempt_no INTEGER NOT NULL,
+    seat TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('started','delivered','verified','rejected','superseded')),
+    evidence TEXT NOT NULL DEFAULT '{}',
+    verifier_seat TEXT NOT NULL DEFAULT '',
+    verifier_agent TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    decided_at TEXT,
+    UNIQUE(team_id, task_id, attempt_no)
+);
+CREATE INDEX IF NOT EXISTS idx_task_attempts_team_task ON task_attempts(team_id, task_id, attempt_no);
 `;
