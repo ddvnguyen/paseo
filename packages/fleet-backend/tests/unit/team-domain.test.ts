@@ -106,7 +106,11 @@ describe("team domain DDL (schema v3)", () => {
       world.dbPath,
       "SELECT key FROM meta WHERE key LIKE 'schema_version:%' ORDER BY key",
     );
-    expect(versions.map((r) => r["key"])).toEqual(["schema_version:2", "schema_version:3"]);
+    expect(versions.map((r) => r["key"])).toEqual([
+      "schema_version:2",
+      "schema_version:3",
+      "schema_version:4",
+    ]);
   });
 
   it("round-trips team -> seats -> team_tracks -> seat_sessions", async () => {

@@ -57,6 +57,38 @@ export interface SeatSessionRow {
   end_reason: string;
 }
 
+/**
+ * Room message row (#70 T1). Shapes are the DDL columns verbatim:
+ * `mentions` / `artifact_refs` are JSON-encoded arrays in storage and parsed
+ * arrays on the way out; `discarded_at === null` is a live message.
+ */
+export interface RoomMessageRow {
+  id: string;
+  team_id: string;
+  ts: string;
+  author_seat: string;
+  author_agent: string;
+  kind: string;
+  task_id: string;
+  attempt_id: string;
+  thread_root: string;
+  mentions: string[];
+  body: string;
+  artifact_refs: string[];
+  correlation_id: string;
+  discarded_at: string | null;
+}
+
+export interface RoomReadOptions {
+  sinceId?: string;
+  sinceTs?: string;
+  limit?: number;
+  seat?: string;
+  taskId?: string;
+  kind?: string;
+  includeDiscarded?: boolean;
+}
+
 export function makeRowFilter(init?: Partial<RowFilter>): RowFilter {
   return {
     types: init?.types ?? null,
@@ -168,6 +200,30 @@ export interface Store {
   startSeatSession(session: SeatSessionRow, exclusive: boolean): Promise<void>;
   listLiveSeatSessions(teamId: string): Promise<SeatSessionRow[]>;
   listLiveSeatSessionsForSeat(seat: string): Promise<SeatSessionRow[]>;
+  /** The live session binding an agent to a seat on a team, if any. */
+  findLiveSeatSession(teamId: string, agentId: string): Promise<SeatSessionRow | null>;
+  /** Close an agent's live session; posting afterwards is rejected. */
+  endSeatSession(teamId: string, agentId: string, endedAt: string, reason: string): Promise<void>;
+
+  // -- team room (#70 T1) --
+  /**
+   * Insert one room message. The author columns are already derived by the
+   * caller (seat sessions for agents, the bearer token for the owner UI) —
+   * this layer never guesses them.
+   */
+  postRoomMessage(message: RoomMessageRow): Promise<void>;
+  getRoomMessage(messageId: string): Promise<RoomMessageRow | null>;
+  /**
+   * Ascending (oldest first) read, pageable via sinceId/sinceTs. Discarded
+   * messages are excluded unless includeDiscarded is set. An unknown sinceId
+   * throws StateError rather than silently returning the whole room.
+   */
+  listRoomMessages(teamId: string, options?: RoomReadOptions): Promise<RoomMessageRow[]>;
+  /**
+   * Mark a message obsolete (the ONLY update room_messages allows, enforced
+   * by trigger). Returns false when the id is unknown or already discarded.
+   */
+  discardRoomMessage(messageId: string, discardedAt: string): Promise<boolean>;
 }
 
 export type {

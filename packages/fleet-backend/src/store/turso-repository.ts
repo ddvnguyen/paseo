@@ -15,7 +15,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import * as path from "node:path";
 import { FLEET_SCHEMA_SQL, APPLIED_SCHEMA_VERSIONS } from "./schema.js";
 import { StateError, makeRowFilter, type RowFilter, type Store } from "./store-interface.js";
-import type { SeatRow, SeatSessionRow, TeamRow } from "./store-interface.js";
+import type {
+  RoomMessageRow,
+  RoomReadOptions,
+  SeatRow,
+  SeatSessionRow,
+  TeamRow,
+} from "./store-interface.js";
 import {
   coerceTrack,
   defaultHandoff,
@@ -1318,6 +1324,170 @@ export class TursoRepository implements Store {
     )) as Record<string, unknown>[];
     return rows.map(rowToSeatSession);
   }
+
+  async findLiveSeatSession(teamId: string, agentId: string): Promise<SeatSessionRow | null> {
+    const row = (await this.conn().get(
+      `SELECT team_id, seat, agent_id, model, started_at, ended_at, end_reason
+       FROM seat_sessions WHERE team_id=? AND agent_id=? AND ended_at IS NULL
+       ORDER BY started_at LIMIT 1`,
+      teamId,
+      agentId,
+    )) as Record<string, unknown> | undefined;
+    return row ? rowToSeatSession(row) : null;
+  }
+
+  async endSeatSession(
+    teamId: string,
+    agentId: string,
+    endedAt: string,
+    reason: string,
+  ): Promise<void> {
+    const db = this.conn();
+    await this.lock(`seat-${teamId}-${agentId}`, async () => {
+      await db.run(
+        `UPDATE seat_sessions SET ended_at=?, end_reason=?
+         WHERE team_id=? AND agent_id=? AND ended_at IS NULL`,
+        endedAt,
+        reason,
+        teamId,
+        agentId,
+      );
+    });
+  }
+
+  // -- team room (LLM-Agents-Orchestration#70 T1) ------------------------------
+  // Author columns arrive derived (seat sessions for agents, the bearer token
+  // for the owner UI); this layer stores them verbatim and never resolves
+  // identity. Reads are oldest-first so since_id/since_ts paging walks forward.
+
+  async postRoomMessage(message: RoomMessageRow): Promise<void> {
+    await this.conn().run(
+      `INSERT INTO room_messages(id, team_id, ts, author_seat, author_agent, kind,
+        task_id, attempt_id, thread_root, mentions, body, artifact_refs, correlation_id, discarded_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      message.id,
+      message.team_id,
+      message.ts,
+      message.author_seat,
+      message.author_agent,
+      message.kind,
+      message.task_id,
+      message.attempt_id,
+      message.thread_root,
+      pyDumps(message.mentions),
+      message.body,
+      pyDumps(message.artifact_refs),
+      message.correlation_id,
+    );
+  }
+
+  async getRoomMessage(messageId: string): Promise<RoomMessageRow | null> {
+    const row = (await this.conn().get(`${ROOM_SELECT} WHERE id=?`, messageId)) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? rowToRoomMessage(row) : null;
+  }
+
+  async listRoomMessages(teamId: string, options: RoomReadOptions = {}): Promise<RoomMessageRow[]> {
+    let limit = 50;
+    try {
+      if (options.limit !== undefined) limit = pyInt(options.limit);
+    } catch {
+      limit = 50;
+    }
+    limit = Math.max(1, Math.min(200, limit));
+    const clauses = ["team_id = ?"];
+    const params: unknown[] = [teamId];
+    if (!options.includeDiscarded) clauses.push("discarded_at IS NULL");
+    if (options.seat) {
+      clauses.push("author_seat = ?");
+      params.push(options.seat);
+    }
+    if (options.taskId) {
+      clauses.push("task_id = ?");
+      params.push(options.taskId);
+    }
+    if (options.kind) {
+      clauses.push("kind = ?");
+      params.push(options.kind);
+    }
+    if (options.sinceTs) {
+      clauses.push("ts > ?");
+      params.push(options.sinceTs);
+    }
+    if (options.sinceId) {
+      // Positional anchor: everything strictly after the named message in
+      // read order (ts, rowid). An unknown or foreign-team id throws rather
+      // than silently returning the whole room.
+      const anchor = (await this.conn().get(
+        "SELECT rowid AS anchor_rowid, ts AS anchor_ts, team_id AS anchor_team FROM room_messages WHERE id=?",
+        options.sinceId,
+      )) as Record<string, unknown> | undefined;
+      if (!anchor) throw new StateError(`message not found: ${options.sinceId}`);
+      if (String(anchor["anchor_team"]) !== teamId) {
+        throw new StateError(`message ${options.sinceId} is not on team ${teamId}`);
+      }
+      clauses.push("(ts > ? OR (ts = ? AND rowid > ?))");
+      params.push(String(anchor["anchor_ts"]), String(anchor["anchor_ts"]), anchor["anchor_rowid"]);
+    }
+    const rows = (await this.conn().all(
+      `${ROOM_SELECT} WHERE ${clauses.join(" AND ")} ORDER BY ts ASC, rowid ASC LIMIT ?`,
+      ...params,
+      limit,
+    )) as Record<string, unknown>[];
+    return rows.map(rowToRoomMessage);
+  }
+
+  async discardRoomMessage(messageId: string, discardedAt: string): Promise<boolean> {
+    // The trigger permits ONLY this column's update; the predicate keeps a
+    // second discard from overwriting the first mark. Preconditions are read
+    // BEFORE the update so the fallback below cannot mistake a just-written
+    // mark for a pre-existing one.
+    const before = await this.getRoomMessage(messageId);
+    if (!before || before.discarded_at !== null) return false;
+    const result = (await this.conn().run(
+      "UPDATE room_messages SET discarded_at=? WHERE id=? AND discarded_at IS NULL",
+      discardedAt,
+      messageId,
+    )) as unknown as { rowsAffected?: unknown };
+    if (result && typeof result.rowsAffected === "number") return result.rowsAffected > 0;
+    return true;
+  }
+}
+
+const ROOM_SELECT =
+  "SELECT id, team_id, ts, author_seat, author_agent, kind, task_id, attempt_id, " +
+  "thread_root, mentions, body, artifact_refs, correlation_id, discarded_at FROM room_messages";
+
+function parseJsonStringArray(raw: unknown): string[] {
+  if (raw === null || raw === undefined || raw === "") return [];
+  try {
+    const parsed: unknown = JSON.parse(String(raw));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((item) => String(item));
+  } catch {
+    return [];
+  }
+}
+
+function rowToRoomMessage(row: Record<string, unknown>): RoomMessageRow {
+  const discarded = row["discarded_at"];
+  return {
+    id: String(row["id"]),
+    team_id: String(row["team_id"]),
+    ts: String(row["ts"]),
+    author_seat: String(row["author_seat"] ?? ""),
+    author_agent: String(row["author_agent"] ?? ""),
+    kind: String(row["kind"] ?? ""),
+    task_id: String(row["task_id"] ?? ""),
+    attempt_id: String(row["attempt_id"] ?? ""),
+    thread_root: String(row["thread_root"] ?? ""),
+    mentions: parseJsonStringArray(row["mentions"]),
+    body: String(row["body"] ?? ""),
+    artifact_refs: parseJsonStringArray(row["artifact_refs"]),
+    correlation_id: String(row["correlation_id"] ?? ""),
+    discarded_at: discarded === null || discarded === undefined ? null : String(discarded),
+  };
 }
 
 function rowToSeat(row: Record<string, unknown>): SeatRow {

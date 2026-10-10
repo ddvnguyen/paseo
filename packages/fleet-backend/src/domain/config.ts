@@ -532,8 +532,8 @@ export function tierTools(raw: string | null | undefined, stateDir?: string): Se
  * contract with clients, not a preference. See #31.
  */
 const DOMAIN_TOOL_TIERS: Record<string, ReadonlySet<string>> = {
-  leader: new Set(["team", "team_resolve"]),
-  consult: new Set(["team", "team_resolve"]),
+  leader: new Set(["team", "team_resolve", "room"]),
+  consult: new Set(["team", "team_resolve", "room"]),
 };
 
 export function sessionTierTools(stateDir?: string): Set<string> | null {

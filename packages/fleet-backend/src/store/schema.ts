@@ -24,9 +24,15 @@
  *                     -> teams / team_tracks / seats / seat_sessions
  *                        (new tables, no rename — they have no Python
  *                         counterpart, so nothing to un-prefix for parity)
+ *   v4 (team room, #70 T1)
+ *                     -> room_messages (new table, no rename — same reason;
+ *                        team-scoped, so no FK onto orch_tasks/orch_workers)
+ *                        v4 is CLAIMED by the room lane: the M2 lane (traj_*
+ *                        tables) must take v5 or rebase onto this. Never
+ *                        renumber an existing version.
  */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * Versions whose DDL ships in FLEET_SCHEMA_SQL, oldest first. FLEET_SCHEMA_SQL
@@ -35,7 +41,7 @@ export const SCHEMA_VERSION = 3;
  * (`schema_version:<n>` -> applied_at), which is how this DB records the
  * migration history. Never drop a version from this list.
  */
-export const APPLIED_SCHEMA_VERSIONS: readonly number[] = [2, 3];
+export const APPLIED_SCHEMA_VERSIONS: readonly number[] = [2, 3, 4];
 
 export const FLEET_SCHEMA_SQL = `
 PRAGMA journal_mode=WAL;
@@ -269,4 +275,55 @@ CREATE TABLE IF NOT EXISTS seat_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_seat_sessions_live ON seat_sessions(team_id, seat, ended_at);
 CREATE INDEX IF NOT EXISTS idx_seat_sessions_agent ON seat_sessions(agent_id);
+
+-- room_messages (#70 T1, schema v4). The team's room: every post lands here,
+-- team-scoped so there is no FK onto orch_tasks or orch_workers (saveTrack()
+-- rewrites those rows; anything anchoring on them would be wiped — #70
+-- finding 9, same reason team_tracks avoids them).
+--
+-- INSERT-ONLY with ONE exception: discarded_at is the only column ever
+-- updated, and only to mark a message obsolete — rows are never deleted.
+-- The triggers enforce that shape in the database, not just in the tool
+-- layer, the way orch_events protects its own INSERT-ONLY table. The
+-- discarded_at idea (obsolete marks instead of deletes, filtered by default
+-- reads) follows dsh-agent-teams src/mailbox.ts (MIT) — idea only, no code
+-- copied.
+CREATE TABLE IF NOT EXISTS room_messages (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    ts TEXT NOT NULL,
+    author_seat TEXT NOT NULL,
+    author_agent TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    task_id TEXT NOT NULL DEFAULT '',
+    attempt_id TEXT NOT NULL DEFAULT '',
+    thread_root TEXT NOT NULL DEFAULT '',
+    mentions TEXT NOT NULL DEFAULT '[]',
+    body TEXT NOT NULL,
+    artifact_refs TEXT NOT NULL DEFAULT '[]',
+    correlation_id TEXT NOT NULL DEFAULT '',
+    discarded_at TEXT
+);
+CREATE TRIGGER IF NOT EXISTS room_messages_no_update_of_content BEFORE UPDATE ON room_messages
+WHEN OLD.id IS NOT NEW.id
+  OR OLD.team_id IS NOT NEW.team_id
+  OR OLD.ts IS NOT NEW.ts
+  OR OLD.author_seat IS NOT NEW.author_seat
+  OR OLD.author_agent IS NOT NEW.author_agent
+  OR OLD.kind IS NOT NEW.kind
+  OR OLD.task_id IS NOT NEW.task_id
+  OR OLD.attempt_id IS NOT NEW.attempt_id
+  OR OLD.thread_root IS NOT NEW.thread_root
+  OR OLD.mentions IS NOT NEW.mentions
+  OR OLD.body IS NOT NEW.body
+  OR OLD.artifact_refs IS NOT NEW.artifact_refs
+  OR OLD.correlation_id IS NOT NEW.correlation_id
+BEGIN
+    SELECT RAISE(ABORT, 'room_messages is INSERT-ONLY except discarded_at');
+END;
+CREATE TRIGGER IF NOT EXISTS room_messages_no_delete BEFORE DELETE ON room_messages BEGIN
+    SELECT RAISE(ABORT, 'room_messages is INSERT-ONLY');
+END;
+CREATE INDEX IF NOT EXISTS idx_room_messages_team_ts ON room_messages(team_id, ts, id);
+CREATE INDEX IF NOT EXISTS idx_room_messages_team_task ON room_messages(team_id, task_id);
 `;

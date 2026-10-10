@@ -350,6 +350,7 @@ export const EVENT_TYPES: ReadonlySet<string> = new Set([
   "model_verification",
   "override_recorded",
   "project_created",
+  "room_posted",
   "suggestion_added",
   "suggestion_reviewed",
   "summary_committed",
