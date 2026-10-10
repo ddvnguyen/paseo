@@ -34,6 +34,41 @@ function pickTools(list: unknown, keep: (name: string) => boolean): unknown {
   };
 }
 
+/**
+ * Event types TS records that the pinned Python never will: Python MOCT is
+ * frozen for new surface (owner, 2026-10-04), so the T1 room tool's
+ * `room_posted` event is a DELIBERATE TS-only extension, like the domain tools
+ * in the tools/list case. Declared here so any OTHER divergence in
+ * `valid_event_types` (a base type vanishing, an undeclared type appearing)
+ * still fails.
+ */
+const TS_ONLY_EVENT_TYPES = ["room_posted"];
+
+/**
+ * Remove the declared TS-only event types from a `valid_event_types` list in
+ * place, returning a failure diff when the TS-only set is not EXACTLY the
+ * declared one. A no-op for responses that carry no such list.
+ */
+function stripDeclaredEventTypes(
+  pyJson: unknown,
+  tsJson: unknown,
+): { path: string; a: unknown; b: unknown } | null {
+  const pyTypes = (pyJson as { valid_event_types?: unknown } | null)?.valid_event_types;
+  const tsRoot = tsJson as { valid_event_types?: unknown } | null;
+  const tsTypes = tsRoot?.valid_event_types;
+  if (!Array.isArray(pyTypes) || !Array.isArray(tsTypes) || tsRoot === null) return null;
+  const tsOnly = tsTypes.filter((t) => !pyTypes.includes(t)).sort();
+  if (tsOnly.join(",") !== [...TS_ONLY_EVENT_TYPES].sort().join(",")) {
+    return {
+      path: "$.valid_event_types[ts-only]",
+      a: TS_ONLY_EVENT_TYPES.join(","),
+      b: tsOnly.join(","),
+    };
+  }
+  tsRoot.valid_event_types = tsTypes.filter((t) => pyTypes.includes(t));
+  return null;
+}
+
 function getPath(obj: unknown, path: string): unknown {
   let cur = obj;
   for (const part of path.split(".")) {
@@ -189,6 +224,8 @@ async function runCase(
         diffs: [{ path: "$.text", a: pyText.slice(0, 500), b: tsText.slice(0, 500) }],
       };
     }
+    const eventTypeDiff = stripDeclaredEventTypes(pyJson, tsJson);
+    if (eventTypeDiff) return { name: c.name, pass: false, diffs: [eventTypeDiff] };
     if (pyJson === null) {
       // both non-JSON text (validation errors): compare exactly
       const pass = pyText === tsText;
