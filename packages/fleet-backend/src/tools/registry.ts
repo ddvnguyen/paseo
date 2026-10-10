@@ -21,6 +21,7 @@ import { dispatchTool, TOOL_NAMES } from "../surfaces/mcp/dispatch.js";
 import SNAPSHOT from "../surfaces/mcp/tool-list.snapshot.json" with { type: "json" };
 import type { Store } from "../store/store-interface.js";
 import { ROOM_DOMAIN } from "./room.js";
+import { TASK_ATTEMPT_DOMAIN } from "./task-attempt.js";
 import { TEAM_DOMAIN } from "./team.js";
 
 export interface ToolSpec {
@@ -47,7 +48,7 @@ export interface ToolDomain {
  * a domain lands here (tools/list serves the snapshot, so a registered domain
  * also needs its schema published — see listToolsForSession).
  */
-export const TOOL_DOMAINS: readonly ToolDomain[] = [TEAM_DOMAIN, ROOM_DOMAIN];
+export const TOOL_DOMAINS: readonly ToolDomain[] = [TEAM_DOMAIN, ROOM_DOMAIN, TASK_ATTEMPT_DOMAIN];
 
 /**
  * Flatten domains into a name-keyed registry.

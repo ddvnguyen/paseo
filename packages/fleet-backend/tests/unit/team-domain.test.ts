@@ -110,6 +110,7 @@ describe("team domain DDL (schema v3)", () => {
       "schema_version:2",
       "schema_version:3",
       "schema_version:4",
+      "schema_version:5",
     ]);
   });
 
